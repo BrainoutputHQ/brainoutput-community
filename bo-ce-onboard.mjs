@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import readline from "node:readline/promises";
 import { request } from "node:http";
-import { detectConnections, generateOrg, recommendAssignments, applyOverrides, confirmZeroFunded, buildCompanyConfig, renderAgentView, ROLE_TEMPLATES } from "./onboarding.mjs";
+import { detectConnections, generateOrg, recommendAssignments, applyOverrides, confirmZeroFunded, buildCompanyConfig, renderAgentView, ROLE_TEMPLATES, onboardingModelPaths, payerLabel } from "./onboarding.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const arg = (k) => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : null; };
@@ -59,6 +59,12 @@ const money = { free: "FREE", "local-compute": "your local compute ($0)", "user-
 
 (async () => {
   line("BrainOutput Community Edition — first-run onboarding\n" + "=".repeat(52));
+  line("BrainOutput-funded inference: $0. You always choose who pays for each model.\n");
+  // Step 0 — how do you want to power your AI company? Free is the simplest default; all are $0-safe.
+  line("How would you like to run your models? (all keep BrainOutput-funded inference at $0)");
+  for (const p of onboardingModelPaths())
+    line(`   ${p.default ? "▸" : " "} ${p.label}${p.default ? "  (recommended)" : ""} — ${p.payer}`);
+  line("");
   // Step 1 — detect/connect
   const localModels = await probeOllama();
   const { connections } = detectConnections({ localModels, byokKeys: detectByok(), freeAvailable: true });

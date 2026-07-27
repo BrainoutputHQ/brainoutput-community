@@ -2,7 +2,32 @@
 // Tests for the Community Edition onboarding engine. Pure logic; no network. run: node --test
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { detectConnections, generateOrg, recommendAssignments, applyOverrides, confirmZeroFunded, buildCompanyConfig, renderAgentView } from "./onboarding.mjs";
+import { detectConnections, generateOrg, recommendAssignments, applyOverrides, confirmZeroFunded, buildCompanyConfig, renderAgentView, onboardingModelPaths, payerLabel, capabilityAlternatives } from "./onboarding.mjs";
+
+test("onboardingModelPaths: 'free' is first and the only default; local + BYOK are present", () => {
+  const p = onboardingModelPaths();
+  assert.equal(p[0].key, "free");
+  assert.equal(p.filter((x) => x.default).length, 1);
+  assert.equal(p.find((x) => x.default).key, "free");
+  assert.deepEqual(p.map((x) => x.key).sort(), ["byok", "free", "local"]);
+  for (const x of p) assert.ok(x.payer && x.label);          // every path states who pays, plainly
+});
+
+test("payerLabel is plain-language and never implies BrainOutput pays", () => {
+  assert.match(payerLabel("free"), /free/i);
+  assert.match(payerLabel("local"), /\$0/);
+  assert.match(payerLabel("user"), /your own/i);
+  assert.match(payerLabel("brainoutput"), /not available|never pays/i);
+});
+
+test("capabilityAlternatives offers non-paid options and never a BrainOutput fallback", () => {
+  const v = capabilityAlternatives("vision", []);
+  assert.ok(v.length >= 2);
+  for (const a of v) assert.doesNotMatch(a, /paid|brainoutput/i);
+  const g = capabilityAlternatives("reasoning-free", []);
+  assert.ok(g.length >= 2);
+  for (const a of g) assert.doesNotMatch(a, /paid|brainoutput/i);
+});
 
 const LOCALS = [
   { name: "qwen2.5-7b-32k:latest", provider: "ollama", contextSize: 32000, coding: true, multilingual: true, vision: false },

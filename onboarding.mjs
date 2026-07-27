@@ -38,6 +38,34 @@ export function detectConnections({ localModels = [], byokKeys = {}, freeAvailab
   return { connections: conns.filter((c) => validateConnection(c).ok), freeAvailable };
 }
 
+// Step 0 — the model-source choice a first-time user sees. "Use free models" is the clearest DEFAULT;
+// local and BYOK are equally available. Plain language, no jargon. Nothing here is BrainOutput-funded.
+export function onboardingModelPaths() {
+  return [
+    { key: "free",  label: "Use free models",                  default: true,  payer: "free — the model provider pays, not you" },
+    { key: "local", label: "Use local models on this computer", default: false, payer: "$0 — runs on your own computer" },
+    { key: "byok",  label: "Connect my own provider (API key)", default: false, payer: "your own provider account" },
+  ];
+}
+
+// Plain-language "who pays" for a model, from its funder. Never implies BrainOutput pays.
+export function payerLabel(funder) {
+  switch (funder) {
+    case "free":  return "free — the provider pays";
+    case "local": return "$0 — your computer";
+    case "user":  return "your own provider account";
+    default:      return "not available — BrainOutput never pays";
+  }
+}
+
+// When a capability slot (e.g. "vision") has no available model, offer useful, non-paid alternatives —
+// never a paid/BrainOutput fallback. Returns plain-language options a first-time user can act on.
+export function capabilityAlternatives(slot, connections = []) {
+  if (slot === "vision")
+    return ["Connect a vision-capable provider (BYOK)", "Run a local vision model (e.g. llava)", "Skip vision for now"];
+  return ["Use a free model for this", "Run a local model for this", "Connect your own provider", "Skip it for now"];
+}
+
 // Step 5 — generate the minimum useful org for the selected departments (dormant-by-default).
 export function generateOrg({ companyDoes = "", departments = [] } = {}) {
   const agents = [];
