@@ -4,7 +4,7 @@
 // no-paid-fallback, and routing. Pure logic — no network, no model calls. run: node --test
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { CAPABILITY_SLOTS, validateConnection, makeCatalog, planGraph, selectModel, routeTask, assertZeroFunded, costReport } from "./ce-core.mjs";
+import { CAPABILITY_SLOTS, validateConnection, makeCatalog, planGraph, selectModel, routeTask, assertZeroFunded, costReport, executionSummary } from "./ce-core.mjs";
 
 const LOCAL = { id: "local-a", kind: "local", provider: "ollama", model: "qwen2.5:7b", costSource: "local-compute", funder: "local" };
 const FREE = { id: "free-a", kind: "opencode-free", provider: "opencode-free", model: "some-free", costSource: "free", funder: "free" };
@@ -75,6 +75,28 @@ test("routeTask THROWS if an assignment would use BrainOutput-funded inference",
   const bad = { id: "b", kind: "x", provider: "p", model: "m", costSource: "free", funder: "brainoutput" };
   const ctx = { agents, assignments: { "coding-free": "b" }, connections: [bad], catalog: makeCatalog([]) };
   assert.throws(() => routeTask({ department: "d", task: { complexity: "low", workerSlot: "coding-free" } }, ctx), /brainoutput|forbidden|funded|not user/i);
+});
+
+test("executionSummary: a local $0 run is zeroFundedOk with no BrainOutput-funded tokens", () => {
+  const results = [
+    { node: "worker", tokens: 120, costSource: "local-compute", funder: "local", artifact: "diff.patch", changedFiles: ["ce-core.mjs"] },
+    { node: "tool", tokens: 0, costSource: "local-compute", funder: "local" },
+  ];
+  const before = JSON.stringify(results);
+  const s = executionSummary(results);
+  assert.equal(JSON.stringify(results), before);                          // input not mutated
+  assert.equal(s.tokens, 120);
+  assert.equal(s.byCostSource["local-compute"], 120);
+  assert.deepEqual(s.fundersUsed, ["local"]);
+  assert.equal(s.brainoutputFundedTokens, 0);
+  assert.equal(s.zeroFundedOk, true);
+  assert.deepEqual(s.artifacts, ["diff.patch", "ce-core.mjs"]);
+});
+
+test("executionSummary: a funder:'brainoutput' record makes zeroFundedOk false", () => {
+  const s = executionSummary([{ node: "worker", tokens: 50, costSource: "free", funder: "brainoutput" }]);
+  assert.equal(s.brainoutputFundedTokens, 50);
+  assert.equal(s.zeroFundedOk, false);
 });
 
 test("assertZeroFunded + costReport keep BrainOutput-funded tokens at 0", () => {

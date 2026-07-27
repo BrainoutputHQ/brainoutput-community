@@ -138,6 +138,29 @@ export function assertZeroFunded(plan) {
   return true;
 }
 
+/**
+ * Visible execution status for a finished run. PURE — never mutates `results`.
+ * Each result: { node, tokens, costSource, funder, changedFiles?, artifact? }.
+ * brainoutputFundedTokens must always be 0 in Community (funder not in ALLOWED_FUNDERS).
+ */
+export function executionSummary(results) {
+  const sum = { tokens: 0, byCostSource: {}, fundersUsed: [], brainoutputFundedTokens: 0, zeroFundedOk: true, artifacts: [] };
+  const funders = new Set();
+  for (const r of results) {
+    const tokens = r.tokens || 0;
+    sum.tokens += tokens;
+    const src = r.costSource || "unknown";
+    sum.byCostSource[src] = (sum.byCostSource[src] || 0) + tokens;
+    if (r.funder) funders.add(r.funder);
+    if (r.funder && !ALLOWED_FUNDERS.includes(r.funder)) sum.brainoutputFundedTokens += tokens;
+    if (typeof r.artifact === "string" && r.artifact) sum.artifacts.push(r.artifact);
+    if (Array.isArray(r.changedFiles)) sum.artifacts.push(...r.changedFiles.filter((f) => typeof f === "string" && f));
+  }
+  sum.fundersUsed = [...funders].sort();
+  sum.zeroFundedOk = sum.brainoutputFundedTokens === 0;
+  return sum;
+}
+
 /** Sum only user/free/local token usage; BrainOutput-funded must always be 0. */
 export function costReport(results) {
   const rep = { byCostSource: {}, brainoutputFundedTokens: 0, nodes: [] };
