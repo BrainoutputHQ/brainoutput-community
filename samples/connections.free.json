@@ -1,0 +1,6 @@
+{
+  "_what": "Sample FREE model connections. Use a currently-available free, OpenAI-compatible model from a provider you accept. The Community catalog only ever selects a free model that is actually available; if none is, it offers free/BYOK/local/stop — it NEVER falls back to a paid model. Verify the provider's data-use terms before enabling.",
+  "modelConnections": [
+    { "id": "free-openai-compatible", "kind": "free", "provider": "some-free-provider", "model": "a-currently-free-model", "endpoint": "https://your-free-provider.example/v1/chat/completions", "costSource": "free", "funder": "free", "contextSize": 32768, "privacyNotice": "provider data-use terms apply" }
+  ]
+}

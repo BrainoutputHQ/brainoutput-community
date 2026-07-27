@@ -1,0 +1,8 @@
+{
+  "_what": "Sample LOCAL model connections (your own compute, $0). Point endpoint at any OpenAI-compatible local server: ollama (:11434/v1), vLLM, llama.cpp server, LM Studio, a local GPU gateway, etc.",
+  "modelConnections": [
+    { "id": "ollama-small", "kind": "local", "provider": "ollama", "model": "qwen2.5:3b", "endpoint": "http://127.0.0.1:11434/v1/chat/completions", "costSource": "local-compute", "funder": "local", "contextSize": 8192 },
+    { "id": "ollama-coder", "kind": "local", "provider": "ollama", "model": "qwen2.5:7b", "endpoint": "http://127.0.0.1:11434/v1/chat/completions", "costSource": "local-compute", "funder": "local", "contextSize": 8192 },
+    { "id": "local-gpu-gateway", "kind": "local", "provider": "my-gpu", "model": "coder", "endpoint": "http://127.0.0.1:9000/v1/chat/completions", "costSource": "local-compute", "funder": "local", "contextSize": 32768 }
+  ]
+}

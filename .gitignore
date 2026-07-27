@@ -1,0 +1,7 @@
+generated/
+workspaces/
+*.oc_iso/
+.oc-iso/
+*.log
+node_modules/
+.DS_Store

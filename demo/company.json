@@ -1,0 +1,32 @@
+{
+  "company": { "name": "Demo Co (Community Edition)", "brainoutputFundedInference": "forbidden" },
+  "modelConnections": [
+    { "id": "local-reasoning", "kind": "local", "provider": "ollama", "model": "qwen2.5-7b-32k:latest", "endpoint": "http://127.0.0.1:11434/v1/chat/completions", "costSource": "local-compute", "funder": "local", "contextSize": 32000 },
+    { "id": "local-coder", "kind": "local", "provider": "ollama", "model": "qwen2.5:7b", "endpoint": "http://127.0.0.1:11434/v1/chat/completions", "costSource": "local-compute", "funder": "local" },
+    { "id": "local-fast", "kind": "local", "provider": "ollama", "model": "qwen2.5:3b", "endpoint": "http://127.0.0.1:11434/v1/chat/completions", "costSource": "local-compute", "funder": "local" },
+    { "id": "example-byok-premium", "kind": "byok", "provider": "user-anthropic", "model": "claude-opus-4-8", "endpoint": "https://api.anthropic.com/v1/chat/completions", "apiKeyEnv": "USER_OWN_ANTHROPIC_KEY", "costSource": "user-subscription", "funder": "user", "_note": "example of a user's OWN premium model (BYOK); NOT used in the demo run and never BrainOutput's account" }
+  ],
+  "modelAssignments": {
+    "reasoning-premium": "local-reasoning",
+    "reasoning-free": "local-reasoning",
+    "coding-premium": "local-coder",
+    "coding-free": "local-coder",
+    "fast-cheap": "local-fast",
+    "multilingual": "local-fast",
+    "long-context": "local-reasoning",
+    "private-local": "local-reasoning",
+    "high-trust-review": "local-reasoning"
+  },
+  "_unassignedSlots": ["vision", "voice", "embeddings"],
+  "agents": [
+    { "id": "eng-architect", "department": "technical", "role": "architect", "objectives": ["turn objectives into a plan and a tested implementation"],
+      "capabilities": { "planner": "reasoning-premium", "worker": "coding-free", "reviewer": "high-trust-review" },
+      "tools": ["repo", "run-tests"], "permissions": ["read-repo", "write-branch"], "approvalThresholds": {}, "activation": "dormant" },
+    { "id": "cs-agent", "department": "customer-service", "role": "support", "objectives": ["answer customer questions in the customer's language"],
+      "capabilities": { "planner": "reasoning-free", "worker": "multilingual", "reviewer": "private-local" },
+      "tools": ["kb-search"], "permissions": ["read-kb", "send-reply-draft"], "approvalThresholds": {}, "activation": "dormant" },
+    { "id": "fin-controller", "department": "finance", "role": "controller", "objectives": ["process financial documents and reconcile; never move money without human approval"],
+      "capabilities": { "planner": "private-local", "worker": "fast-cheap", "reviewer": "high-trust-review", "vision": "vision" },
+      "tools": ["reconcile", "extract-invoice"], "permissions": ["read-ledger"], "approvalThresholds": { "payment": "human" }, "activation": "dormant" }
+  ]
+}

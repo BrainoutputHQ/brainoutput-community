@@ -1,0 +1,9 @@
+{
+  "_what": "Sample BYOK (bring-your-own-key) connections — YOUR OWN provider account/subscription. The key is NEVER stored in the company definition or an export: connections reference an ENV VAR NAME (apiKeyEnv), and you set that env var locally. Your key stays on your machine.",
+  "_setup": "export USER_OWN_ANTHROPIC_KEY=sk-...   (or your provider's key) before starting the app.",
+  "modelConnections": [
+    { "id": "my-anthropic", "kind": "byok", "provider": "user-anthropic", "model": "claude-opus-4-8", "endpoint": "https://api.anthropic.com/v1/chat/completions", "apiKeyEnv": "USER_OWN_ANTHROPIC_KEY", "costSource": "user-subscription", "funder": "user" },
+    { "id": "my-openai", "kind": "byok", "provider": "user-openai", "model": "gpt-4o", "endpoint": "https://api.openai.com/v1/chat/completions", "apiKeyEnv": "USER_OWN_OPENAI_KEY", "costSource": "user-api-account", "funder": "user" },
+    { "id": "my-openrouter", "kind": "byok", "provider": "user-openrouter", "model": "your/model", "endpoint": "https://openrouter.ai/api/v1/chat/completions", "apiKeyEnv": "USER_OWN_OPENROUTER_KEY", "costSource": "user-api-account", "funder": "user" }
+  ]
+}

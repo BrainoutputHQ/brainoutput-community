@@ -1,0 +1,19 @@
+{
+  "name": "brainoutput-community",
+  "version": "0.1.0-alpha.1",
+  "description": "BrainOutput Community Edition — a configurable, token-efficient AI company that runs on your own free / local / BYOK models. Zero BrainOutput-funded inference.",
+  "type": "module",
+  "license": "SEE LICENSE / alpha",
+  "engines": { "node": ">=18" },
+  "bin": { "bo-community": "./bo-community.mjs" },
+  "scripts": {
+    "setup": "node bo-community.mjs setup",
+    "serve": "node web-server.mjs",
+    "onboard": "node bo-ce-onboard.mjs",
+    "demo": "node bo-ce.mjs",
+    "store": "node bo-ce-store.mjs",
+    "test": "node --test *.test.mjs"
+  },
+  "files": ["*.mjs", "samples", "demo", "*.md"],
+  "keywords": ["ai-company", "local-llm", "byok", "ollama", "opencode", "zero-cost"]
+}

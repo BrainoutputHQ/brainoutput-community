@@ -1,0 +1,26 @@
+{
+  "_note": "Starter company for BrainOutput Community Edition. Runs on YOUR local models (here: ollama qwen2.5). No BrainOutput account, credits, Claude, or Kimi. Run `bo-community onboard` to auto-detect your own models, or edit modelConnections below.",
+  "company": { "name": "Starter Studio", "brainoutputFundedInference": "forbidden" },
+  "departments": ["technical", "customer-service", "finance"],
+  "modelConnections": [
+    { "id": "local-small", "kind": "local", "provider": "ollama", "model": "qwen2.5:3b", "endpoint": "http://127.0.0.1:11434/v1/chat/completions", "costSource": "local-compute", "funder": "local", "contextSize": 8192 },
+    { "id": "local-coder", "kind": "local", "provider": "ollama", "model": "qwen2.5:7b", "endpoint": "http://127.0.0.1:11434/v1/chat/completions", "costSource": "local-compute", "funder": "local", "contextSize": 8192 }
+  ],
+  "modelAssignments": {
+    "reasoning-premium": "local-coder",
+    "reasoning-free": "local-small",
+    "coding-premium": "local-coder",
+    "coding-free": "local-coder",
+    "fast-cheap": "local-small",
+    "multilingual": "local-small",
+    "long-context": "local-coder",
+    "private-local": "local-coder",
+    "high-trust-review": "local-coder"
+  },
+  "_unassignedSlots": ["vision", "voice", "embeddings"],
+  "agents": [
+    { "id": "technical-architect", "department": "technical", "role": "architect", "capabilities": { "planner": "reasoning-premium", "worker": "coding-free", "reviewer": "high-trust-review" }, "tools": ["repo", "run-tests"], "permissions": ["read-repo", "write-branch"], "approvalThresholds": { "deploy": "human" }, "activation": "dormant" },
+    { "id": "customer-service-support", "department": "customer-service", "role": "support", "capabilities": { "planner": "reasoning-free", "worker": "multilingual", "reviewer": "private-local" }, "tools": ["kb-search"], "permissions": ["read-kb", "send-reply-draft"], "approvalThresholds": {}, "activation": "dormant" },
+    { "id": "finance-controller", "department": "finance", "role": "controller", "capabilities": { "planner": "private-local", "worker": "fast-cheap", "reviewer": "high-trust-review", "vision": "vision" }, "tools": ["reconcile", "extract-invoice"], "permissions": ["read-ledger"], "approvalThresholds": { "payment": "human", "transfer": "human" }, "activation": "dormant" }
+  ]
+}
