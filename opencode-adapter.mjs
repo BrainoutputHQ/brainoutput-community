@@ -7,8 +7,39 @@ import { writeFileSync, mkdirSync, readFileSync, existsSync, copyFileSync } from
 import { execFileSync } from "node:child_process";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
+import { approvedWorkspaceRoots, resolveApprovedWorkspace } from "./workspace-registry.mjs";
 
 const HOME = process.env.HOME || homedir();
+
+// Host-owned-credentials invariant: the sandboxed executor must receive NO credential-looking env
+// var except the user's own model key (a user-funded connection's named apiKeyEnv). This defends
+// against a hosted/founder credential (Anthropic/Kimi/…) leaking into the child even if one sits in
+// the host process env. The executor never holds any credential the host didn't explicitly grant it.
+const CREDENTIAL_ENV = /ANTHROPIC|CLAUDE|KIMI|MOONSHOT|OPENAI|OPENROUTER|GROQ|GEMINI|MISTRAL|_API_KEY|_TOKEN|SECRET|PASSWORD|CREDENTIAL/i;
+
+// Fail-closed guard: throw if `env` carries any credential var other than the connection's own user key.
+export function assertHostOwnedCredentials(env, connection) {
+  const allowed = connection && connection.funder === "user" ? connection.apiKeyEnv : null;
+  for (const k of Object.keys(env)) {
+    if (k === allowed) continue;
+    if (CREDENTIAL_ENV.test(k))
+      throw new Error(`executor env would leak a host credential (${k}); the host owns credentials — the executor gets only the user's own model key`);
+  }
+}
+
+// Build the MINIMAL executor env from a whitelist. Only a user-funded connection's own key is passed
+// through — never a hosted/founder credential, even one present in the host env. Guarded fail-closed.
+export function buildExecutorEnv(connection, iso) {
+  const env = {
+    HOME: iso, XDG_CONFIG_HOME: join(iso, ".config"), XDG_DATA_HOME: join(iso, ".local", "share"),
+    XDG_CACHE_HOME: join(iso, ".cache"), PATH: `${dirname(OPENCODE_BIN)}:/usr/local/bin:/usr/bin:/bin`,
+    OPENCODE_DISABLE_AUTOUPDATE: "1", OPENCODE_DISABLE_DEFAULT_PLUGINS: "1",
+  };
+  if (connection && connection.funder === "user" && connection.apiKeyEnv && process.env[connection.apiKeyEnv])
+    env[connection.apiKeyEnv] = process.env[connection.apiKeyEnv];
+  assertHostOwnedCredentials(env, connection);
+  return env;
+}
 // The user's opencode binary (installed by `opencode` / `opencode upgrade`). Override with
 // BO_OPENCODE_BIN if it lives elsewhere.
 const OPENCODE_BIN = process.env.BO_OPENCODE_BIN || join(HOME, ".opencode", "bin", "opencode");
@@ -50,12 +81,16 @@ export function connectionToConfig(connection) {
 
 // Run a real OpenCode task. Returns structured result with logs, changed files, model, provider,
 // cost source, tokens. NEVER touches BrainOutput's own hosted paid models (isolated env + disabled providers).
-export function runOpenCode({ connection, prompt, workspace, effort, isoBase, timeoutMs = 240000 }) {
+export function runOpenCode({ connection, prompt, workspace, effort, isoBase, timeoutMs = 240000, approvedRoots }) {
   const { modelRef, config } = connectionToConfig(connection);
+  // Approved-workspace registry (prod-readiness gap: repo registry): confine ALL file ops to an
+  // approved root and refuse fail-closed if the requested path escapes it (traversal / absolute host
+  // path / symlink escape). The canonicalized path `ws` is used everywhere below.
+  const ws = resolveApprovedWorkspace(workspace, { roots: approvedRoots || approvedWorkspaceRoots(), create: true });
   // The isolated HOME must live OUTSIDE the workspace — if it's inside, opencode scans its own
   // config/cache as part of the project at init and hangs. Use a sibling dir.
-  const iso = isoBase || `${workspace.replace(/\/+$/, "")}__oc_iso`;
-  mkdirSync(workspace, { recursive: true });   // ensure the task workspace exists (git init below needs it)
+  const iso = isoBase || `${ws.replace(/\/+$/, "")}__oc_iso`;
+  mkdirSync(ws, { recursive: true });   // ensure the task workspace exists (git init below needs it)
   mkdirSync(join(iso, ".config", "opencode"), { recursive: true });
   mkdirSync(join(iso, ".local", "share", "opencode"), { recursive: true });
   mkdirSync(join(iso, ".cache", "opencode"), { recursive: true });
@@ -68,33 +103,27 @@ export function runOpenCode({ connection, prompt, workspace, effort, isoBase, ti
   } catch {}
   writeFileSync(join(iso, ".config", "opencode", "opencode.json"), JSON.stringify(config, null, 2));
   // workspace permissions: allow work IN the workspace, deny reaching outside it or the network.
-  writeFileSync(join(workspace, "opencode.json"), JSON.stringify({
+  writeFileSync(join(ws, "opencode.json"), JSON.stringify({
     $schema: "https://opencode.ai/config.json",
     permission: { edit: "allow", write: "allow", bash: "allow", webfetch: "deny", external_directory: "deny" },
   }));
-  if (!existsSync(join(workspace, ".git"))) { try { execFileSync("git", ["-C", workspace, "init", "-q"]); } catch {} }
-  try { execFileSync("git", ["-C", workspace, "add", "-A"]); execFileSync("git", ["-C", workspace, "-c", "user.email=ce@local", "-c", "user.name=ce", "commit", "-qm", "pre", "--allow-empty"]); } catch {}
+  if (!existsSync(join(ws, ".git"))) { try { execFileSync("git", ["-C", ws, "init", "-q"]); } catch {} }
+  try { execFileSync("git", ["-C", ws, "add", "-A"]); execFileSync("git", ["-C", ws, "-c", "user.email=ce@local", "-c", "user.name=ce", "commit", "-qm", "pre", "--allow-empty"]); } catch {}
 
   // --pure skips external plugins, which avoids opencode's slow background `bun install` at startup
   // (that ~60s step is what looked like an "init hang"). Provider config still loads.
   const args = ["run", "--pure", "--model", modelRef, "--print-logs", "--log-level", "INFO"];
   if (effort) args.push("--variant", effort);
   args.push(prompt);
-  // Minimal env matching the known-good manual run. --pure + DISABLE_DEFAULT_PLUGINS avoid the
-  // background `bun install` that looked like an "init hang"; nothing else is needed.
-  const env = {
-    HOME: iso, XDG_CONFIG_HOME: join(iso, ".config"), XDG_DATA_HOME: join(iso, ".local", "share"),
-    XDG_CACHE_HOME: join(iso, ".cache"), PATH: `${dirname(OPENCODE_BIN)}:/usr/local/bin:/usr/bin:/bin`,
-    OPENCODE_DISABLE_AUTOUPDATE: "1", OPENCODE_DISABLE_DEFAULT_PLUGINS: "1",
-  };
-  // pass through ONLY the user's own BYOK key env var, if the connection names one (never founder keys).
-  if (connection.apiKeyEnv && process.env[connection.apiKeyEnv]) env[connection.apiKeyEnv] = process.env[connection.apiKeyEnv];
+  // Host-owned credentials (prod-readiness gap): minimal whitelisted env; only the user's own model
+  // key is granted, guarded fail-closed against any hosted/founder credential leaking in.
+  const env = buildExecutorEnv(connection, iso);
 
   return new Promise((resolve) => {
     let out = "", err = "";
     // stdin MUST be closed (ignore) — with an open stdin pipe opencode waits for interactive input
     // and hangs at init. stdout/stderr are captured.
-    const p = spawn(OPENCODE_BIN, args, { cwd: workspace, env, stdio: ["ignore", "pipe", "pipe"] });
+    const p = spawn(OPENCODE_BIN, args, { cwd: ws, env, stdio: ["ignore", "pipe", "pipe"] });
     const timer = setTimeout(() => p.kill("SIGKILL"), timeoutMs);
     p.stdout.on("data", (d) => (out += d));
     p.stderr.on("data", (d) => (err += d));
@@ -103,8 +132,8 @@ export function runOpenCode({ connection, prompt, workspace, effort, isoBase, ti
       const log = err + out;
       // changed files = git diff since the pre-commit (the real evidence of what OpenCode did)
       let changedFiles = [];
-      try { changedFiles = execFileSync("git", ["-C", workspace, "diff", "--name-only", "HEAD"], { encoding: "utf8" }).split("\n").filter(Boolean).filter((f) => f !== "opencode.json"); } catch {}
-      try { changedFiles.push(...execFileSync("git", ["-C", workspace, "ls-files", "--others", "--exclude-standard"], { encoding: "utf8" }).split("\n").filter(Boolean).filter((f) => f !== "opencode.json" && !f.startsWith(".oc-iso"))); } catch {}
+      try { changedFiles = execFileSync("git", ["-C", ws, "diff", "--name-only", "HEAD"], { encoding: "utf8" }).split("\n").filter(Boolean).filter((f) => f !== "opencode.json"); } catch {}
+      try { changedFiles.push(...execFileSync("git", ["-C", ws, "ls-files", "--others", "--exclude-standard"], { encoding: "utf8" }).split("\n").filter(Boolean).filter((f) => f !== "opencode.json" && !f.startsWith(".oc-iso"))); } catch {}
       const providersUsed = [...new Set((log.match(/llm\.provider=([a-z0-9-]+)/gi) || []).map((s) => s.split("=")[1]))];
       const tokens = (log.match(/tokens\.output=(\d+)/g) || []).reduce((s, m) => s + Number(m.split("=")[1]), 0);
       const founderLeak = /api\.anthropic\.com|api\.kimi\.com|kimi-for-coding/i.test(log);

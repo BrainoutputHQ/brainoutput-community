@@ -22,9 +22,14 @@ It runs on your machine; there is no hosted BrainOutput service involved.
   anything that touches money, customers, code you'll ship, or production systems.
 
 ## Data & isolation (alpha limitations)
-- Coding tasks run with file access. Point them at a **throwaway/sandboxed working directory**, not
-  a production repository. On this alpha, treat all execution as **untrusted** and run it on a
-  machine you can afford to have modified.
+- Coding tasks run with file access, but are **confined to an approved workspace root** (by default
+  `<data-dir>/workspaces`; extend with `BO_CE_WORKSPACE_ROOTS`). A task whose path escapes that root
+  — traversal, an absolute host path, or a symlink escape — is **refused fail-closed** before the
+  executor starts. Still: point tasks at a **throwaway directory**, not a production repository, and
+  treat all execution as **untrusted** on this alpha.
+- Coding runs on an **isolated environment that receives only the model key you configured** — never
+  a hosted/founder credential, even if one exists in your shell. The executor cannot reach the
+  network for model calls beyond your configured endpoint (`webfetch`/external-dir denied).
 - Local persistence is plain JSON under `~/.local/share/bo-community` (or `$BO_CE_DATA`). Back it up
   if it matters; it is not encrypted.
 - No warranty. Do not use for anything safety-, security-, financial-, or legally-critical.

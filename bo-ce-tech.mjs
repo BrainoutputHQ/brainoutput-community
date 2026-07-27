@@ -45,7 +45,7 @@ if (planner && !planner.model?.needsConfiguration) {
 
 const prompt = `${plan ? "Follow PLAN.md in this directory. " : ""}${objective} Use the write tool to create the file(s) with RELATIVE paths in the current working directory (do not use absolute paths). Keep it minimal. When the file(s) exist, stop.`;
 console.log(`\n[worker · REAL OpenCode ${worker.model.provider}/${worker.model.model}] executing …`);
-const res = await runOpenCode({ connection: worker.model.connection, prompt, workspace: ws, effort: worker.model.connection.effort, timeoutMs: Number(A("--timeout-ms", "240000")) });
+const res = await runOpenCode({ connection: worker.model.connection, prompt, workspace: ws, effort: worker.model.connection.effort, timeoutMs: Number(A("--timeout-ms", "240000")), approvedRoots: [join(HERE, "generated")] });
 
 console.log(`\n================ RESULT ================`);
 console.log(`exit: ${res.exitCode} · providers actually used: [${res.providersUsed.join(", ") || "none"}] · paid-credential used: ${res.founderCredentialUsed ? "YES ✗" : "NO ✓"}`);

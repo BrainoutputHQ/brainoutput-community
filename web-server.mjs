@@ -86,6 +86,7 @@ async function runTask(res, b) {
     if (isCoding) {
       try {
         const oc = await runOpenCode({ connection: node.model.connection, workspace: codeWs, timeoutMs: 240000,
+          approvedRoots: [join(store.dir, "workspaces")],
           prompt: `${b.objective} Use the write tool to create the file(s) with RELATIVE paths in the current directory, then stop.` });
         const files = (oc.changedFiles || []).map((f) => { try { return { name: f, content: readFileSync(join(codeWs, f), "utf8").slice(0, 4000) }; } catch { return { name: f, content: "" }; } });
         results.push({ node: node.node, executor: "opencode", model: oc.model, provider: oc.provider, costSource: oc.costSource, funder: oc.funder,
