@@ -14,6 +14,11 @@ const DEFAULT_DIR = process.env.BO_CE_DATA || join(process.env.HOME || ".", ".lo
 const EMPTY_DEF = { company: { name: "", brainoutputFundedInference: "forbidden" }, departments: [], agents: [], modelConnections: [], modelAssignments: {}, policies: {} };
 const EMPTY_RUNTIME = { projects: [], tasks: [], executions: [], artifacts: [], approvals: [] };
 
+// Runtime history bounds: runtime.json must not grow without limit. Oldest records are dropped
+// first; ACTIVE records (running/pending tasks, pending approvals) are never dropped.
+export const HISTORY_LIMITS = { projects: 100, tasks: 200, executions: 200, artifacts: 500, approvals: 200 };
+const ACTIVE_STATUS = new Set(["running", "pending"]);
+
 // Fields that must NEVER be written into a connection (defense in depth — apiKeyEnv is a NAME, not a key).
 const SECRET_FIELDS = ["apiKey", "key", "token", "secret", "password"];
 function stripSecrets(conn) {
@@ -23,10 +28,11 @@ function stripSecrets(conn) {
 }
 
 export class Store {
-  constructor(dir = DEFAULT_DIR) {
+  constructor(dir = DEFAULT_DIR, { historyLimits } = {}) {
     this.dir = dir;
     this.defPath = join(dir, "definition.json");
     this.runtimePath = join(dir, "runtime.json");
+    this.historyLimits = { ...HISTORY_LIMITS, ...(historyLimits || {}) };
     mkdirSync(dir, { recursive: true });
     this.def = this._read(this.defPath, EMPTY_DEF);
     this.runtime = this._read(this.runtimePath, EMPTY_RUNTIME);
@@ -34,7 +40,18 @@ export class Store {
   _read(p, fallback) { try { return existsSync(p) ? JSON.parse(readFileSync(p, "utf8")) : structuredClone(fallback); } catch { return structuredClone(fallback); } }
   _atomicWrite(p, obj) { const tmp = `${p}.tmp`; writeFileSync(tmp, JSON.stringify(obj, null, 2) + "\n"); renameSync(tmp, p); }
   saveDefinition() { this.def.modelConnections = (this.def.modelConnections || []).map(stripSecrets); this._atomicWrite(this.defPath, this.def); return this; }
-  saveRuntime() { this._atomicWrite(this.runtimePath, this.runtime); return this; }
+  saveRuntime() { this._boundHistory(); this._atomicWrite(this.runtimePath, this.runtime); return this; }
+
+  // Keep the NEWEST `limit` records per collection; ACTIVE records are additionally always kept
+  // (may exceed the limit until they resolve — active work is never dropped).
+  _boundHistory() {
+    for (const [coll, limit] of Object.entries(this.historyLimits)) {
+      const list = this.runtime[coll];
+      if (!Array.isArray(list) || list.length <= limit) continue;
+      const cutoff = list.length - limit;
+      this.runtime[coll] = list.filter((rec, i) => i >= cutoff || (rec && ACTIVE_STATUS.has(rec.status)));
+    }
+  }
   save() { return this.saveDefinition().saveRuntime(); }
 
   // ── definition setters ────────────────────────────────────────────────────────────────────

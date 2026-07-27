@@ -37,7 +37,9 @@ async function detectLocal() {
 }
 const catalog = makeCatalog([]);
 const ctx = () => ({ agents: store.def.agents, assignments: store.def.modelAssignments, connections: store.def.modelConnections, catalog, departments: DEPARTMENT_TEMPLATES });
-const uid = (p) => `${p}-${store.runtime.executions.length + store.runtime.tasks.length + 1}-${Math.floor(process.hrtime()[1] / 1e3)}`;
+// History-bounded store: ids must NOT derive from collection lengths (they shrink on trim).
+let uidCounter = 0;
+const uid = (p) => `${p}-${Date.now().toString(36)}-${(uidCounter += 1)}`;
 
 async function body(req) { return new Promise((res) => { let d = ""; req.on("data", (c) => (d += c)); req.on("end", () => { try { res(d ? JSON.parse(d) : {}); } catch { res({}); } }); }); }
 const json = (res, obj, code = 200) => { res.writeHead(code, { "Content-Type": "application/json" }); res.end(JSON.stringify(obj)); };
