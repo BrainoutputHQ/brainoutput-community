@@ -12,8 +12,9 @@
     "onboard": "node bo-ce-onboard.mjs",
     "demo": "node bo-ce.mjs",
     "store": "node bo-ce-store.mjs",
-    "test": "node --test *.test.mjs"
+    "test": "node --test *.test.mjs",
+    "smoke:community-clean": "node smoke-clean.mjs"
   },
-  "files": ["*.mjs", "samples", "demo", "*.md"],
+  "files": ["*.mjs", "install.sh", "samples", "demo", "*.md"],
   "keywords": ["ai-company", "local-llm", "byok", "ollama", "opencode", "zero-cost"]
 }

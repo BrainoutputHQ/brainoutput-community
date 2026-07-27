@@ -38,7 +38,13 @@ async function scenario(title, objective, req, inputs) {
   console.log(`objective: ${objective}`);
   if (!r.ok) { console.log(`  routing failed: ${r.reason}`); return { funded: 0 }; }
   console.log(`agent: ${r.agent} (dept ${r.department}) · graph: ${r.shape} · nodes: ${r.plan.map((n) => n.node + (n.model?.model ? `[${n.model.model}]` : n.tool ? `[tool:${n.tool}]` : n.gate ? "[approval]" : n.model?.needsConfiguration ? "[UNCONFIGURED]" : "")).join(" → ")}`);
-  const results = await executePlan(r.plan, inputs, { dryRun: DRY, maxTokens: 300 });
+  let results;
+  try {
+    results = await executePlan(r.plan, inputs, { dryRun: DRY, maxTokens: 300 });
+  } catch (e) {
+    console.log(`  ✗ model call failed: ${e.code || e.message} — connect a local/free/BYOK model (see samples/connections.*.json), or re-run with --dry to skip inference.`);
+    return { funded: 0 };
+  }
   const rep = costReport(results);
   for (const n of rep.nodes) {
     const res = results.find((x) => x.node === n.node);
