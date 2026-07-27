@@ -4,7 +4,7 @@
 // no-paid-fallback, and routing. Pure logic — no network, no model calls. run: node --test
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { CAPABILITY_SLOTS, validateConnection, makeCatalog, planGraph, selectModel, routeTask, assertZeroFunded, costReport, executionSummary } from "./ce-core.mjs";
+import { CAPABILITY_SLOTS, validateConnection, makeCatalog, planGraph, selectModel, routeTask, assertZeroFunded, costReport, executionSummary, validateCompanyConfig } from "./ce-core.mjs";
 
 const LOCAL = { id: "local-a", kind: "local", provider: "ollama", model: "qwen2.5:7b", costSource: "local-compute", funder: "local" };
 const FREE = { id: "free-a", kind: "opencode-free", provider: "opencode-free", model: "some-free", costSource: "free", funder: "free" };
@@ -75,6 +75,80 @@ test("routeTask THROWS if an assignment would use BrainOutput-funded inference",
   const bad = { id: "b", kind: "x", provider: "p", model: "m", costSource: "free", funder: "brainoutput" };
   const ctx = { agents, assignments: { "coding-free": "b" }, connections: [bad], catalog: makeCatalog([]) };
   assert.throws(() => routeTask({ department: "d", task: { complexity: "low", workerSlot: "coding-free" } }, ctx), /brainoutput|forbidden|funded|not user/i);
+});
+
+const VALID_CFG = {
+  company: { name: "T", brainoutputFundedInference: "forbidden" },
+  agents: [{ id: "a1", department: "technical", role: "architect", capabilities: { planner: "reasoning-free", worker: "coding-free" } }],
+  modelConnections: [LOCAL, FREE],
+  modelAssignments: { "reasoning-free": "free-a", "coding-free": "local-a" },
+};
+
+test("validateCompanyConfig: a valid minimal config passes with no errors", () => {
+  const v = validateCompanyConfig(VALID_CFG);
+  assert.equal(v.ok, true);
+  assert.deepEqual(v.errors, []);
+});
+
+test("validateCompanyConfig: rejects non-object / missing required sections", () => {
+  assert.equal(validateCompanyConfig(null).ok, false);
+  assert.equal(validateCompanyConfig([]).ok, false);
+  const v = validateCompanyConfig({ company: { name: "x" } });
+  assert.equal(v.ok, false);
+  assert.ok(v.errors.some((e) => /agents/.test(e)));
+  assert.ok(v.errors.some((e) => /modelConnections/.test(e)));
+  assert.ok(v.errors.some((e) => /modelAssignments/.test(e)));
+});
+
+test("validateCompanyConfig: fail-closed on BrainOutput-funded or credential-abusing connections", () => {
+  const bad = { ...FREE, id: "evil", funder: "brainoutput" };
+  const v = validateCompanyConfig({ ...VALID_CFG, modelConnections: [LOCAL, bad] });
+  assert.equal(v.ok, false);
+  assert.ok(v.errors.some((e) => /evil.*(brainoutput|forbidden|not user)/i.test(e)));
+  const v2 = validateCompanyConfig({ ...VALID_CFG, company: { name: "x", brainoutputFundedInference: "allowed" } });
+  assert.equal(v2.ok, false);
+  assert.ok(v2.errors.some((e) => /forbidden/.test(e)));
+});
+
+test("validateCompanyConfig: unknown slots, dangling assignments, and duplicate ids are errors", () => {
+  const v = validateCompanyConfig({
+    ...VALID_CFG,
+    agents: [...VALID_CFG.agents, { ...VALID_CFG.agents[0], capabilities: { worker: "not-a-slot" } }],
+    modelConnections: [LOCAL, FREE, { ...LOCAL }],
+    modelAssignments: { "coding-free": "ghost", "made-up-slot": "local-a" },
+  });
+  assert.equal(v.ok, false);
+  assert.ok(v.errors.some((e) => /duplicate agent id/.test(e)));
+  assert.ok(v.errors.some((e) => /unknown slot 'not-a-slot'/.test(e)));
+  assert.ok(v.errors.some((e) => /duplicate connection id/.test(e)));
+  assert.ok(v.errors.some((e) => /unknown connection 'ghost'/.test(e)));
+  assert.ok(v.errors.some((e) => /unknown capability slot 'made-up-slot'/.test(e)));
+});
+
+test("validateCompanyConfig: agent outside declared departments is an error", () => {
+  const v = validateCompanyConfig({ ...VALID_CFG, departments: ["sales"] });
+  assert.equal(v.ok, false);
+  assert.ok(v.errors.some((e) => /'a1'.*not a declared department/.test(e)));
+  // without an explicit departments array it derives from agents (no error)
+  assert.equal(validateCompanyConfig({ ...VALID_CFG, departments: undefined }).ok, true);
+});
+
+test("validateCompanyConfig: unassigned referenced slot is a WARNING, not an error (never paid)", () => {
+  const cfg = { ...VALID_CFG, modelAssignments: {}, agents: [{ ...VALID_CFG.agents[0], capabilities: { worker: "vision" } }] };
+  const v = validateCompanyConfig(cfg);
+  assert.equal(v.ok, true);
+  assert.ok(v.warnings.some((w) => /'vision' unassigned.*needConfiguration/.test(w)));
+  const v2 = validateCompanyConfig({ ...VALID_CFG, modelAssignments: {} }); // *-free slots
+  assert.equal(v2.ok, true);
+  assert.ok(v2.warnings.some((w) => /'coding-free' unassigned — free-catalog fallback/.test(w)));
+});
+
+test("validateCompanyConfig: the shipped demo/company.json passes preflight", async () => {
+  const { readFileSync } = await import("node:fs");
+  const cfg = JSON.parse(readFileSync(new URL("./demo/company.json", import.meta.url), "utf8"));
+  const v = validateCompanyConfig(cfg);
+  assert.equal(v.ok, true, v.errors.join("; "));
+  assert.ok(v.warnings.some((w) => /'vision' unassigned/.test(w)));      // demo C relies on this
 });
 
 test("executionSummary: a local $0 run is zeroFundedOk with no BrainOutput-funded tokens", () => {

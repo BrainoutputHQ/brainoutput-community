@@ -6,7 +6,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { routeTask, makeCatalog, costReport } from "./ce-core.mjs";
+import { routeTask, makeCatalog, costReport, validateCompanyConfig } from "./ce-core.mjs";
 import { executePlan } from "./adapters.mjs";
 import { DEPARTMENT_TEMPLATES } from "./departments.mjs";
 
@@ -15,6 +15,16 @@ const cfgArgI = process.argv.indexOf("--config");
 const cfgPath = cfgArgI > 0 ? process.argv[cfgArgI + 1] : join(HERE, "demo", "company.json");
 const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
 const DRY = process.argv.includes("--dry");
+
+// Preflight: validate the whole company config before any routing/execution. Errors are fatal.
+const pre = validateCompanyConfig(cfg);
+for (const w of pre.warnings) console.log(`preflight warning: ${w}`);
+if (!pre.ok) {
+  for (const e of pre.errors) console.error(`preflight ERROR: ${e}`);
+  console.error(`✗ company config invalid (${cfgPath}); fix the errors above and re-run.`);
+  process.exit(2);
+}
+console.log(`preflight: company config OK (${pre.errors.length} errors, ${pre.warnings.length} warnings)`);
 
 // Refreshable free-model catalog (health-checked). The free profile picks only from here.
 const catalog = makeCatalog([

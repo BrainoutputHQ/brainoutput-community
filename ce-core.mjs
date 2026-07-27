@@ -104,6 +104,86 @@ export function selectModel(slot, { assignments, connections, catalog, departmen
 }
 
 /**
+ * Preflight a WHOLE company config before any execution. Returns { ok, errors, warnings } —
+ * never throws. Errors make the config unrunnable (invalid connection, unknown slot, dangling
+ * assignment, duplicate ids); warnings are safe-but-noteworthy (unassigned slot → free-catalog
+ * fallback or needsConfiguration at runtime). Fail-closed on the zero-funded invariant via
+ * validateConnection. Pure; no I/O.
+ */
+export function validateCompanyConfig(cfg) {
+  const errors = [], warnings = [];
+  if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) return { ok: false, errors: ["company config must be an object"], warnings };
+
+  const company = cfg.company || {};
+  if (!company.name && !cfg.name) warnings.push("company.name is empty");
+  if ((company.brainoutputFundedInference || "forbidden") !== "forbidden")
+    errors.push("company.brainoutputFundedInference must be 'forbidden' (Community invariant)");
+
+  // departments are optional — store.mjs derives them from agents — but if present they bind.
+  const departments = cfg.departments;
+  const deptList = Array.isArray(departments) ? departments : [...new Set((cfg.agents || []).map((a) => a?.department).filter(Boolean))];
+  for (const d of deptList) if (typeof d !== "string" || !d) errors.push("departments entries must be non-empty strings");
+  if (new Set(deptList).size !== deptList.length) errors.push("departments contain duplicates");
+  if (deptList.length === 0) warnings.push("no departments declared and none derivable from agents");
+
+  const agents = cfg.agents;
+  if (!Array.isArray(agents) || agents.length === 0) {
+    errors.push("agents must be a non-empty array");
+  } else {
+    const seen = new Set();
+    for (const a of agents) {
+      if (!a || typeof a !== "object" || !a.id || !a.department || !a.role) {
+        errors.push(`agent missing id/department/role: ${JSON.stringify(a && typeof a === "object" ? a.id ?? a : a)}`);
+        continue;
+      }
+      if (seen.has(a.id)) errors.push(`duplicate agent id '${a.id}'`);
+      seen.add(a.id);
+      if (!deptList.includes(a.department)) errors.push(`agent '${a.id}' department '${a.department}' is not a declared department`);
+      for (const [cap, slot] of Object.entries(a.capabilities || {}))
+        if (slot && !CAPABILITY_SLOTS.includes(slot)) errors.push(`agent '${a.id}' capability '${cap}' uses unknown slot '${slot}'`);
+    }
+  }
+
+  const conns = cfg.modelConnections;
+  const connIds = new Set();
+  if (!Array.isArray(conns)) {
+    errors.push("modelConnections must be an array");
+  } else {
+    for (const c of conns) {
+      const v = validateConnection(c);
+      if (!v.ok) { errors.push(`connection '${c?.id ?? "?"}' invalid: ${v.reason}`); continue; }
+      if (connIds.has(c.id)) errors.push(`duplicate connection id '${c.id}'`);
+      connIds.add(c.id);
+    }
+    if (conns.length === 0) warnings.push("no model connections — every slot will need configuration at runtime");
+  }
+
+  const assignments = cfg.modelAssignments;
+  if (!assignments || typeof assignments !== "object" || Array.isArray(assignments)) {
+    errors.push("modelAssignments must be an object mapping capability slot → connection id");
+  } else {
+    for (const [slot, connId] of Object.entries(assignments)) {
+      if (!CAPABILITY_SLOTS.includes(slot)) errors.push(`modelAssignments uses unknown capability slot '${slot}'`);
+      if (!connIds.has(connId)) errors.push(`modelAssignments '${slot}' → unknown connection '${connId}'`);
+    }
+  }
+
+  // Warn on capability slots agents reference that have no assignment (runtime falls back to the
+  // free catalog for *-free slots; anything else surfaces needsConfiguration — never paid).
+  if (Array.isArray(agents) && assignments && typeof assignments === "object") {
+    const referenced = new Set();
+    for (const a of agents) for (const slot of Object.values(a?.capabilities || {})) if (slot) referenced.add(slot);
+    for (const slot of referenced)
+      if (!(slot in assignments))
+        warnings.push(/-free$/.test(slot)
+          ? `slot '${slot}' unassigned — free-catalog fallback at runtime`
+          : `slot '${slot}' unassigned — tasks using it will needConfiguration (free/byok/local/stop, never paid)`);
+  }
+
+  return { ok: errors.length === 0, errors, warnings };
+}
+
+/**
  * Route ONE task to an agent, a smallest execution graph, and a model per node — all user/free/
  * local. Throws if any resolved node would use BrainOutput-funded inference (fail-closed).
  */
