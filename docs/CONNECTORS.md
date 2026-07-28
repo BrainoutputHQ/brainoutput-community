@@ -48,3 +48,27 @@ runs; anything `requiresApproval` stops at the human-approval gate.
 
 Initial targets: **GitHub · Jira · Odoo · Zendesk · Twilio** + generic **MCP · OpenAPI · RAG/file ·
 chat** connectors. Tests: `connectors.test.mjs`.
+
+## RAG & chat knowledge — read-only (`rag.mjs`)
+
+Connect documents or chat sources as **read-only knowledge**:
+
+- **Resource/channel selection** — pick the docs (`resources`) or chat channels (`channels`).
+- **Searchable indexing** — `indexDocuments` chunks a source; `searchRag` scores by term frequency.
+- **Source citations** — every result carries `source` + `locator` (e.g. `KB — policy.md`, `#support#m1`).
+- **Access control** — `accessControl.{departments|agents}` gates who may read (null = all).
+- **Retention** — `retentionDays`; expired chunks drop out of search and `pruneRetention` removes them.
+- **read ≠ draft ≠ send** — `ragActionPlan`: reading/searching is allowed by default; drafting a reply
+  is allowed (nothing leaves); **sending** goes through the connector's `communicate` scope — an
+  explicit grant **and** human approval. An agent may read a connected chat; it can only reply once
+  permissions + approvals allow.
+
+```js
+import { connectRagSource, indexDocuments, searchRag } from "./rag.mjs";
+let kb = connectRagSource({ id: "kb", resources: ["policy.md"], accessControl: { departments: ["customer-service"] }, retentionDays: 90 });
+kb = indexDocuments(kb, [{ id: "policy", resource: "policy.md", text: "Refunds within 30 days." }]);
+searchRag([kb], "refund policy", { agent: { department: "customer-service" } });
+// → [{ text: "Refunds within 30 days.", citation: "Generic RAG/file — policy.md", score: … }]
+```
+
+Tests: `rag.test.mjs`.
