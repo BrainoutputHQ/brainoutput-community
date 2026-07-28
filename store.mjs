@@ -8,6 +8,7 @@
 // Credentials never live here — they stay in the user's environment/local, separate from any
 // exported company definition. ESM, zero-dep.
 import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync, chmodSync } from "node:fs";
+import { basename } from "node:path";
 import { randomBytes, createCipheriv, createDecipheriv } from "node:crypto";
 import { join } from "node:path";
 
@@ -42,7 +43,24 @@ export class Store {
     this.def = this._read(this.defPath, EMPTY_DEF);
     this.runtime = this._read(this.runtimePath, EMPTY_RUNTIME);
   }
-  _read(p, fallback) { try { return existsSync(p) ? JSON.parse(readFileSync(p, "utf8")) : structuredClone(fallback); } catch { return structuredClone(fallback); } }
+  /**
+   * Read a store file. A file that cannot be parsed is NEVER silently treated as empty: falling back
+   * quietly means the next save overwrites it, and the user's company — agents, connections,
+   * assignments — is gone for good. The unreadable file is preserved beside the store and reported.
+   */
+  _read(p, fallback) {
+    if (!existsSync(p)) return structuredClone(fallback);
+    try { return JSON.parse(readFileSync(p, "utf8")); }
+    catch (e) {
+      const kept = `${p}.corrupt-${Date.now()}`;
+      try { renameSync(p, kept); } catch {}
+      (this.recovered ||= []).push({ file: basename(p), preservedAs: basename(kept), reason: e.message });
+      console.error(`⚠ ${basename(p)} could not be read: ${e.message}`);
+      console.error(`  The unreadable file was kept as ${basename(kept)} — nothing was overwritten.`);
+      console.error(`  Starting from an empty company. Restore that file, or import a backup with: bo-community store import <file>`);
+      return structuredClone(fallback);
+    }
+  }
   _atomicWrite(p, obj) {
     const tmp = `${p}.tmp`;
     writeFileSync(tmp, JSON.stringify(obj, null, 2) + "\n", { mode: 0o600 });

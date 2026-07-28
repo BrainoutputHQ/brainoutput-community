@@ -632,7 +632,7 @@ async function chatLaunch(res, b) {
 
 function publicState() {
   const funded = store.runtime.executions.reduce((s, e) => s + (e.brainoutputFundedTokens || 0), 0);
-  return { company: store.def.company, settings: store.def.settings || { mode: "regular" }, departments: store.def.departments, agents: store.def.agents,
+  return { recovered: store.recovered || null, company: store.def.company, settings: store.def.settings || { mode: "regular" }, departments: store.def.departments, agents: store.def.agents,
     connections: store.def.modelConnections, assignments: store.def.modelAssignments,
     agentViews: store.def.agents.map((a) => renderAgentView(a, store.def.modelAssignments, store.def.modelConnections)),
     tasks: store.runtime.tasks, executions: store.runtime.executions, approvals: store.runtime.approvals,
@@ -714,7 +714,7 @@ pre{background:#0b0d11;border:1px solid var(--line);border-radius:6px;padding:10
 label{display:block;margin:8px 0 4px;color:var(--mut);font-size:12px}.row{display:flex;gap:12px;flex-wrap:wrap}.row>div{flex:1;min-width:180px}
 </style></head><body>
 <header><h1>🏢 BrainOutput Community</h1><span class=mut id=coname></span><span class=zero id=zero>Your models · your keys</span></header>
-<nav id=nav></nav><main id=view></main>
+<nav id=nav></nav><div id=recovered class=warn style="display:none;margin:10px 16px;padding:10px 12px;border:1px solid;border-radius:8px"></div><main id=view></main>
 <script>
 const S={state:null,tab:'chat',settingsOpen:false,settingsTab:'connections',setupDone:false,twin:{busy:'',out:null},chat:{scope:'company',dept:'',agent:'',mode:'ask',convId:null,mission:null,busy:false}};
 const el=(h)=>{const d=document.createElement('div');d.innerHTML=h;return d.firstElementChild};
@@ -750,7 +750,11 @@ function settingsNav(){const adv=((S.state||{}).settings||{}).mode==='advanced';
  return d}
 function fmtCost(c){return c==='local-compute'?'your local compute':c==='free'?'free':c==='user-subscription'?'your subscription':c==='user-api-account'?'your API account':c||'-'}
 function bindActions(root){root.querySelectorAll('[data-approve]').forEach(b=>{b.onclick=()=>approve(b.dataset.approve)});root.querySelectorAll('[data-act]').forEach(b=>{b.onclick=()=>missionAct(b.dataset.mid,b.dataset.act)})}
-function render(){nav();const s=S.state||{};document.getElementById('coname').textContent=s.company?.name?('· '+s.company.name):'';document.getElementById('zero').textContent=(s.brainoutputFundedTokens?('⚠ '+s.brainoutputFundedTokens+' unexpected paid tokens'):'Your models · your keys');
+function render(){nav();const s=S.state||{};
+ const rec=document.getElementById('recovered');
+ if(s.recovered&&s.recovered.length){rec.style.display='block';
+   rec.innerHTML='⚠ '+s.recovered.map(r=>r.file+' could not be read ('+r.reason+'). It was kept as <b>'+r.preservedAs+'</b> — nothing was overwritten. Restore it, or import a backup.').join('<br>')}
+ else rec.style.display='none';document.getElementById('coname').textContent=s.company?.name?('· '+s.company.name):'';document.getElementById('zero').textContent=(s.brainoutputFundedTokens?('⚠ '+s.brainoutputFundedTokens+' unexpected paid tokens'):'Your models · your keys');
 const v=document.getElementById('view');v.innerHTML='';// Route a fresh install into setup; once there is a team, land on the chat.
  if(!onboarded(s)&&!S.setupDone&&!SETUP_TABS.some(([k])=>k===S.tab))S.tab='connections';
  if(onboarded(s)&&SETUP_TABS.some(([k])=>k===S.tab)&&!S.settingsOpen){S.settingsOpen=true;S.settingsTab=S.tab}

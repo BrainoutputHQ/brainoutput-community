@@ -126,3 +126,38 @@ test("work-source credentials are encrypted at rest, and the store is private to
     assert.equal(readFileSync(join(d, "runtime.json"), "utf8").includes("legacy-plain"), false);
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
+
+test("an unreadable store file is preserved and reported — never silently overwritten", async () => {
+  const { Store } = await import("./store.mjs");
+  const { writeFileSync, readFileSync, readdirSync } = await import("node:fs");
+  const d = mkdtempSync(join(tmpdir(), "bo-corrupt-"));
+  try {
+    // a real company, then a truncated file (an interrupted write, a full disk, a bad copy)
+    writeFileSync(join(d, "definition.json"), JSON.stringify({ company: { name: "Acme Studio" }, agents: [{ id: "eng" }] }));
+    const good = readFileSync(join(d, "definition.json"), "utf8");
+    const truncated = good.slice(0, good.indexOf("agents"));      // cut mid-file, as a bad write would
+    writeFileSync(join(d, "definition.json"), truncated);
+
+    const s = new Store(d);
+    assert.ok(s.recovered?.length, "the store must report that a file could not be read");
+    assert.equal(s.recovered[0].file, "definition.json");
+
+    s.setCompany({ name: "replacement" }).saveDefinition();     // the save that used to destroy it
+    const preserved = readdirSync(d).find((f) => f.includes(".corrupt-"));
+    assert.ok(preserved, "the unreadable file must be kept beside the store");
+    // The exact invariant: the bytes that were on disk are STILL on disk, byte for byte.
+    assert.equal(readFileSync(join(d, preserved), "utf8"), truncated, "the unreadable file must be preserved byte for byte");
+    assert.match(readFileSync(join(d, preserved), "utf8"), /Acme Studio/, "what survived is still readable by a human");
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
+test("a healthy store never reports a recovery", async () => {
+  const { Store } = await import("./store.mjs");
+  const d = mkdtempSync(join(tmpdir(), "bo-ok-"));
+  try {
+    new Store(d).setCompany({ name: "Fine" }).saveDefinition();
+    const s2 = new Store(d);
+    assert.equal(s2.recovered, undefined);
+    assert.equal(s2.def.company.name, "Fine");
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
