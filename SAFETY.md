@@ -37,3 +37,20 @@ It runs on your machine; there is no hosted BrainOutput service involved.
 ## Not required (by design)
 BrainOutput credits · BrainOutput credentials · the internal agent fleet · Claude · Kimi · a hosted
 BrainOutput account. If any prompt seems to ask for these, stop and report it (see `FEEDBACK.md`).
+
+## The local dashboard is guarded (CSRF + DNS rebinding)
+
+The dashboard listens on `127.0.0.1` only — but **loopback alone is not protection**. Any website you
+visit can make *your browser* POST to a local port, and a hostname rebound to `127.0.0.1` can read the
+response. Since a Work Twin can read (and, once you grant and approve it, send) mail, the local API is
+guarded:
+
+- **Host must be loopback** — defeats DNS rebinding. Override deliberately with `BO_CE_ALLOWED_HOSTS`.
+- **Any foreign `Origin` or cross-site `Sec-Fetch-Site` is refused** — blocks website-driven requests.
+- **State-changing requests must be `Content-Type: application/json`** — a cross-origin form or simple
+  POST cannot set that without a preflight, which is then refused.
+- **Browser requests must carry the per-process CSRF token** embedded in the page; a cross-origin
+  attacker can never read it.
+- The API **never** sends CORS headers, and the page sets `nosniff`, `no-referrer` and a CSP.
+
+A local CLI (curl, scripts) sends no browser headers and keeps working. Pinned by `security.test.mjs`.

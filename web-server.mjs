@@ -7,6 +7,7 @@
 // source, active agent+department, execution graph, status, logs, files/artifacts, tokens,
 // approvals. No decorative agent-to-agent chatter.
 import http from "node:http";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { request as httpReq } from "node:http";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -57,7 +58,54 @@ const uid = (p) => `${p}-${Date.now().toString(36)}-${(uidCounter += 1)}`;
 async function body(req) { return new Promise((res) => { let d = ""; req.on("data", (c) => (d += c)); req.on("end", () => { try { res(d ? JSON.parse(d) : {}); } catch { res({}); } }); }); }
 const json = (res, obj, code = 200) => { res.writeHead(code, { "Content-Type": "application/json" }); res.end(JSON.stringify(obj)); };
 
+// ── Local-API guard: CSRF + DNS-rebinding ───────────────────────────────────────────────────────
+// The dashboard listens on 127.0.0.1, but "localhost only" is NOT protection: any website you visit
+// can make your browser POST to it, and a rebound DNS name can make it read the response. This server
+// now reads and can send mail, so it is guarded:
+//   1. Host must be a loopback name        → defeats DNS rebinding.
+//   2. Any Origin/Sec-Fetch-Site that is not our own → rejected (browser cross-origin attacks).
+//   3. State-changing requests must be application/json → a cross-origin form/simple POST cannot be.
+//   4. Browser requests must carry the per-process CSRF token embedded in the page.
+// A local CLI (curl, scripts) sends no Origin/Sec-Fetch headers and keeps working.
+const CSRF_TOKEN = randomBytes(24).toString("hex");
+const LOOPBACK = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+const EXTRA_HOSTS = new Set((process.env.BO_CE_ALLOWED_HOSTS || "").split(",").map((h) => h.trim()).filter(Boolean));
+
+function tokenOk(v) {
+  const a = Buffer.from(String(v || "")), b = Buffer.from(CSRF_TOKEN);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+/** Returns null when the request is allowed, or { code, error } to refuse it. */
+function guardRequest(req, url) {
+  const host = String(req.headers.host || "");
+  const hostname = host.replace(/:\d+$/, "").toLowerCase();
+  if (!LOOPBACK.has(hostname) && !EXTRA_HOSTS.has(hostname))
+    return { code: 403, error: `refused: Host '${host}' is not loopback (protects against DNS rebinding). Set BO_CE_ALLOWED_HOSTS to allow it deliberately.` };
+
+  const origin = req.headers.origin;
+  const fromBrowser = !!origin || !!req.headers["sec-fetch-site"];
+  if (origin) {
+    let ok = false;
+    try { const o = new URL(origin); ok = LOOPBACK.has(o.hostname.toLowerCase()) && (!o.port || o.port === String(PORT)); } catch {}
+    if (!ok) return { code: 403, error: `refused: cross-origin request from '${origin}'` };
+  }
+  const site = req.headers["sec-fetch-site"];
+  if (site && site !== "same-origin" && site !== "none")
+    return { code: 403, error: `refused: cross-site request (${site})` };
+
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    if (!/^application\/json/i.test(String(req.headers["content-type"] || "")))
+      return { code: 415, error: "refused: state-changing requests must use Content-Type: application/json" };
+    if (fromBrowser && !tokenOk(req.headers["x-bo-csrf"]))
+      return { code: 403, error: "refused: missing or invalid CSRF token — reload the dashboard" };
+  }
+  return null;
+}
+
 async function api(req, res, url) {
+  const refusal = guardRequest(req, url);
+  if (refusal) return json(res, { error: refusal.error }, refusal.code);
   if (url.pathname === "/api/state") return json(res, publicState());
   if (url.pathname === "/api/detect") return json(res, { detected: await detectLocal() });
   if (url.pathname === "/api/runtimes") {
@@ -608,7 +656,12 @@ async function runTask(res, b) {
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   if (url.pathname.startsWith("/api/")) { try { await api(req, res, url); } catch (e) { json(res, { error: String(e.message || e) }, 500); } return; }
-  res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }); res.end(PAGE);
+  const refusal = guardRequest(req, url);
+  if (refusal) { res.writeHead(refusal.code, { "Content-Type": "text/plain" }); res.end(refusal.error); return; }
+  // The page carries the per-process CSRF token; a cross-origin attacker can never read it.
+  res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer", "Content-Security-Policy": "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:" });
+  res.end(PAGE.replace("__BO_CSRF__", CSRF_TOKEN));
 });
 server.listen(PORT, "127.0.0.1", () => console.log(`BrainOutput Community dashboard → http://127.0.0.1:${PORT}`));
 
@@ -636,7 +689,8 @@ label{display:block;margin:8px 0 4px;color:var(--mut);font-size:12px}.row{displa
 <script>
 const S={state:null,tab:'chat',twin:{busy:'',out:null},chat:{scope:'company',dept:'',agent:'',mode:'ask',convId:null,mission:null,busy:false}};
 const el=(h)=>{const d=document.createElement('div');d.innerHTML=h;return d.firstElementChild};
-async function api(p,body){const r=await fetch(p,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{});return r.json()}
+const CSRF='__BO_CSRF__';
+async function api(p,body){const r=await fetch(p,body?{method:'POST',headers:{'Content-Type':'application/json','X-BO-CSRF':CSRF},body:JSON.stringify(body)}:{headers:{'X-BO-CSRF':CSRF}});return r.json()}
 async function refresh(){S.state=await api('/api/state');render()}
 const TABS=[['chat','💬 Chat'],['twin','👤 Work Twin'],['dashboard','Dashboard'],['connections','1 · Connections'],['company','2 · Company'],['org','3 · Organization'],['assign','4 · Assignments'],['task','6 · New Objective'],['exec','7 · Executions'],['advanced','⚙ Advanced']];
 function nav(){const n=document.getElementById('nav');n.innerHTML='';const adv=(S.state&&S.state.settings&&S.state.settings.mode)==='advanced';
