@@ -772,7 +772,7 @@ label{display:block;margin:8px 0 4px;color:var(--mut);font-size:12px}.row{displa
 <header><h1>🏢 BrainOutput Community</h1><span class=mut id=coname></span><span class=zero id=zero>Your models · your keys</span></header>
 <nav id=nav></nav><div id=recovered class=warn style="display:none;margin:10px 16px;padding:10px 12px;border:1px solid;border-radius:8px"></div><main id=view></main>
 <script>
-const S={state:null,tab:'chat',settingsOpen:false,settingsTab:'connections',setupDone:false,twin:{busy:'',out:null},chat:{scope:'company',dept:'',agent:'',mode:'ask',convId:null,mission:null,busy:false}};
+const S={state:null,tab:'chat',inSetup:false,settingsOpen:false,settingsTab:'connections',setupDone:false,twin:{busy:'',out:null},chat:{scope:'company',dept:'',agent:'',mode:'ask',convId:null,mission:null,busy:false}};
 const el=(h)=>{const d=document.createElement('div');d.innerHTML=h;return d.firstElementChild};
 const CSRF='__BO_CSRF__';
 async function api(p,body){const r=await fetch(p,body?{method:'POST',headers:{'Content-Type':'application/json','X-BO-CSRF':CSRF},body:JSON.stringify(body)}:{headers:{'X-BO-CSRF':CSRF}});return r.json()}
@@ -785,11 +785,11 @@ const SETTINGS_TABS=[['dashboard','Overview'],['connections','Models & runtimes'
 function onboarded(s){return !!(s&&(s.agents||[]).length)}
 function nav(){const n=document.getElementById('nav');n.innerHTML='';const s=S.state||{};
  const adv=(s.settings&&s.settings.mode)==='advanced';
- if(!onboarded(s)){                                   // FIRST RUN — the guided sequence, in order
+ if(!onboarded(s)||S.inSetup){                        // FIRST RUN — the guided sequence, in order
    n.appendChild(el('<span class=mut style="align-self:center;margin-right:10px;font-size:12px">Setup</span>'));
    SETUP_TABS.forEach(([k,l])=>{const b=el('<button>'+l+'</button>');if(k===S.tab)b.className='on';b.onclick=()=>{S.tab=k;render()};n.appendChild(b)});
-   const skip=el('<button title="Skip setup and go straight to the chat">Skip →</button>');
-   skip.style.marginLeft='auto';skip.onclick=()=>{S.setupDone=true;S.tab='chat';render()};n.appendChild(skip);
+   const done=el('<button title="Finish setup and go to the chat">'+(onboarded(s)?'Done — go to chat →':'Skip →')+'</button>');
+   done.style.marginLeft='auto';done.onclick=()=>{S.setupDone=true;S.inSetup=false;S.tab='chat';render()};n.appendChild(done);
    return;
  }
  MAIN_TABS.forEach(([k,l])=>{const b=el('<button>'+l+'</button>');if(k===S.tab||(k==='settings'&&S.settingsOpen))b.className='on';
@@ -812,8 +812,8 @@ function render(){nav();const s=S.state||{};
    rec.innerHTML='⚠ '+s.recovered.map(r=>r.file+' could not be read ('+r.reason+'). It was kept as <b>'+r.preservedAs+'</b> — nothing was overwritten. Restore it, or import a backup.').join('<br>')}
  else rec.style.display='none';document.getElementById('coname').textContent=s.company?.name?('· '+s.company.name):'';document.getElementById('zero').textContent=(s.brainoutputFundedTokens?('⚠ '+s.brainoutputFundedTokens+' unexpected paid tokens'):'Your models · your keys');
 const v=document.getElementById('view');v.innerHTML='';// Route a fresh install into setup; once there is a team, land on the chat.
- if(!onboarded(s)&&!S.setupDone&&!SETUP_TABS.some(([k])=>k===S.tab))S.tab='connections';
- if(onboarded(s)&&SETUP_TABS.some(([k])=>k===S.tab)&&!S.settingsOpen){S.settingsOpen=true;S.settingsTab=S.tab}
+ if(!onboarded(s)&&!S.setupDone){S.inSetup=true;if(!SETUP_TABS.some(([k])=>k===S.tab))S.tab='connections'}
+ if(onboarded(s)&&!S.inSetup&&SETUP_TABS.some(([k])=>k===S.tab)&&!S.settingsOpen){S.settingsOpen=true;S.settingsTab=S.tab}
  if(S.settingsOpen)v.appendChild(settingsNav());
  const view=VIEWS[S.tab](s);v.appendChild(view);bindActions(v)}
 const VIEWS={
