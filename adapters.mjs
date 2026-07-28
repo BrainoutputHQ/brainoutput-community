@@ -3,6 +3,7 @@
 // no BrainOutput-funded inference. Deterministic tools and human-approval use NO model at all.
 import http from "node:http";
 import https from "node:https";
+import { resolveApprovalGate, escalationBrief } from "./ce-core.mjs";
 
 // Minimal OpenAI-compatible /v1/chat/completions client (works with ollama, local, or BYOK).
 export async function chatCompletion({ endpoint, model, apiKey, prompt, maxTokens = 512, timeoutMs = 60000 }) {
@@ -56,6 +57,33 @@ export async function runNode(node, nodeModel, input = {}, opts = {}) {
   const conn = nodeModel.connection;
   const endpoint = conn.endpoint || "http://127.0.0.1:11434/v1/chat/completions";
   const apiKey = conn.apiKeyEnv ? process.env[conn.apiKeyEnv] : undefined;
+
+  // Reviewer carrying policy criteria → validate the artifact against EXACTLY those criteria and
+  // return a structured verdict { pass, flags[], notes }. This is where "the instructions for what
+  // it validates" are loaded into the reviewer's context. Fail-SAFE: an injected/dry verdict wins;
+  // an unparseable model verdict escalates (never silently auto-clears).
+  if (Array.isArray(node.reviewCriteria) && node.reviewCriteria.length) {
+    const target = input.artifact || input.toReview || input.prompt || "(no artifact provided)";
+    const criteria = node.reviewCriteria.map((c, i) => `${i + 1}. ${c}`).join("\n");
+    const base = { node: node.node, model: conn.model, provider: conn.provider, costSource: conn.costSource, funder: conn.funder, artifact: `review:${conn.provider}/${conn.model}` };
+    if (opts.reviewVerdict || opts.dryRun) {
+      const review = opts.reviewVerdict || { pass: true, flags: [], notes: "(dry-run reviewer — no model called)" };
+      return { ...base, tokens: 0, review, output: review.notes };
+    }
+    const reviewPrompt =
+      `You are an INDEPENDENT reviewer. Validate the work strictly against these criteria and reply ONLY with JSON: {"pass":true|false,"flags":["..."],"notes":"...","recommendation":"..."}.\n\nCriteria:\n${criteria}\n\nWork to review:\n${target}`;
+    const rr = await chatCompletion({ endpoint, model: conn.model, apiKey, prompt: reviewPrompt, maxTokens: opts.maxTokens || 400 });
+    let review;
+    try {
+      const m = (rr.content || "").match(/\{[\s\S]*\}/);
+      review = m ? JSON.parse(m[0]) : null;
+    } catch { review = null; }
+    if (!review || typeof review.pass !== "boolean")
+      review = { pass: false, flags: ["reviewer verdict not parseable — escalate to human"], notes: rr.content || "", recommendation: "hold for human decision" };
+    if (!Array.isArray(review.flags)) review.flags = [];
+    return { ...base, tokens: rr.tokens, review, output: rr.content };
+  }
+
   const prompt = input.prompt || opts.prompt || "Respond concisely.";
   if (opts.dryRun) return { node: node.node, model: conn.model, provider: conn.provider, costSource: conn.costSource, funder: conn.funder, tokens: 0, artifact: "(dry-run: not executed)", output: null };
   const r = await chatCompletion({ endpoint, model: conn.model, apiKey, prompt, maxTokens: opts.maxTokens || 400 });
@@ -63,9 +91,24 @@ export async function runNode(node, nodeModel, input = {}, opts = {}) {
 }
 
 // Run a whole routed plan; returns the results array (feed to ce-core.costReport).
+// A human-approval gate is resolved AGAINST the preceding reviewer's verdict: a conditional gate
+// whose reviewer passed clears with no human; anything flagged (or a hard real-world action) pends
+// for a human and carries a maximum-information brief. `opts.boundPolicies`/`opts.task` enrich the
+// brief; `opts.reviewVerdict` injects a deterministic verdict for demos/tests.
 export async function executePlan(plan, inputsByNode = {}, opts = {}) {
   const out = [];
-  for (const n of plan) out.push(await runNode(n, n.model, inputsByNode[n.node] || inputsByNode._all || {}, opts));
+  let lastReview = null;
+  for (const n of plan) {
+    let r = await runNode(n, n.model, inputsByNode[n.node] || inputsByNode._all || {}, opts);
+    if (n.node === "reviewer" && r.review) lastReview = r.review;
+    if (n.gate) {
+      const brief = n.brief
+        ? escalationBrief({ task: opts.task || {}, artifact: opts.artifact ?? null, review: lastReview || {}, policies: opts.boundPolicies || [] })
+        : null;
+      r = { ...r, ...resolveApprovalGate({ review: lastReview, node: n, brief }) };
+    }
+    out.push(r);
+  }
   return out;
 }
 

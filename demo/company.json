@@ -27,6 +27,23 @@
       "tools": ["kb-search"], "permissions": ["read-kb", "send-reply-draft"], "approvalThresholds": {}, "activation": "dormant" },
     { "id": "fin-controller", "department": "finance", "role": "controller", "objectives": ["process financial documents and reconcile; never move money without human approval"],
       "capabilities": { "planner": "private-local", "worker": "fast-cheap", "reviewer": "high-trust-review", "vision": "vision" },
-      "tools": ["reconcile", "extract-invoice"], "permissions": ["read-ledger"], "approvalThresholds": { "payment": "human" }, "activation": "dormant" }
-  ]
+      "tools": ["reconcile", "extract-invoice"], "permissions": ["read-ledger"], "approvalThresholds": { "payment": "human" }, "activation": "dormant" },
+    { "id": "mkt-writer", "department": "marketing", "role": "copywriter", "objectives": ["draft and publish product copy that is honest, on-brand, and legally clean"],
+      "capabilities": { "planner": "reasoning-free", "worker": "multilingual", "reviewer": "high-trust-review" },
+      "tools": ["cms"], "permissions": ["draft-copy"], "approvalThresholds": { "publish": "human" }, "activation": "dormant" }
+  ],
+  "policies": {
+    "legal-copy-review": {
+      "_note": "The AGENT legal/CTO reviewer — no human role. Its criteria are loaded into the reviewer node for anything it validates (see selectPolicies/reviewContextFor). autoApproveWhenClear keeps the human OUT of the loop unless the reviewer raises a flag; escalation:human then hands a maximum-information brief to the person validating.",
+      "appliesTo": { "departments": ["marketing"], "tags": ["publish-copy"] },
+      "criteria": [
+        "Every product claim is honest and verifiable — no unverifiable superlatives.",
+        "No legally-signed or compliance-reviewed wording is altered without re-review.",
+        "Data-residency / privacy statements (e.g. DSGVO) remain accurate.",
+        "'Open source' and pricing claims match the actual license and terms."
+      ],
+      "escalation": "human",
+      "autoApproveWhenClear": true
+    }
+  }
 }

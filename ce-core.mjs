@@ -62,8 +62,18 @@ export const GRAPH_SHAPES = ["single", "planner-worker", "planner-parallel-worke
  */
 export function planGraph(task = {}) {
   const nodes = [];
+  // Policies that BIND to this task (see selectPolicies). Their criteria are loaded into the
+  // reviewer's context — the reviewer validates against exactly the rules the work had to satisfy,
+  // NOT the worker's raw instructions. A policy that escalates makes the human gate CONDITIONAL:
+  // the reviewer AGENT clears it and a human is pulled in ONLY on a flag (human-minimized).
+  const policies = Array.isArray(task.policies) ? task.policies : [];
+  const policyCriteria = policies.flatMap((p) => (Array.isArray(p.criteria) ? p.criteria : []));
+  const policyIds = policies.map((p) => p.id).filter(Boolean);
+  const policyEscalates = policies.some((p) => p.escalation === "human");
+  const policyAutoClears = policies.length > 0 && policies.every((p) => p.autoApproveWhenClear === true);
+
   const needsPlan = task.complexity === "high" || task.decompose === true || (task.subtasks || 0) > 1;
-  const needsReview = task.risk === "high" || task.sensitive === true || task.requireReview === true;
+  const needsReview = task.risk === "high" || task.sensitive === true || task.requireReview === true || policies.length > 0;
   const needsApproval = task.mutatesRealWorld === true || task.requiresHumanApproval === true;
 
   if (needsPlan) {
@@ -75,16 +85,104 @@ export function planGraph(task = {}) {
   } else {
     nodes.push({ node: "worker", slot: task.workerSlot || "fast-cheap" });
   }
-  if (needsReview) nodes.push({ node: "reviewer", slot: task.reviewerSlot || "high-trust-review", independent: true });
-  if (needsApproval) nodes.push({ node: "human-approval", slot: null, gate: true });
+  if (needsReview) nodes.push({
+    node: "reviewer", slot: task.reviewerSlot || "high-trust-review", independent: true,
+    ...(policyCriteria.length ? { reviewCriteria: policyCriteria, policies: policyIds } : {}),
+  });
+  // Hard real-world mutation → UNCONDITIONAL human gate. Policy-only escalation → CONDITIONAL gate
+  // (auto-cleared when the reviewer passes and every bound policy allows it), always carrying a brief.
+  if (needsApproval || policyEscalates) {
+    const conditional = policyEscalates && !needsApproval && policyAutoClears;
+    nodes.push({
+      node: "human-approval", slot: null, gate: true,
+      ...(policyEscalates ? { brief: true, policies: policyIds } : {}),
+      ...(conditional ? { conditional: true } : {}),
+    });
+  }
 
   let shape = "single";
   if (needsPlan && (task.parallelWorkers || 1) > 1) shape = "planner-parallel-workers";
   else if (needsPlan) shape = "planner-worker";
   else if (task.tool) shape = "agent-tool";
   if (needsReview && !needsPlan) shape = "worker-reviewer";
-  if (needsApproval) shape = "agent-approval-action";
+  if (needsApproval || policyEscalates) shape = "agent-approval-action";
   return { shape, nodes };
+}
+
+/**
+ * Select the policies that BIND to a task — by department and/or task tags. This is how a
+ * reviewer/validator gets "the instructions for what it is validating": the router loads the
+ * relevant policies (their criteria), not the worker's whole instruction set. Pure; policy-order
+ * preserved. A policy with no `appliesTo` is company-wide (binds to every task).
+ */
+export function selectPolicies(req = {}, policies = {}) {
+  const dept = req.department || req.agent?.department || null;
+  const tags = new Set([...(req.tags || []), ...((req.task && req.task.tags) || [])]);
+  const list = Array.isArray(policies) ? policies : Object.entries(policies).map(([id, p]) => ({ id, ...p }));
+  return list.filter((p) => {
+    const a = p.appliesTo;
+    if (!a) return true; // company-wide
+    const deptOk = !a.departments || (dept && a.departments.includes(dept));
+    const tagOk = !a.tags || a.tags.some((t) => tags.has(t));
+    // If a policy scopes BOTH, either match binds it (a legal policy on the marketing dept OR on a
+    // publish-copy tag should catch a publish-copy task raised anywhere).
+    if (a.departments && a.tags) return deptOk || tagOk;
+    return deptOk && tagOk;
+  });
+}
+
+/**
+ * The review context a reviewer node loads to validate its target: the bound policy ids + their
+ * criteria. This is the concrete answer to "are the instructions loaded to the reviewer depending
+ * on what it validates?" — yes, as the criteria of the policies that bind to the work. Pure.
+ */
+export function reviewContextFor(node = {}) {
+  return { policies: node.policies || [], criteria: node.reviewCriteria || [] };
+}
+
+/**
+ * Human-minimized gate resolution. Given the reviewer's structured verdict
+ * ({ pass, flags:[] }) and the gate node, decide whether a human is needed:
+ * - conditional gate + reviewer passed with no flags → AUTO-CLEARED (no human).
+ * - otherwise → pending-human-approval, carrying a brief when the node asks for one.
+ * Pure; the orchestrator applies the returned fields onto the gate result.
+ */
+export function resolveApprovalGate({ review = null, node = {}, brief = null } = {}) {
+  const passed = review && review.pass === true && (!Array.isArray(review.flags) || review.flags.length === 0);
+  if (node.conditional && passed) {
+    return { status: "auto-cleared-by-reviewer", humanRequired: false, clearedBy: "reviewer", flags: [] };
+  }
+  return {
+    status: "pending-human-approval", humanRequired: true,
+    reason: node.conditional ? "reviewer flagged — escalated to human" : "real-world action requires human approval",
+    flags: (review && review.flags) || [],
+    ...(node.brief ? { brief: brief || null } : {}),
+  };
+}
+
+/**
+ * Compose a MAXIMUM-INFORMATION decision brief for the human validator — so the escalation is a fast
+ * yes/no, not research. Includes what was produced, every criterion checked with its verdict, the
+ * specific flags, the reviewer's recommendation, and the single decision to make. Pure.
+ */
+export function escalationBrief({ task = {}, artifact = null, review = {}, policies = [] } = {}) {
+  const criteria = policies.flatMap((p) => (p.criteria || []).map((c) => ({ policy: p.id, criterion: c })));
+  const flags = Array.isArray(review.flags) ? review.flags : [];
+  return {
+    decision: "Approve or reject this before it takes effect.",
+    what: task.summary || task.objective || task.title || "(unnamed task)",
+    department: task.department || null,
+    artifact,
+    policiesChecked: policies.map((p) => p.id).filter(Boolean),
+    criteria,
+    reviewer: {
+      verdict: review.pass === true && flags.length === 0 ? "pass" : "flagged",
+      flags,
+      notes: review.notes || null,
+      recommendation: review.recommendation || (flags.length ? "hold for human decision" : "safe to approve"),
+    },
+    escalatedBecause: flags.length ? `reviewer raised ${flags.length} flag(s)` : "policy requires human sign-off",
+  };
 }
 
 /** Resolve a capability slot → concrete connection via the user's assignments (+ free catalog). */
@@ -188,7 +286,7 @@ export function validateCompanyConfig(cfg) {
  * local. Throws if any resolved node would use BrainOutput-funded inference (fail-closed).
  */
 export function routeTask(req, ctx) {
-  const { agents, assignments, connections, catalog, departments = {} } = ctx;
+  const { agents, assignments, connections, catalog, departments = {}, policies = {} } = ctx;
   const agent = req.agent ||
     agents.find((a) => a.department === req.department && (!req.role || a.role === req.role)) ||
     agents.find((a) => a.department === req.department);
@@ -200,13 +298,19 @@ export function routeTask(req, ctx) {
   task.plannerSlot = task.plannerSlot || caps.planner;
   task.workerSlot = task.workerSlot || caps.worker;
   task.reviewerSlot = task.reviewerSlot || caps.reviewer;
+  // Bind the policies relevant to THIS work (by department/tags) — their criteria load into the
+  // reviewer's context (see selectPolicies/reviewContextFor). The worker operated under them; the
+  // reviewer now validates against exactly them. Explicit task.policies (if pre-bound) win.
+  const boundPolicies = Array.isArray(task.policies) ? task.policies
+    : selectPolicies({ department: agent.department, tags: task.tags, task }, policies);
+  task.policies = boundPolicies;
   const graph = planGraph(task);
   const deptDefaults = departments[agent.department]?.capabilityDefaults || {};
   const plan = graph.nodes.map((n) => ({ ...n, model: selectModel(n.slot, { assignments, connections, catalog, departmentDefaults: deptDefaults }) }));
 
   const funded = assertZeroFunded(plan);
   const needsConfig = plan.filter((n) => n.model?.needsConfiguration);
-  return { ok: true, agent: agent.id, department: agent.department, shape: graph.shape, plan, zeroBrainOutputFunded: funded, needsConfiguration: needsConfig.map((n) => n.slot) };
+  return { ok: true, agent: agent.id, department: agent.department, shape: graph.shape, plan, zeroBrainOutputFunded: funded, needsConfiguration: needsConfig.map((n) => n.slot), policies: boundPolicies.map((p) => p.id).filter(Boolean), boundPolicies };
 }
 
 /** True iff no node draws on BrainOutput-funded inference. Throws if a funded node slipped through. */

@@ -22,7 +22,10 @@ own, free, or local — and the code **refuses** any BrainOutput‑funded infere
   objective.
 - **Different models per capability slot and department** — a premium reasoner for planning, a free
   coder for workers, a local model for anything private.
-- **Human approval gates** on money movement, publishing, and deploys.
+- **Review & approval built in** — an *agent* reviewer validates a worker's output against the
+  **policies bound to that work** (loaded by department/tag, not the worker's raw instructions); a
+  human is pulled in **only when the reviewer can't clear it**, with a decision-ready brief. Money
+  movement and deploys always gate. See **[REVIEW_AND_APPROVAL.md](docs/REVIEW_AND_APPROVAL.md)**.
 - **Zero‑dependency Node ESM.** Requires only **Node ≥ 18**.
 
 ## Quick start
