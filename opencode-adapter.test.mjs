@@ -1,4 +1,5 @@
 #!/usr/bin/env node --test
+// SPDX-License-Identifier: Apache-2.0
 // Tests for the real OpenCode adapter's config generation + isolation guarantees (pure; no run).
 import { test } from "node:test";
 import assert from "node:assert/strict";

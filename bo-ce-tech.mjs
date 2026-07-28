@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// SPDX-License-Identifier: Apache-2.0
 // BrainOutput Community Edition — technical execution slice (2026-07-27).
 // Routes a technical objective to the configured agent, invokes the PLANNER only when planning is
 // needed (planner → compact PLAN.md → worker), and executes the implementation through REAL

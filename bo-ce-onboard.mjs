@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// SPDX-License-Identifier: Apache-2.0
 // BrainOutput Community Edition — first-run onboarding driver (product architecture 2026-07-27).
 // Runs the 10-step flow. Detects the user's LOCAL (ollama) and BYOK models — never BrainOutput's
 // account. Interactive when attached to a TTY; otherwise reads answers from --answers <file> or

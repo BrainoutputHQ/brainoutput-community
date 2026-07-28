@@ -1,4 +1,5 @@
 #!/usr/bin/env node --test
+// SPDX-License-Identifier: Apache-2.0
 // Tests for the Community persistence store. Uses a temp data dir. run: node --test
 import { test } from "node:test";
 import assert from "node:assert/strict";

@@ -1,4 +1,5 @@
 #!/usr/bin/env node --test
+// SPDX-License-Identifier: Apache-2.0
 // Tests for the approved-workspace registry: coding executors may only touch paths inside an
 // approved root; everything else is refused fail-closed BEFORE the executor runs.
 import { test } from "node:test";

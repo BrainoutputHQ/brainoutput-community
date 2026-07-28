@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// SPDX-License-Identifier: Apache-2.0
 // Clean-install package smoke for BrainOutput Community Edition.
 //   npm run smoke:community-clean   (or: node smoke-clean.mjs)
 //

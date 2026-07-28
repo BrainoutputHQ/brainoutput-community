@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // BrainOutput Community Edition — core AI-company model (product architecture 2026-07-27).
 // A configurable, token-efficient AI company: durable agent ROLES, on-demand execution, and
 // USER-OWNED / FREE / LOCAL models only. HARD INVARIANT: Community Edition consumes ZERO

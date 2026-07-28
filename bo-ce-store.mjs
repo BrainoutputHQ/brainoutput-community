@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// SPDX-License-Identifier: Apache-2.0
 // Community persistence CLI (milestone 3). Simplest reliable local store; credentials excluded
 // from exports. Data dir: $BO_CE_DATA or ~/.local/share/bo-community.
 //   bo-ce-store migrate <config.json>   import the current JSON config into the durable store

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// SPDX-License-Identifier: Apache-2.0
 // BrainOutput Community Edition — unified launcher (2026-07-27).
 // A configurable AI company that runs entirely on YOUR free / local / BYOK models.
 // It never uses a BrainOutput account, BrainOutput's own hosted paid models, or any paid BrainOutput model.

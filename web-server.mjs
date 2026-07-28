@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// SPDX-License-Identifier: Apache-2.0
 // BrainOutput Community Edition — minimal web experience (2026-07-27).
 // Zero-dep Node http server + single-page dashboard. Backed by the persistence store (M3) and the
 // engine (routing/onboarding/adapters). Runs REAL local-model executions via the OpenAI-compatible

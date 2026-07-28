@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // BrainOutput Community Edition — approved-workspace registry (prod-readiness gap: repo registry).
 // A coding executor (real OpenCode) may only touch paths INSIDE an approved root. Anything that
 // resolves outside every root — path traversal, an absolute host path, or a symlink escape — is

@@ -1,4 +1,5 @@
 #!/usr/bin/env node --test
+// SPDX-License-Identifier: Apache-2.0
 // Tests for the Community Edition onboarding engine. Pure logic; no network. run: node --test
 import { test } from "node:test";
 import assert from "node:assert/strict";

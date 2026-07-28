@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // BrainOutput Community Edition — durable local persistence (2026-07-27).
 // The simplest reliable store: JSON files with atomic writes (temp + rename). Two files:
 //   definition.json — company, departments, agents, model connections, capability assignments,

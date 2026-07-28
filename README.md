@@ -98,5 +98,16 @@ unconfigured to show the no‑paid‑fallback path). Every run reports model / p
 
 ## Status
 
-**Alpha 0.1.0** — early software for local, technical evaluation. See **[SAFETY.md](SAFETY.md)**.
-Zero external dependencies; the test suite runs with `npm test`.
+**Alpha 0.1.0** — early but real; open source and free to run, self-host, or build on. See
+**[SAFETY.md](SAFETY.md)**. Zero external dependencies; the test suite runs with `npm test`.
+
+## License
+
+**[Apache License 2.0](LICENSE)** — a permissive open-source license. You may use, modify, self-host,
+and build on this software, including commercially; it includes an explicit patent grant. Attribution
+lives in [`NOTICE`](NOTICE). Contributions are accepted under a Developer Certificate of Origin — see
+**[CONTRIBUTING.md](CONTRIBUTING.md)**.
+
+> The **Community Edition** is the open-source base. BrainOutput's **hosted** service and **solutions**
+> (diagnostic, AI audit, implementation) are built on this same base — you can always run it yourself
+> for free.

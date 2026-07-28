@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // BrainOutput Community Edition — REAL OpenCode adapter (2026-07-27).
 // Runs `opencode run` driven by the Community profile's model connection (provider/model/endpoint/
 // effort/auth/cost). Isolated HOME/XDG so BrainOutput's own hosted paid models are NEVER reachable; the

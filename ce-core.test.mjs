@@ -1,4 +1,5 @@
 #!/usr/bin/env node --test
+// SPDX-License-Identifier: Apache-2.0
 // Tests for the Community Edition core: capability slots, connection validation (zero
 // BrainOutput-funded inference), free catalog, smallest execution graph, model selection with
 // no-paid-fallback, and routing. Pure logic — no network, no model calls. run: node --test

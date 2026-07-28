@@ -59,7 +59,7 @@ Run it (`node bo-community.mjs demo`, scenarios **D1/D2**):
 - **D1** — copy: *"Open source. Run it free, host it, or have us build on it."* → reviewer **PASS** →
   gate **auto-cleared**, no human needed.
 - **D2** — copy: *"the #1 open-source AI company, MIT-licensed"* → reviewer **FLAGS** two claims
-  (`'#1'` is unverifiable; the license is alpha-eval, **not** MIT) → **escalates to a human with a
+  (`'#1'` is unverifiable; the license is Apache-2.0, **not** MIT) → **escalates to a human with a
   brief**. This is precisely the CTO/legal copy pass — done by an agent, escalated to a person only
   when it must be, with everything the person needs to decide in one place.
 

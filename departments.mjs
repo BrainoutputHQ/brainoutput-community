@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // BrainOutput Community Edition — department templates with per-department capability defaults.
 // Each department can default its capability slots to different models; agents (durable roles)
 // reference the slots, and the user overrides the model assignments. On-demand execution only.

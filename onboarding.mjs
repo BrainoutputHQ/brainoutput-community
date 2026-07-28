@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // BrainOutput Community Edition — first-run onboarding engine (product architecture 2026-07-27).
 // Pure logic (no I/O; the driver does probes/prompts). Implements the 10-step flow: detect/connect
 // user models → describe company → pick departments → note knowledge sources → generate the

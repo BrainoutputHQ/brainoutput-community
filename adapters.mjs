@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // BrainOutput Community Edition — executor-neutral runtime adapters .
 // An adapter turns one execution-graph node into a result. Only user/free/local sources here;
 // no BrainOutput-funded inference. Deterministic tools and human-approval use NO model at all.

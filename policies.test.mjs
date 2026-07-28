@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // Policy-binding + reviewer-context + human-minimized escalation (product architecture 2026-07-27).
 // The reviewer/validator loads the POLICIES relevant to what it validates — not the worker's raw
 // instructions — and a human is pulled in ONLY when the agent reviewer can't clear it, with a

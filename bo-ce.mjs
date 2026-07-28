@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// SPDX-License-Identifier: Apache-2.0
 // BrainOutput Community Edition — vertical-slice demo (product architecture 2026-07-27).
 // One objective per department → identify the agent → smallest execution graph → run on the
 // user's configured (here: local, $0) models → results with model/provider/tokens/cost-source/
@@ -103,7 +104,7 @@ runs.push(await scenario(
   "Publish copy claiming 'the #1 open-source AI company, MIT-licensed'.",
   { department: "marketing", role: "copywriter", task: { summary: "publish superlative marketing claim", tags: ["publish-copy"], workerSlot: "multilingual" } },
   { worker: { prompt: "Write marketing copy." } },
-  { reviewVerdict: { pass: false, flags: ["'#1' is an unverifiable superlative", "license is alpha-eval, not MIT — 'MIT-licensed' is false"], notes: "two claims fail policy", recommendation: "hold for human decision" } }));
+  { reviewVerdict: { pass: false, flags: ["'#1' is an unverifiable superlative", "license is Apache-2.0, not MIT — 'MIT-licensed' is false"], notes: "two claims fail policy", recommendation: "hold for human decision" } }));
 
 const totalFunded = runs.reduce((s, r) => s + (r.funded || 0), 0);
 console.log(`\n================ SUMMARY ================`);
