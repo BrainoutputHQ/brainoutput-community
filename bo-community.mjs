@@ -57,9 +57,10 @@ switch (cmd) {
   case "demo": run("bo-ce.mjs", rest); break;
   case "store": run("bo-ce-store.mjs", rest); break;
   case "playbook": playbook(); break;
+  case "write-demo": run("bo-ce-write.mjs", rest); break;
   default:
     console.log("BrainOutput Community Edition — runs on YOUR own models (free, local, subscription, or BYOK).\n");
-    console.log("usage: bo-community <doctor|setup|serve|onboard|demo|store|playbook>");
+    console.log("usage: bo-community <doctor|setup|serve|onboard|demo|store|playbook|write-demo>");
 }
 
 function playbook() {

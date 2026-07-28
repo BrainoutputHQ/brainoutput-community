@@ -45,3 +45,20 @@ export async function connectorAction(connector, req = {}, opts = {}) {
   return { ...base, executed: false, requiresApproval: decision.requiresApproval, status: "pending-human-approval",
     reason: decision.reason, plannedAction: { action: req.action, resource: req.resource || req.channel || null, payload: req.payload || null } };
 }
+
+/**
+ * Execute an elevated action ONLY after a human approval. Re-checks the grant (fail-closed) and
+ * requires an approved approval when the action needs one — a write/communicate/sensitive action can
+ * never run without both an explicit grant AND approval. Optional execImpl performs the live write.
+ */
+export async function executeApprovedAction(connector, req = {}, approval = null, opts = {}) {
+  const decision = resolvePermission(connector, req);
+  const base = { connector: connector.connector, action: req.action, scope: decision.scope };
+  if (!decision.allowed) return { ...base, executed: false, reason: `not permitted: ${decision.reason}` };
+  if (decision.requiresApproval && !(approval && approval.status === "approved"))
+    return { ...base, executed: false, requiresApproval: true, reason: "blocked — human approval required and not granted" };
+  const result = opts.execImpl && connector.endpoint
+    ? await opts.execImpl(connector, req)
+    : { applied: true, action: req.action, resource: req.resource || req.channel || null, echo: req.payload ?? null };
+  return { ...base, executed: true, approvedBy: (approval && (approval.approvedBy || approval.id)) || "human", result };
+}
