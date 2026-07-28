@@ -200,7 +200,7 @@ async function twinConnect(res, b) {
     t = connectWorkSource(t, { kind, account: account || t.employee.id, label,
       resources: resources || ["INBOX"],
       config: cfg,                 // host/port/user/tls/dir/mbox — how to reconnect
-      secret: password || null });  // stays local; stripped from every API response
+      secret: store.sealSecret(password) });  // ENCRYPTED at rest; stripped from every API response
     saveTwin(t);
     return json(res, { twin: publicTwin(t), verified: src.verified, sampled: sample.length, mode: t.mode });
   } catch (e) { return json(res, { error: `could not connect: ${e.message}` }, 400); }
@@ -230,7 +230,7 @@ async function twinSync(res, b) {
   t = { ...t, index: [], events: [] };
   for (const acc of t.accounts) {
     try {
-      const pwd = acc.secret || (acc.config?.passwordEnv ? process.env[acc.config.passwordEnv] : null);
+      const pwd = store.openSecret(acc.secret) || (acc.config?.passwordEnv ? process.env[acc.config.passwordEnv] : null);
       const src = connectMailSource({ kind: acc.kind, account: acc.account, ...(acc.config || {}),
         ...(pwd ? { password: pwd } : {}), ...(b.credentials?.[acc.id] || {}) });
       const msgs = await src.listMessages({ limit: b.limit || 50 });

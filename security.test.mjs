@@ -91,3 +91,38 @@ test("the dashboard sets hardening headers", async () => {
   assert.match(r.headers.get("content-security-policy") || "", /default-src 'self'/);
   assert.equal(r.headers.get("access-control-allow-origin"), null);   // never CORS-open the API
 });
+
+test("work-source credentials are encrypted at rest, and the store is private to the user", async () => {
+  const { Store } = await import("./store.mjs");
+  const { statSync, readFileSync, existsSync } = await import("node:fs");
+  const d = mkdtempSync(join(tmpdir(), "bo-store-"));
+  try {
+    const s = new Store(d);
+    // seal / open round-trip
+    const sealed = s.sealSecret("hunter2");
+    assert.notEqual(JSON.stringify(sealed).includes("hunter2"), true);   // ciphertext only
+    assert.equal(s.openSecret(sealed), "hunter2");
+    assert.equal(s.openSecret(null), null);
+
+    s.addWorkTwin({ id: "t1", accounts: [{ id: "imap:a", secret: sealed }] });
+    s.saveRuntime();
+    const onDisk = readFileSync(join(d, "runtime.json"), "utf8");
+    assert.equal(onDisk.includes("hunter2"), false, "a password must never be written in plaintext");
+
+    // permissions: dir 0700, files 0600, key file 0600
+    assert.equal(statSync(d).mode & 0o777, 0o700);
+    assert.equal(statSync(join(d, "runtime.json")).mode & 0o777, 0o600);
+    assert.ok(existsSync(join(d, "secret.key")));
+    assert.equal(statSync(join(d, "secret.key")).mode & 0o777, 0o600);
+
+    // a legacy plaintext secret is re-sealed on the next save (upgrade path)
+    const s2 = new Store(d);
+    s2.addWorkTwin({ id: "t2", accounts: [{ id: "imap:b", secret: "legacy-plain" }] });
+    s2.saveRuntime();
+    const after = JSON.parse(readFileSync(join(d, "runtime.json"), "utf8"));
+    const acc = after.workTwins.find((t) => t.id === "t2").accounts[0];
+    assert.equal(typeof acc.secret, "object", "legacy plaintext must be sealed on write");
+    assert.equal(s2.openSecret(acc.secret), "legacy-plain");
+    assert.equal(readFileSync(join(d, "runtime.json"), "utf8").includes("legacy-plain"), false);
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});

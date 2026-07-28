@@ -276,11 +276,23 @@ export function smtpSend({ host, port = 587, user = null, password = null, secur
       s.setTimeout(timeoutMs); s.on("error", reject);
     });
     const reader = makeReader(sock);
+    // Read EXACTLY ONE complete SMTP reply. A reply is one or more lines: "250-continued" … "250 done".
+    // Draining the whole buffer instead would swallow a coalesced second reply — that made sending
+    // intermittently fail depending on packet timing.
+    const readReply = async () => {
+      for (;;) {
+        const text = reader.buffer.toString("utf8");
+        const m = text.match(/^(?:\d{3}-[^\r\n]*\r\n)*(\d{3}) [^\r\n]*\r\n/);
+        if (m) return { code: Number(m[1]), text: reader.consume(Buffer.byteLength(m[0], "utf8")).toString("utf8") };
+        // Wait for MORE bytes — re-testing a condition the buffer already satisfies would spin forever.
+        const seen = reader.buffer.length;
+        await reader.wait(() => reader.buffer.length > seen);
+      }
+    };
     const expect = async (code) => {
-      await reader.wait(() => /\r\n$/.test(reader.buffer.toString("utf8")) && reader.buffer.length > 0);
-      const text = reader.consume(reader.buffer.length).toString("utf8");
-      if (!new RegExp(`^${code}`, "m").test(text)) throw new Error(`smtp: expected ${code}, got ${text.trim().slice(0, 120)}`);
-      return text;
+      const r = await readReply();
+      if (String(r.code) !== String(code)) throw new Error(`smtp: expected ${code}, got ${r.text.trim().slice(0, 120)}`);
+      return r.text;
     };
     const say = async (line, code) => { sock.write(`${line}\r\n`); return expect(code); };
     try {

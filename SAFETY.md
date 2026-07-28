@@ -54,3 +54,15 @@ guarded:
 - The API **never** sends CORS headers, and the page sets `nosniff`, `no-referrer` and a CSP.
 
 A local CLI (curl, scripts) sends no browser headers and keeps working. Pinned by `security.test.mjs`.
+
+## Credentials and the local store
+
+The store holds work-source credentials and indexed mail metadata, so:
+
+- the store directory is **0700** and its files **0600** (existing installs are tightened on next run);
+- a work-source password is **encrypted at rest** (AES-256-GCM) under a key file kept beside the store
+  at 0600 — it is never written as plaintext, and a legacy plaintext value is re-sealed on the next
+  write;
+- better still, set `passwordEnv` on the connection and keep the credential in your environment — then
+  nothing is stored at all;
+- credentials are **stripped from every API response** (`publicTwin`).

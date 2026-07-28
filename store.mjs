@@ -7,7 +7,8 @@
 //   runtime.json    — projects, tasks, executions, artifacts, approvals (local runtime state).
 // Credentials never live here — they stay in the user's environment/local, separate from any
 // exported company definition. ESM, zero-dep.
-import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync, chmodSync } from "node:fs";
+import { randomBytes, createCipheriv, createDecipheriv } from "node:crypto";
 import { join } from "node:path";
 
 const DEFAULT_DIR = process.env.BO_CE_DATA || join(process.env.HOME || ".", ".local", "share", "bo-community");
@@ -34,14 +35,53 @@ export class Store {
     this.defPath = join(dir, "definition.json");
     this.runtimePath = join(dir, "runtime.json");
     this.historyLimits = { ...HISTORY_LIMITS, ...(historyLimits || {}) };
-    mkdirSync(dir, { recursive: true });
+    // The store holds work credentials and indexed mail metadata: keep it private to this user.
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    try { chmodSync(dir, 0o700); } catch {}
+    for (const p of [this.defPath, this.runtimePath]) { try { if (existsSync(p)) chmodSync(p, 0o600); } catch {} }
     this.def = this._read(this.defPath, EMPTY_DEF);
     this.runtime = this._read(this.runtimePath, EMPTY_RUNTIME);
   }
   _read(p, fallback) { try { return existsSync(p) ? JSON.parse(readFileSync(p, "utf8")) : structuredClone(fallback); } catch { return structuredClone(fallback); } }
-  _atomicWrite(p, obj) { const tmp = `${p}.tmp`; writeFileSync(tmp, JSON.stringify(obj, null, 2) + "\n"); renameSync(tmp, p); }
+  _atomicWrite(p, obj) {
+    const tmp = `${p}.tmp`;
+    writeFileSync(tmp, JSON.stringify(obj, null, 2) + "\n", { mode: 0o600 });
+    renameSync(tmp, p);
+    try { chmodSync(p, 0o600); } catch {}
+  }
+
+  // ── secrets at rest ──────────────────────────────────────────────────────────────────────────
+  // A work-source password must never sit in the store as plaintext. It is sealed with AES-256-GCM
+  // under a key file kept beside the store at 0600. Prefer `config.passwordEnv` where you can — then
+  // no credential is stored at all.
+  _secretKey() {
+    const kp = join(this.dir, "secret.key");
+    if (!existsSync(kp)) writeFileSync(kp, randomBytes(32).toString("base64"), { mode: 0o600 });
+    try { chmodSync(kp, 0o600); } catch {}
+    return Buffer.from(readFileSync(kp, "utf8").trim(), "base64");
+  }
+  sealSecret(plain) {
+    if (plain == null || plain === "") return null;
+    const iv = randomBytes(12);
+    const c = createCipheriv("aes-256-gcm", this._secretKey(), iv);
+    const ct = Buffer.concat([c.update(String(plain), "utf8"), c.final()]);
+    return { v: 1, iv: iv.toString("base64"), ct: ct.toString("base64"), tag: c.getAuthTag().toString("base64") };
+  }
+  openSecret(rec) {
+    if (rec == null) return null;
+    if (typeof rec === "string") return rec;            // legacy plaintext — re-sealed on next write
+    const d = createDecipheriv("aes-256-gcm", this._secretKey(), Buffer.from(rec.iv, "base64"));
+    d.setAuthTag(Buffer.from(rec.tag, "base64"));
+    return Buffer.concat([d.update(Buffer.from(rec.ct, "base64")), d.final()]).toString("utf8");
+  }
+  /** Re-seal any legacy plaintext work-source secret found in the runtime. */
+  _sealLegacySecrets() {
+    for (const t of this.runtime.workTwins || [])
+      for (const a of t.accounts || [])
+        if (typeof a.secret === "string" && a.secret) a.secret = this.sealSecret(a.secret);
+  }
   saveDefinition() { this.def.modelConnections = (this.def.modelConnections || []).map(stripSecrets); this._atomicWrite(this.defPath, this.def); return this; }
-  saveRuntime() { this._boundHistory(); this._atomicWrite(this.runtimePath, this.runtime); return this; }
+  saveRuntime() { this._boundHistory(); this._sealLegacySecrets(); this._atomicWrite(this.runtimePath, this.runtime); return this; }
 
   // Keep the NEWEST `limit` records per collection; ACTIVE records are additionally always kept
   // (may exceed the limit until they resolve — active work is never dropped).
