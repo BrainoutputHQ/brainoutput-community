@@ -33,6 +33,21 @@ import { efficiencyReport } from "./efficiency.mjs";
 import { selectModel } from "./ce-core.mjs";
 
 const PORT = Number(process.env.BO_CE_WEB_PORT || 4177);
+// Hosting (the 7-day trial) means this dashboard is reachable beyond this machine — and it holds the
+// user's mail index, their IMAP password and their provider key. Loopback is the default; binding
+// anywhere else REQUIRES an access token, and the server refuses to start without one.
+const HOST = process.env.BO_CE_WEB_HOST || "127.0.0.1";
+const ACCESS_TOKEN = process.env.BO_CE_ACCESS_TOKEN || null;
+const SECURE_COOKIE = process.env.BO_CE_SECURE_COOKIE === "1";
+const HOST_IS_LOOPBACK = ["127.0.0.1", "localhost", "::1"].includes(HOST);
+if (!HOST_IS_LOOPBACK && !ACCESS_TOKEN) {
+  console.error(`✗ Refusing to listen on ${HOST} without an access token.`);
+  console.error(`  This dashboard holds your mail, your credentials and your provider keys — anyone who`);
+  console.error(`  could reach it would be you. Set one and restart:`);
+  console.error(`      BO_CE_ACCESS_TOKEN=$(openssl rand -hex 24) BO_CE_WEB_HOST=${HOST} bo-community serve`);
+  console.error(`  Behind TLS also set BO_CE_SECURE_COOKIE=1, and BO_CE_ALLOWED_HOSTS=<your hostname>.`);
+  process.exit(2);
+}
 const store = new Store();
 
 // ── server-side model detection (user LOCAL only; never a BrainOutput account) ────────────────
@@ -73,6 +88,14 @@ const CSRF_TOKEN = randomBytes(24).toString("hex");
 const LOOPBACK = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
 const EXTRA_HOSTS = new Set((process.env.BO_CE_ALLOWED_HOSTS || "").split(",").map((h) => h.trim()).filter(Boolean));
 
+function accessOk(req) {
+  if (!ACCESS_TOKEN) return true;                      // local, loopback-only: unchanged
+  const cookie = /(?:^|;\s*)bo_access=([^;]+)/.exec(req.headers.cookie || "")?.[1];
+  const given = req.headers["x-bo-access"] || (cookie && decodeURIComponent(cookie)) || "";
+  const a = Buffer.from(String(given)), b = Buffer.from(ACCESS_TOKEN);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
 function tokenOk(v) {
   const a = Buffer.from(String(v || "")), b = Buffer.from(CSRF_TOKEN);
   return a.length === b.length && timingSafeEqual(a, b);
@@ -95,6 +118,8 @@ function guardRequest(req, url) {
   const site = req.headers["sec-fetch-site"];
   if (site && site !== "same-origin" && site !== "none")
     return { code: 403, error: `refused: cross-site request (${site})` };
+
+  if (!accessOk(req)) return { code: 401, error: "not signed in" };
 
   if (req.method !== "GET" && req.method !== "HEAD") {
     if (!/^application\/json/i.test(String(req.headers["content-type"] || "")))
@@ -685,14 +710,45 @@ async function runTask(res, b) {
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   if (url.pathname.startsWith("/api/")) { try { await api(req, res, url); } catch (e) { json(res, { error: String(e.message || e) }, 500); } return; }
+  // Sign-in (hosted mode only). Constant-time compare; the token lands in an HttpOnly cookie.
+  if (ACCESS_TOKEN && url.pathname === "/login" && req.method === "POST") {
+    const body = await new Promise((r) => { let d = ""; req.on("data", (c) => (d += c)); req.on("end", () => r(d)); });
+    const given = new URLSearchParams(body).get("token") || "";
+    const a = Buffer.from(given), b = Buffer.from(ACCESS_TOKEN);
+    if (a.length === b.length && timingSafeEqual(a, b)) {
+      res.writeHead(302, { Location: "/", "Set-Cookie":
+        `bo_access=${encodeURIComponent(ACCESS_TOKEN)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=604800${SECURE_COOKIE ? "; Secure" : ""}` });
+      return res.end();
+    }
+    res.writeHead(401, { "Content-Type": "text/html; charset=utf-8" });
+    return res.end(LOGIN_PAGE.replace("__MSG__", "That access token is not correct."));
+  }
   const refusal = guardRequest(req, url);
-  if (refusal) { res.writeHead(refusal.code, { "Content-Type": "text/plain" }); res.end(refusal.error); return; }
+  if (refusal) {
+    if (refusal.code === 401) { res.writeHead(401, { "Content-Type": "text/html; charset=utf-8" }); return res.end(LOGIN_PAGE.replace("__MSG__", "")); }
+    res.writeHead(refusal.code, { "Content-Type": "text/plain" }); res.end(refusal.error); return;
+  }
   // The page carries the per-process CSRF token; a cross-origin attacker can never read it.
   res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "no-referrer", "Content-Security-Policy": "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:" });
   res.end(PAGE.replace("__BO_CSRF__", CSRF_TOKEN));
 });
-server.listen(PORT, "127.0.0.1", () => console.log(`BrainOutput Community dashboard → http://127.0.0.1:${PORT}`));
+server.listen(PORT, HOST, () => {
+  console.log(`BrainOutput Community dashboard → http://${HOST_IS_LOOPBACK ? "127.0.0.1" : HOST}:${PORT}`);
+  if (ACCESS_TOKEN) console.log(`  access token required${SECURE_COOKIE ? " · cookie marked Secure (behind TLS)" : ""}`);
+});
+
+const LOGIN_PAGE = `<!doctype html><html><head><meta charset=utf-8><title>BrainOutput — sign in</title>
+<style>body{font:15px/1.6 -apple-system,Segoe UI,Roboto,sans-serif;background:#0d1117;color:#e6edf3;display:grid;place-items:center;height:100vh;margin:0}
+form{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:28px;min-width:340px}
+h1{font-size:16px;margin:0 0 6px}p{color:#8b949e;font-size:13px;margin:0 0 16px}
+input{width:100%;padding:10px;border-radius:6px;border:1px solid #30363d;background:#0d1117;color:#e6edf3;box-sizing:border-box}
+button{margin-top:12px;width:100%;padding:10px;border:0;border-radius:6px;background:#2f81f7;color:#fff;font-weight:600;cursor:pointer}
+.m{color:#f85149;font-size:13px;margin-top:10px}</style></head><body>
+<form method="POST" action="/login"><h1>🏢 BrainOutput</h1>
+<p>This workspace holds your mail and your keys. Enter your access token.</p>
+<input name="token" type="password" autofocus placeholder="access token" autocomplete="current-password">
+<button type="submit">Sign in</button><div class=m>__MSG__</div></form></body></html>`;
 
 // ── single-page dashboard (inline, zero-dep) ────────────────────────────────────────────────────
 const PAGE = `<!doctype html><html><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>BrainOutput Community</title>

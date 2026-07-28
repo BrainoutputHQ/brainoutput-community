@@ -193,3 +193,44 @@ test("a whole-store backup moves a working install to another machine — creden
     assert.throws(() => b.restoreBundle(tampered, { force: true }), /corrupted \(checksum mismatch\)/);
   } finally { rmSync(src, { recursive: true, force: true }); rmSync(dst, { recursive: true, force: true }); }
 });
+
+test("hosted mode: refuses to listen beyond loopback without an access token", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const r = spawnSync(process.execPath, [join(HERE, "web-server.mjs")], {
+    env: { ...process.env, BO_CE_WEB_HOST: "0.0.0.0", BO_CE_WEB_PORT: "4399", BO_CE_ACCESS_TOKEN: "", BO_CE_DATA: mkdtempSync(join(tmpdir(), "bo-h-")) },
+    encoding: "utf8", timeout: 15000 });
+  assert.equal(r.status, 2, "must exit rather than serve a mailbox to the internet unauthenticated");
+  assert.match(r.stderr, /Refusing to listen on 0\.0\.0\.0 without an access token/);
+  assert.match(r.stderr, /BO_CE_ACCESS_TOKEN/);          // tells you exactly how to fix it
+});
+
+test("hosted mode: a token is required, and only the right one works", async () => {
+  const { spawn } = await import("node:child_process");
+  const dir = mkdtempSync(join(tmpdir(), "bo-hosted-"));
+  const PORT2 = 4398, BASE2 = `http://127.0.0.1:${PORT2}`;
+  const proc = spawn(process.execPath, [join(HERE, "web-server.mjs")], {
+    env: { ...process.env, BO_CE_WEB_HOST: "0.0.0.0", BO_CE_WEB_PORT: String(PORT2),
+           BO_CE_ACCESS_TOKEN: "trial-token-abc", BO_CE_ALLOWED_HOSTS: "127.0.0.1", BO_CE_DATA: dir },
+    stdio: "ignore" });
+  try {
+    for (let i = 0; i < 60; i++) { try { await fetch(`${BASE2}/`); break; } catch { await new Promise((r) => setTimeout(r, 250)); } }
+
+    assert.equal((await fetch(`${BASE2}/api/state`)).status, 401, "no token → refused");
+    assert.match(await (await fetch(`${BASE2}/`)).text(), /Enter your access token/);
+
+    const bad = await fetch(`${BASE2}/login`, { method: "POST", body: "token=wrong",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" }, redirect: "manual" });
+    assert.equal(bad.status, 401);
+
+    const ok = await fetch(`${BASE2}/login`, { method: "POST", body: "token=trial-token-abc",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" }, redirect: "manual" });
+    assert.equal(ok.status, 302);
+    const setCookie = ok.headers.get("set-cookie") || "";
+    assert.match(setCookie, /HttpOnly/);
+    assert.match(setCookie, /SameSite=Strict/);
+
+    const cookie = setCookie.split(";")[0];
+    assert.equal((await fetch(`${BASE2}/api/state`, { headers: { Cookie: cookie } })).status, 200);
+    assert.equal((await fetch(`${BASE2}/api/state`, { headers: { Cookie: "bo_access=forged" } })).status, 401);
+  } finally { proc.kill(); rmSync(dir, { recursive: true, force: true }); }
+});

@@ -55,6 +55,23 @@ guarded:
 
 A local CLI (curl, scripts) sends no browser headers and keeps working. Pinned by `security.test.mjs`.
 
+## Hosting it for someone else
+
+Locally the dashboard binds to `127.0.0.1` and needs no login — that is the whole UX. The moment it
+listens anywhere else it holds *someone else's* mail, IMAP password and provider key behind a URL, so:
+
+- it **refuses to start** on a non-loopback interface without `BO_CE_ACCESS_TOKEN`;
+- with a token, every request needs it — a sign-in page issues an `HttpOnly; SameSite=Strict` cookie,
+  compared in constant time (`Secure` too when you set `BO_CE_SECURE_COOKIE=1` behind TLS);
+- `BO_CE_ALLOWED_HOSTS` must name the public hostname, and the CSRF/origin rules still apply;
+- one instance per person — the store is single-tenant by design, so isolation comes from running a
+  separate instance per user, not from a shared process.
+
+```bash
+BO_CE_ACCESS_TOKEN=$(openssl rand -hex 24) BO_CE_WEB_HOST=0.0.0.0 \
+BO_CE_ALLOWED_HOSTS=alice.example.com BO_CE_SECURE_COOKIE=1 bo-community serve
+```
+
 ## Credentials and the local store
 
 The store holds work-source credentials and indexed mail metadata, so:
