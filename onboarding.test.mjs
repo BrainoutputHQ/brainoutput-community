@@ -5,13 +5,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { detectConnections, generateOrg, recommendAssignments, applyOverrides, confirmZeroFunded, buildCompanyConfig, renderAgentView, onboardingModelPaths, payerLabel, capabilityAlternatives } from "./onboarding.mjs";
 
-test("onboardingModelPaths: 'free' is first and the only default; local + BYOK are present", () => {
+test("onboardingModelPaths: 'free' is first + only default; the 5 runtimes are present", () => {
   const p = onboardingModelPaths();
   assert.equal(p[0].key, "free");
   assert.equal(p.filter((x) => x.default).length, 1);
   assert.equal(p.find((x) => x.default).key, "free");
-  assert.deepEqual(p.map((x) => x.key).sort(), ["byok", "free", "local"]);
-  for (const x of p) assert.ok(x.payer && x.label);          // every path states who pays, plainly
+  assert.deepEqual(p.map((x) => x.key).sort(), ["byok", "claude-code", "codex", "free", "local"]);
+  for (const x of p) assert.ok(x.payer && x.label && x.runtime && x.where); // who pays + where it runs
 });
 
 test("payerLabel is plain-language and never implies BrainOutput pays", () => {

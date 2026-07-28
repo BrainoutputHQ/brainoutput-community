@@ -6,6 +6,7 @@
 // → confirm $0 BrainOutput inference → deploy agents DORMANT. ESM, zero-dep.
 import { validateConnection, CAPABILITY_SLOTS } from "./ce-core.mjs";
 import { DEPARTMENT_TEMPLATES, ACTIVATION_DEFAULT } from "./departments.mjs";
+import { runtimeConnection, describeLocation } from "./runtimes.mjs";
 
 // Minimum-useful role templates per department (the org generator instantiates only selected depts).
 export const ROLE_TEMPLATES = {
@@ -43,9 +44,11 @@ export function detectConnections({ localModels = [], byokKeys = {}, freeAvailab
 // local and BYOK are equally available. Plain language, no jargon. Nothing here is BrainOutput-funded.
 export function onboardingModelPaths() {
   return [
-    { key: "free",  label: "Use free models",                  default: true,  payer: "free — the model provider pays, not you" },
-    { key: "local", label: "Use local models on this computer", default: false, payer: "runs on your own computer" },
-    { key: "byok",  label: "Connect my own provider (API key)", default: false, payer: "your own provider account" },
+    { key: "free",        runtime: "generic-llm",  label: "Use free models",              default: true,  payer: "free — the provider pays", where: "cloud model" },
+    { key: "claude-code", runtime: "claude-code",  label: "Use Claude Code",              default: false, payer: "your Claude subscription", where: "local CLI, cloud model" },
+    { key: "codex",       runtime: "codex",        label: "Use Codex",                    default: false, payer: "your OpenAI account",     where: "local CLI, cloud model" },
+    { key: "byok",        runtime: "generic-llm",  label: "Connect another provider",     default: false, payer: "your own provider account", where: "cloud model" },
+    { key: "local",       runtime: "local-openai", label: "Use local models on this computer", default: false, payer: "runs on your own computer", where: "fully local model" },
   ];
 }
 
@@ -160,4 +163,96 @@ export function renderAgentView(agent, assignments, connections) {
   return { id: agent.id, department: agent.department, role: agent.role, models: slotView,
     tools: agent.tools || [], permissions: agent.permissions || [], approvals: agent.approvalThresholds || {},
     activation: agent.activation || "dormant", tasks: [], outputs: [] };
+}
+
+// ── Regular vs Advanced onboarding ─────────────────────────────────────────────────────────────
+
+/** REGULAR MODE — the 8 steps a first-time user walks through. One default model per agent. */
+export function regularOnboardingSteps() {
+  return [
+    "1. Choose how to run your models — free · Claude Code · Codex · another provider · local",
+    "2. Describe your company",
+    "3. Select departments",
+    "4. Review the generated team",
+    "5. Assign one default model per agent",
+    "6. Connect tools (read-only by default)",
+    "7. Review cost sources and permissions",
+    "8. Launch — agents dormant by default",
+  ];
+}
+
+/** ADVANCED MODE — the extra per-agent knobs unlocked beyond the single default model. */
+export function advancedOnboardingFields() {
+  return [
+    "planner model", "worker model", "reviewer model", "fallbacks", "context limits",
+    "reasoning settings", "privacy classification", "cost limits", "permissions", "approval rules",
+  ];
+}
+
+/**
+ * Apply an ADVANCED per-agent config: a different model/runtime per execution STAGE, plus fallbacks,
+ * context limits, reasoning, privacy, cost limit, permissions and approval rules. Pure. Stage runtimes
+ * are validated user/free/local by runtimeConnection at construction; here we just attach the plan.
+ */
+export function applyAdvancedAgentConfig(agent, adv = {}) {
+  const out = { ...agent };
+  // Per-stage runtime/model — the "different model, runtime and provider per stage" differentiator.
+  if (adv.stages) out.stageRuntimes = { ...(out.stageRuntimes || {}), ...adv.stages };
+  out.advanced = {
+    fallbacks: adv.fallbacks || null,           // ordered fallback runtimes (never a paid auto-fallback)
+    contextLimits: adv.contextLimits || null,
+    reasoning: adv.reasoning || null,
+    privacy: adv.privacy || "internal",         // public | internal | confidential | restricted
+    costLimit: adv.costLimit ?? null,
+  };
+  if (adv.permissions) out.permissions = adv.permissions;
+  if (adv.approvals) out.approvalThresholds = adv.approvals;
+  return out;
+}
+
+/**
+ * The onboarding EXAMPLE the founder specified — four agents, each on a DIFFERENT runtime, showing the
+ * CLI-vs-local-model distinction, a read-only connector, and a private RAG source. Every runtime is
+ * user/free/local; nothing BrainOutput-funded. Agents deploy DORMANT.
+ */
+export function onboardingExample() {
+  const agents = [
+    {
+      id: "technical-architect", department: "technical", role: "architect",
+      objectives: ["turn objectives into a plan and a tested implementation"],
+      runtime: runtimeConnection({ runtime: "claude-code", provider: "anthropic", model: "claude (your plan)", authSource: "user-subscription", contextLimit: 200000 }),
+      tools: ["repo", "run-tests"], permissions: ["read-repo", "write-branch"], approvalThresholds: { deploy: "human" }, activation: "dormant",
+      note: "Claude Code on your Claude subscription — a local CLI calling a cloud model.",
+    },
+    {
+      id: "software-engineer", department: "technical", role: "engineer",
+      objectives: ["implement tickets and open pull requests"],
+      runtime: runtimeConnection({ runtime: "codex", provider: "openai", model: "codex (your account)", authSource: "user-api-account", contextLimit: 128000 }),
+      tools: ["repo", "run-tests"], permissions: ["read-repo", "write-branch"], approvalThresholds: {}, activation: "dormant",
+      note: "Codex on your OpenAI account — a local CLI calling a cloud model.",
+    },
+    {
+      id: "legal-clerk", department: "legal-compliance", role: "clerk",
+      objectives: ["answer policy questions from the company's own documents"],
+      runtime: runtimeConnection({ runtime: "local-openai", provider: "ollama", model: "qwen2.5-7b-32k", authSource: "local", modelLocation: "local", contextLimit: 32000 }),
+      tools: ["policy", "rag:private-legal"], permissions: ["read-policy", "read:rag"], approvalThresholds: { "legal-commitment": "human" }, activation: "dormant",
+      rag: { source: "private-legal-docs", access: "read-only" },
+      note: "A FULLY LOCAL model + a private RAG source — nothing leaves the machine.",
+    },
+    {
+      id: "customer-support-agent", department: "customer-service", role: "support",
+      objectives: ["answer customer questions in the customer's language"],
+      runtime: runtimeConnection({ runtime: "generic-llm", provider: "free-provider", model: "(free multilingual model)", authSource: "free", capabilities: ["multilingual", "tools"] }),
+      tools: ["zendesk"], permissions: ["read:zendesk"], approvalThresholds: { "send-reply": "human" }, activation: "dormant",
+      connectors: [{ system: "zendesk", scope: "read", access: "read-only" }],
+      note: "A free multilingual model + Zendesk connected READ-ONLY (sending a reply needs approval).",
+    },
+  ];
+  return {
+    company: { name: "Example Co", brainoutputFundedInference: "forbidden" },
+    departments: ["technical", "legal-compliance", "customer-service"],
+    agents,
+    where: agents.map((a) => ({ id: a.id, runs: describeLocation(a.runtime) })),
+    note: "Every agent runs on a DIFFERENT runtime — Claude Code, Codex, a fully local model, and a free model.",
+  };
 }

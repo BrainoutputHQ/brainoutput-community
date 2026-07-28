@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import readline from "node:readline/promises";
 import { request } from "node:http";
-import { detectConnections, generateOrg, recommendAssignments, applyOverrides, confirmZeroFunded, buildCompanyConfig, renderAgentView, ROLE_TEMPLATES, onboardingModelPaths, payerLabel } from "./onboarding.mjs";
+import { detectConnections, generateOrg, recommendAssignments, applyOverrides, confirmZeroFunded, buildCompanyConfig, renderAgentView, ROLE_TEMPLATES, onboardingModelPaths, payerLabel, regularOnboardingSteps, advancedOnboardingFields, onboardingExample } from "./onboarding.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const arg = (k) => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : null; };
@@ -58,13 +58,35 @@ async function getAnswers() {
 const line = (s = "") => console.log(s);
 const money = { free: "FREE", "local-compute": "your local compute", "user-subscription": "your subscription", "user-api-account": "your API account" };
 
+const ADVANCED = process.argv.includes("--advanced");
+const SHOW_EXAMPLE = process.argv.includes("--example");
+
+function printExample() {
+  const ex = onboardingExample();
+  line("BrainOutput Community Edition — onboarding EXAMPLE\n" + "=".repeat(52));
+  line(ex.note + "\n");
+  for (const a of ex.agents) {
+    line(`▸ ${a.role} (${a.department}) — ${a.runtime.runtime}`);
+    line(`    ${a.note}`);
+    line(`    runs: ${ex.where.find((w) => w.id === a.id).runs}`);
+    line(`    tools: ${a.tools.join(", ")} · permissions: ${a.permissions.join(", ")}` + (Object.keys(a.approvalThresholds).length ? ` · approval: ${Object.keys(a.approvalThresholds).join(", ")}` : ""));
+  }
+  line("\nEvery agent on a DIFFERENT runtime; every one user/free/local; all dormant until work exists.");
+}
+
 (async () => {
-  line("BrainOutput Community Edition — first-run onboarding\n" + "=".repeat(52));
+  if (SHOW_EXAMPLE) { printExample(); return; }
+  const MODE = ADVANCED ? "ADVANCED MODE" : "REGULAR MODE";
+  line(`BrainOutput Community Edition — first-run onboarding · ${MODE}\n` + "=".repeat(60));
   line("Runs on your own models — you always choose who pays for each model.\n");
-  // Step 0 — how do you want to power your AI company? Free is the simplest default; all are $0-safe.
-  line("How would you like to run your models? (all run on models you own or control)");
+  line("Steps:");
+  for (const s of regularOnboardingSteps()) line(`   ${s}`);
+  if (ADVANCED) line(`\nAdvanced knobs per agent: ${advancedOnboardingFields().join(" · ")}`);
+  line("");
+  // Step 1 — choose how to run your models (5 runtimes; a local CLI is NOT a local model).
+  line("1) How would you like to run your models?");
   for (const p of onboardingModelPaths())
-    line(`   ${p.default ? "▸" : " "} ${p.label}${p.default ? "  (recommended)" : ""} — ${p.payer}`);
+    line(`   ${p.default ? "▸" : " "} ${p.label}${p.default ? "  (recommended)" : ""} — ${p.payer} · ${p.where}`);
   line("");
   // Step 1 — detect/connect
   const localModels = await probeOllama();

@@ -79,12 +79,22 @@ troubleshooting.
 `opencode` (repo work through a hardened sandbox with a user/local coding model). Claude Code /
 Codex / Hermes are optional later adapters.
 
+## Runtimes (`runtimes.mjs`)
+
+Assign a different **runtime** to any agent or execution stage — **OpenCode · Claude Code · Codex ·
+Local/OpenAI‑compatible · Generic LLM agent**. Each runtime connection records runtime · provider ·
+model · auth source · cost source · local‑vs‑cloud · capabilities · context limit · tool support ·
+health. A **locally‑running CLI** (Claude Code, Codex) is *not* a **fully‑local model** (Ollama) — the
+product says which for every agent. All user/free/local; never a BrainOutput credential.
+
 ## Commands
 
 ```bash
 node bo-community.mjs setup      # load the starter company
 node bo-community.mjs serve      # web dashboard
-node bo-community.mjs onboard    # interactive first-run onboarding (free-model first)
+node bo-community.mjs onboard             # Regular onboarding (free-model first)
+node bo-community.mjs onboard --advanced  # Advanced: per-stage models, fallbacks, limits, permissions
+node bo-community.mjs onboard --example   # the mixed-runtime example (Claude Code · Codex · local · free)
 node bo-community.mjs demo       # run the sample workflows on your local models
 npm test                         # node --test *.test.mjs  (zero-dep)
 npm run smoke:community-clean    # end-to-end clean-install smoke in a temp dir
