@@ -103,7 +103,7 @@ async function run() {
   check("10. company config + runtime history survive an application restart", companyOk && historyOk);
 
   const passed = results.every((r) => r.ok);
-  console.log(`\n${passed ? "✓ CLEAN-INSTALL SMOKE PASSED" : "✗ CLEAN-INSTALL SMOKE FAILED"} — ${results.filter((r) => r.ok).length}/${results.length} checks · BrainOutput-funded inference: $0`);
+  console.log(`\n${passed ? "✓ CLEAN-INSTALL SMOKE PASSED" : "✗ CLEAN-INSTALL SMOKE FAILED"} — ${results.filter((r) => r.ok).length}/${results.length} checks · every model free / local / your own`);
   return passed;
 }
 

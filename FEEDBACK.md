@@ -27,7 +27,7 @@ Actual:
 Model source used:  local (ollama/…) | free (…) | BYOK (provider)
 Approx. task latency:
 Environment:        OS, Node version (from doctor)
-BrainOutput-funded inference stayed $0?   yes / no  (if no — that's a priority bug, tell us!)
+Everything ran on your free / local / own models (nothing charged to any BrainOutput account)?   yes / no  (if no — that's a priority bug, tell us!)
 Anything that asked for a BrainOutput account / Claude / Kimi / BrainOutput credentials?  yes / no
 ```
 

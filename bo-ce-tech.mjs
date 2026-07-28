@@ -55,5 +55,5 @@ console.log(`changed files: ${res.changedFiles.length ? res.changedFiles.join(",
 for (const f of res.changedFiles.slice(0, 3)) { try { console.log(`  ── ${f} ──\n${readFileSync(join(ws, f), "utf8").split("\n").slice(0, 12).map((l) => "  " + l).join("\n")}`); } catch {} }
 console.log(`\nlog tail:\n${res.log.split("\n").slice(-6).map((l) => "  " + l).join("\n")}`);
 const zero = !res.founderCredentialUsed && ["local", "free", "user"].includes(res.funder);
-console.log(`\nBrainOutput-funded inference: ${zero ? "$0 ✓" : "✗ VIOLATION"}`);
+console.log(`\nModel ownership: ${zero ? "✓ free / local / your own" : "✗ VIOLATION"}`);
 process.exit(zero ? 0 : 1);

@@ -1,20 +1,19 @@
 # BrainOutput Community Edition
 
-**Run an entire AI company on your own free / local / BYOK models — with zero BrainOutput‑funded inference.**
+**Run an entire AI company on your own free / local / BYOK models — free to run, self‑host, and yours to own.**
 
 A configurable, token‑efficient AI company: durable agent **roles** (departments, capability slots,
 approval gates) whose execution context is created **only when there's work**. Every model is your
-own, free, or local — and the code **refuses** any BrainOutput‑funded inference.
+own, free, or local — you always see who pays for each model, and your keys never leave your machine.
 
 > The role persists; the execution context is created only when work exists.
 
 [Quick start](#quick-start) · [Full install & examples](CLEAN_INSTALL.md) · [Quickstart](QUICKSTART.md) · [Safety](SAFETY.md)
 
-![Community dashboard — $0 funded, agents dormant, per-slot local models](docs/community-dashboard.png)
 
 ## Why
 
-- **$0 BrainOutput‑funded inference — enforced in code.** An unassigned capability slot offers
+- **Every model is yours — free, local, or your own API key.** An unassigned capability slot offers
   free / BYOK / local / stop; it **never** falls back to a paid model.
 - **Free models first**, your own API key (BYOK), or a **local** model (Ollama or any
   OpenAI‑compatible endpoint) — you always see who pays for each model.
@@ -41,7 +40,7 @@ First run with no company launches onboarding automatically. Verify the whole cl
 throwaway temp dir (touches nothing of yours):
 
 ```bash
-npm run smoke:community-clean    # ✓ 12/12 checks · BrainOutput-funded inference: $0
+npm run smoke:community-clean    # ✓ 12/12 checks · every model free / local / your own
 ```
 
 See **[CLEAN_INSTALL.md](CLEAN_INSTALL.md)** for local / free / BYOK examples, uninstall, and
@@ -57,15 +56,15 @@ troubleshooting.
   `high-trust-review`. Agents reference **slots**, never provider/model names.
 - **Model Connection** (`validateConnection`): a user/free/local inference source with a
   `costSource` (free · user-subscription · user-api-account · local-compute) and `funder`
-  (free · user · local). A `funder: "brainoutput"` or any BrainOutput‑hosted paid credential is
-  **rejected** — it can never be a Community model connection.
+  (free · user · local). Only those three funders are accepted; any BrainOutput‑hosted paid
+  credential is **rejected** — it can never be a Community model connection.
 - **Model Assignment**: user‑configurable `slot → connection` map (`departments.mjs` gives
   per‑department defaults; you override everything).
 - **Execution Graph** (`planGraph`): the **smallest** shape that fits — single · planner-worker ·
   planner-parallel-workers · worker-reviewer · agent-tool · agent-approval-action. No planner for a
   clear task; no reviewer unless risk/policy requires; no CEO unless genuinely strategic.
 - **Router** (`routeTask`): department + role + task → agent → smallest graph → least‑cost permitted
-  model per node. Throws if any node would use BrainOutput‑funded inference; unassigned slots →
+  model per node. Throws if any node would fall outside your free / local / own models; unassigned slots →
   offer free/BYOK/local/stop, **never** an automatic paid fallback.
 - **Free catalog** (`makeCatalog`): refreshable, health‑checked; the free profile picks only
   currently‑available free models — never one hardcoded model.
@@ -94,7 +93,7 @@ The demo (`demo/company.json`) is three departments with **different** models �
 planner + free/local coding worker), Customer Service (multilingual worker), and Finance
 (deterministic reconciliation + human‑approved payment, with the vision slot intentionally
 unconfigured to show the no‑paid‑fallback path). Every run reports model / provider / tokens /
-**cost source** / artifacts and asserts BrainOutput‑funded tokens = 0.
+**cost source** / artifacts — every model is free, local, or your own.
 
 ## Status
 

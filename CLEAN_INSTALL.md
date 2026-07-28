@@ -1,7 +1,7 @@
 # BrainOutput Community — Clean Install (alpha)
 
 The shortest reliable path to run BrainOutput Community on **your own free / local / BYOK models**.
-No BrainOutput account, no BrainOutput API key, **zero BrainOutput-funded inference**.
+No BrainOutput account, no BrainOutput API key — **every model is free, local, or your own**.
 
 Requires only **Node.js ≥ 18**. (A local model via [Ollama](https://ollama.com) is optional but
 recommended for real runs.)
@@ -21,7 +21,7 @@ Verify the whole path in a throwaway temp dir (touches nothing of yours):
 
 ```bash
 npm run smoke:community-clean
-# → ✓ CLEAN-INSTALL SMOKE PASSED — 12/12 checks · BrainOutput-funded inference: $0
+# → ✓ CLEAN-INSTALL SMOKE PASSED — 12/12 checks · every model free / local / your own
 ```
 
 ## Uninstall / cleanup
@@ -100,5 +100,5 @@ export USER_OWN_OPENROUTER_KEY=sk-...
 This is **early alpha software for local, technical evaluation**. See [`SAFETY.md`](SAFETY.md) for the
 full notice. In short: agents are **dormant** until you submit an objective; money movement /
 publishing / deploys require **human approval**; your API keys stay local (env-var names only);
-**BrainOutput-funded inference is always $0** and there is no paid automatic fallback. Review any
+**Every model is free, local, or your own** and there is no paid automatic fallback. Review any
 free/BYOK provider's data-use terms before sending real data.

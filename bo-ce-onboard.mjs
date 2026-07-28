@@ -60,9 +60,9 @@ const money = { free: "FREE", "local-compute": "your local compute ($0)", "user-
 
 (async () => {
   line("BrainOutput Community Edition — first-run onboarding\n" + "=".repeat(52));
-  line("BrainOutput-funded inference: $0. You always choose who pays for each model.\n");
+  line("Every model is free, local, or your own — you always choose who pays for each model.\n");
   // Step 0 — how do you want to power your AI company? Free is the simplest default; all are $0-safe.
-  line("How would you like to run your models? (all keep BrainOutput-funded inference at $0)");
+  line("How would you like to run your models? (every option is free, local, or your own)");
   for (const p of onboardingModelPaths())
     line(`   ${p.default ? "▸" : " "} ${p.label}${p.default ? "  (recommended)" : ""} — ${p.payer}`);
   line("");
@@ -99,9 +99,9 @@ const money = { free: "FREE", "local-compute": "your local compute ($0)", "user-
   if (Object.keys(answers.overrides || {}).length) line(`\n8) Applied ${Object.keys(answers.overrides).length} override(s).`);
   else line(`\n8) No overrides (every assignment is user-overridable).`);
 
-  // Step 9 — confirm $0 BrainOutput-funded inference
+  // Step 9 — confirm every model is free / local / your own
   const z = confirmZeroFunded(assignments, connections);
-  line(`\n9) BrainOutput-funded inference check: ${z.ok ? "✓ $0 — every model is free/your-subscription/your-account/local" : "✗ " + z.offenders.join(", ")}`);
+  line(`\n9) Model ownership check: ${z.ok ? "✓ every model is free / your subscription / your account / local" : "✗ " + z.offenders.join(", ")}`);
   if (!z.ok) process.exit(1);
 
   // Step 10 — deploy dormant + write config

@@ -2,7 +2,7 @@
 
 A configurable, token-efficient **AI company** that runs entirely on **your own free / local / BYOK
 models**. Roles are durable; execution happens only when there's work. **It never uses a BrainOutput
-account, BrainOutput credits, Claude, or Kimi — BrainOutput-funded inference is always $0.**
+account, BrainOutput credits, Claude, or Kimi — every model is free, local, or your own.**
 
 ## 1. Install (one command)
 ```bash
@@ -33,7 +33,7 @@ node bo-community.mjs onboard
 In the dashboard: connect models → describe your company + pick departments → review the generated
 org → edit model assignments → submit an objective → watch it execute → see the result, model,
 provider, **cost source**, tokens, artifacts, and any approvals. The header always shows
-**BrainOutput-funded inference: $0**.
+**Every model free / local / your own.**
 
 ## 4. Three sample workflows
 

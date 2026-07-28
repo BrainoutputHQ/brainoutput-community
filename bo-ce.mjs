@@ -58,7 +58,7 @@ async function scenario(title, objective, req, inputs, execOpts = {}) {
     else if (res?.output) console.log(`      ↳ ${String(res.output).replace(/\s+/g, " ").slice(0, 160)}`);
     if (res?.brief) console.log(`      ↳ human brief: decision="${res.brief.decision}" · escalatedBecause=${res.brief.escalatedBecause}`);
   }
-  console.log(`  cost sources: ${JSON.stringify(rep.byCostSource)} · BrainOutput-funded tokens: ${rep.brainoutputFundedTokens}`);
+  console.log(`  cost sources: ${JSON.stringify(rep.byCostSource)} · every model free / local / your own`);
   return { funded: rep.brainoutputFundedTokens };
 }
 
@@ -108,6 +108,6 @@ runs.push(await scenario(
 
 const totalFunded = runs.reduce((s, r) => s + (r.funded || 0), 0);
 console.log(`\n================ SUMMARY ================`);
-console.log(`BrainOutput-funded inference tokens across ALL scenarios: ${totalFunded}`);
-console.log(totalFunded === 0 ? "✓ Community invariant HELD: $0 BrainOutput-funded inference." : "✗ INVARIANT VIOLATED");
+console.log(`Every scenario ran on your own free / local models.`);
+console.log(totalFunded === 0 ? "✓ Every scenario ran entirely on your free / local / own models." : "✗ UNEXPECTED PAID TOKENS — see above");
 process.exit(totalFunded === 0 ? 0 : 1);

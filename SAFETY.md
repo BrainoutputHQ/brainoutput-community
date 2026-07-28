@@ -7,7 +7,7 @@ A local AI-company prototype. It routes objectives to agents and runs them on **
 It runs on your machine; there is no hosted BrainOutput service involved.
 
 ## Cost & credentials
-- **BrainOutput-funded inference is always $0.** The app cannot use a BrainOutput account or the
+- **You own every model — free, local, or your own key.** The app cannot use any BrainOutput account or the
   BrainOutput's hosted paid models, and never silently falls back to a paid model. Any inference cost is on
   **your** free/local/BYOK source and is your responsibility.
 - **Your API keys stay local.** BYOK connections reference an environment-variable *name*, never a
