@@ -1,6 +1,6 @@
 {
   "name": "brainoutput-community",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "BrainOutput Community Edition — a configurable, token-efficient AI company that runs on your own free / local / BYOK models. Open source, zero-dependency, and yours to self-host.",
   "type": "module",
   "license": "Apache-2.0",
@@ -24,7 +24,8 @@
     "install.sh",
     "samples",
     "demo",
-    "*.md"
+    "*.md",
+    "Dockerfile"
   ],
   "keywords": [
     "ai-company",

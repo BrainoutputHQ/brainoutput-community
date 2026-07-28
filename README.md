@@ -100,6 +100,18 @@ model · auth source · cost source · local‑vs‑cloud · capabilities · con
 health. A **locally‑running CLI** (Claude Code, Codex) is *not* a **fully‑local model** (Ollama) — the
 product says which for every agent. All user/free/local; never a BrainOutput credential.
 
+## Run it in a container
+
+```bash
+docker build -t brainoutput-community .
+docker run -d -p 4177:4177 -v bo-data:/data \
+  -e BO_CE_ACCESS_TOKEN=$(openssl rand -hex 24) -e BO_CE_ALLOWED_HOSTS=your.host \
+  brainoutput-community
+```
+
+The store lives on a volume, so the instance is disposable and your data is not. It refuses to start
+on a public interface without an access token.
+
 ## Work Twin (`worktwin.mjs`)
 
 A **Work Twin** is a dedicated agent for **one employee** and their authorized work context — distinct
@@ -160,7 +172,7 @@ unconfigured to show the no‑paid‑fallback path). Every run reports model / p
 
 ## Status
 
-**Alpha 0.4.0** — early but real; open source and free to run, self-host, or build on. See
+**Alpha 0.5.0** — early but real; open source and free to run, self-host, or build on. See
 **[SAFETY.md](SAFETY.md)**. Zero external dependencies; the test suite runs with `npm test`.
 
 ## License
