@@ -198,12 +198,16 @@ export function applyAdvancedAgentConfig(agent, adv = {}) {
   const out = { ...agent };
   // Per-stage runtime/model — the "different model, runtime and provider per stage" differentiator.
   if (adv.stages) out.stageRuntimes = { ...(out.stageRuntimes || {}), ...adv.stages };
+  // MERGE with what the agent already has: a partial update must never silently erase settings the
+  // caller did not mention (only an explicit null clears a value).
+  const prev = out.advanced || {};
+  const pick = (k, dflt = null) => (k in adv ? (adv[k] ?? null) : (prev[k] ?? dflt));
   out.advanced = {
-    fallbacks: adv.fallbacks || null,           // ordered fallback runtimes (never a paid auto-fallback)
-    contextLimits: adv.contextLimits || null,
-    reasoning: adv.reasoning || null,
-    privacy: adv.privacy || "internal",         // public | internal | confidential | restricted
-    costLimit: adv.costLimit ?? null,
+    fallbacks: pick("fallbacks"),               // ordered fallback runtimes (never a paid auto-fallback)
+    contextLimits: pick("contextLimits"),
+    reasoning: pick("reasoning"),
+    privacy: pick("privacy", "internal"),       // public | internal | confidential | restricted
+    costLimit: pick("costLimit"),
   };
   if (adv.permissions) out.permissions = adv.permissions;
   if (adv.approvals) out.approvalThresholds = adv.approvals;

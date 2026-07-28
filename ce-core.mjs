@@ -308,11 +308,47 @@ export function routeTask(req, ctx) {
   task.policies = boundPolicies;
   const graph = planGraph(task);
   const deptDefaults = departments[agent.department]?.capabilityDefaults || {};
-  const plan = graph.nodes.map((n) => ({ ...n, model: selectModel(n.slot, { assignments, connections, catalog, departmentDefaults: deptDefaults }) }));
+  let plan = graph.nodes.map((n) => ({ ...n, model: selectModel(n.slot, { assignments, connections, catalog, departmentDefaults: deptDefaults }) }));
+  plan = applyStageOverrides(plan, agent, connections);   // ADVANCED: per-stage models + privacy rules
 
   const funded = assertZeroFunded(plan);
   const needsConfig = plan.filter((n) => n.model?.needsConfiguration);
   return { ok: true, agent: agent.id, department: agent.department, shape: graph.shape, plan, zeroBrainOutputFunded: funded, needsConfiguration: needsConfig.map((n) => n.slot), policies: boundPolicies.map((p) => p.id).filter(Boolean), boundPolicies };
+}
+
+/**
+ * ADVANCED MODE: apply an agent's per-stage runtime/model overrides to a routed plan, and enforce its
+ * privacy classification. A stage may run on a different model/runtime/provider than the rest of the
+ * plan. Privacy is FAIL-CLOSED: a `confidential`/`restricted` agent may only use a LOCAL model — a
+ * cloud model is never silently used, the stage becomes unconfigured with local/stop as the options.
+ * Pure. Only active when the agent carries advanced config, so Regular mode is unchanged.
+ */
+export function applyStageOverrides(plan, agent = {}, connections = []) {
+  const stages = agent.stageRuntimes || {};
+  const adv = agent.advanced || {};
+  const privateOnly = ["confidential", "restricted"].includes(adv.privacy);
+  if (!Object.keys(stages).length && !privateOnly) return plan;
+
+  return plan.map((n) => {
+    const kind = String(n.node).replace(/\d+$/, "");
+    let node = n;
+    const ov = stages[kind];
+    if (ov && !n.gate && !n.tool) {
+      const conn = typeof ov === "string" ? connections.find((c) => c.id === ov)
+        : ov.connection || connections.find((c) => c.id === (ov.connectionId || ov.id));
+      if (conn) {
+        const v = validateConnection(conn);
+        if (!v.ok) throw new Error(`stage override for '${kind}': ${v.reason}`);
+        node = { ...n, model: { slot: n.slot, connection: conn, provider: conn.provider, model: conn.model,
+          costSource: conn.costSource, funder: conn.funder, runtime: conn.runtime || null, override: true } };
+      }
+    }
+    if (privateOnly && node.model?.funder && node.model.funder !== "local") {
+      node = { ...node, model: { slot: node.slot, needsConfiguration: true, options: ["local", "stop"],
+        privacyBlocked: adv.privacy, reason: `privacy '${adv.privacy}' requires a local model` } };
+    }
+    return node;
+  });
 }
 
 /** True iff no node draws on BrainOutput-funded inference. Throws if a funded node slipped through. */

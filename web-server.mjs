@@ -17,6 +17,7 @@ import { runOpenCode } from "./opencode-adapter.mjs";
 import { DEPARTMENT_TEMPLATES } from "./departments.mjs";
 import { detectConnections, generateOrg, recommendAssignments, applyOverrides, confirmZeroFunded, renderAgentView } from "./onboarding.mjs";
 import { runtimeCards, runtimeConnection, runtimeToConnection } from "./runtimes.mjs";
+import { applyAdvancedAgentConfig } from "./onboarding.mjs";
 import { newConversation, addMessage, pin, resolveMention, rollSummary, compactContext, draftMissionSpec,
   editMissionSpec, approveMission, rejectMission, modeAllows, missionComposer, reviewMission, saveAsWorkflow } from "./chat.mjs";
 import { connectRagSource, indexDocuments, searchRag } from "./rag.mjs";
@@ -81,6 +82,28 @@ async function api(req, res, url) {
   if (url.pathname === "/api/task") return runTask(res, b);
   if (url.pathname.startsWith("/api/execution/")) { const e = store.runtime.executions.find((x) => x.id === url.pathname.split("/").pop()); return e ? json(res, e) : json(res, { error: "not found" }, 404); }
   if (url.pathname === "/api/approval") { const ap = store.runtime.approvals.find((x) => x.id === b.id); if (ap) { ap.status = b.decision || "approved"; store.saveRuntime(); } return json(res, publicState()); }
+  if (url.pathname === "/api/settings") {
+    store.setSettings({ mode: b.mode === "advanced" ? "advanced" : "regular" }).saveDefinition();
+    return json(res, publicState());
+  }
+  if (url.pathname === "/api/agent-advanced") {
+    const agents = store.def.agents || [];
+    const i = agents.findIndex((a) => a.id === b.agentId);
+    if (i < 0) return json(res, { error: "agent not found" }, 404);
+    // Per-stage overrides reference the user's OWN connections by id; validation happens at routing
+    // time (applyStageOverrides) and is fail-closed on anything not user/free/local.
+    const stages = {};
+    for (const k of ["conversation", "planner", "worker", "reviewer"]) if (b.stages?.[k]) stages[k] = b.stages[k];
+    try {
+      agents[i] = applyAdvancedAgentConfig(agents[i], {
+        stages, fallbacks: b.fallbacks || null, contextLimits: b.contextLimits ?? null,
+        reasoning: b.reasoning || null, privacy: b.privacy || "internal", costLimit: b.costLimit ?? null,
+        ...(b.permissions ? { permissions: b.permissions } : {}), ...(b.approvals ? { approvals: b.approvals } : {}),
+      });
+      store.setAgents(agents).saveDefinition();
+      return json(res, publicState());
+    } catch (e) { return json(res, { error: e.message }, 400); }
+  }
   if (url.pathname === "/api/chat/send") return chatSend(res, b);
   if (url.pathname === "/api/chat/mission") return chatMission(res, b);
   if (url.pathname === "/api/chat/launch") return chatLaunch(res, b);
@@ -104,6 +127,12 @@ function chatModelFor({ department = null, agentId = null } = {}) {
   const agent = agentId ? agents.find((a) => a.id === agentId)
     : department ? agents.find((a) => a.department === department) : agents[0];
   const caps = agent?.capabilities || {};
+  // ADVANCED: an explicit conversation-model override wins over the agent's slot default.
+  const ov = agent?.stageRuntimes?.conversation;
+  if (ov) {
+    const conn = typeof ov === "string" ? (store.def.modelConnections || []).find((c) => c.id === ov) : ov;
+    if (conn) return { agent: agent.id, slot: "conversation", connection: conn, provider: conn.provider, model: conn.model, costSource: conn.costSource, funder: conn.funder };
+  }
   const slot = caps.worker || caps.planner || "fast-cheap";
   try { return { agent: agent?.id || null, ...selectModel(slot, { assignments: store.def.modelAssignments, connections: store.def.modelConnections, catalog }) }; }
   catch { return { agent: agent?.id || null, slot, needsConfiguration: true }; }
@@ -238,7 +267,7 @@ async function chatLaunch(res, b) {
 
 function publicState() {
   const funded = store.runtime.executions.reduce((s, e) => s + (e.brainoutputFundedTokens || 0), 0);
-  return { company: store.def.company, departments: store.def.departments, agents: store.def.agents,
+  return { company: store.def.company, settings: store.def.settings || { mode: "regular" }, departments: store.def.departments, agents: store.def.agents,
     connections: store.def.modelConnections, assignments: store.def.modelAssignments,
     agentViews: store.def.agents.map((a) => renderAgentView(a, store.def.modelAssignments, store.def.modelConnections)),
     tasks: store.runtime.tasks, executions: store.runtime.executions, approvals: store.runtime.approvals,
@@ -320,8 +349,11 @@ const S={state:null,tab:'chat',chat:{scope:'company',dept:'',agent:'',mode:'ask'
 const el=(h)=>{const d=document.createElement('div');d.innerHTML=h;return d.firstElementChild};
 async function api(p,body){const r=await fetch(p,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{});return r.json()}
 async function refresh(){S.state=await api('/api/state');render()}
-const TABS=[['chat','💬 Chat'],['dashboard','Dashboard'],['connections','1 · Connections'],['company','2 · Company'],['org','3 · Organization'],['assign','4 · Assignments'],['task','6 · New Objective'],['exec','7 · Executions']];
-function nav(){const n=document.getElementById('nav');n.innerHTML='';TABS.forEach(([k,l])=>{const b=el('<button>'+l+'</button>');if(k===S.tab)b.className='on';b.onclick=()=>{S.tab=k;render()};n.appendChild(b)})}
+const TABS=[['chat','💬 Chat'],['dashboard','Dashboard'],['connections','1 · Connections'],['company','2 · Company'],['org','3 · Organization'],['assign','4 · Assignments'],['task','6 · New Objective'],['exec','7 · Executions'],['advanced','⚙ Advanced']];
+function nav(){const n=document.getElementById('nav');n.innerHTML='';const adv=(S.state&&S.state.settings&&S.state.settings.mode)==='advanced';
+ TABS.forEach(([k,l])=>{if(k==='advanced'&&!adv)return;const b=el('<button>'+l+'</button>');if(k===S.tab)b.className='on';b.onclick=()=>{S.tab=k;render()};n.appendChild(b)});
+ const sw=el('<button title="Regular: one model per agent. Advanced: per-stage models, budgets, privacy, limits.">'+(adv?'⚙ Advanced mode':'Regular mode')+'</button>');
+ sw.style.marginLeft='auto';sw.onclick=async()=>{await api('/api/settings',{mode:adv?'regular':'advanced'});if(adv&&S.tab==='advanced')S.tab='chat';await refresh();render()};n.appendChild(sw)}
 function fmtCost(c){return c==='local-compute'?'your local compute':c==='free'?'free':c==='user-subscription'?'your subscription':c==='user-api-account'?'your API account':c||'-'}
 function bindActions(root){root.querySelectorAll('[data-approve]').forEach(b=>{b.onclick=()=>approve(b.dataset.approve)});root.querySelectorAll('[data-act]').forEach(b=>{b.onclick=()=>missionAct(b.dataset.mid,b.dataset.act)})}
 function render(){nav();const s=S.state||{};document.getElementById('coname').textContent=s.company?.name?('· '+s.company.name):'';document.getElementById('zero').textContent=(s.brainoutputFundedTokens?('⚠ '+s.brainoutputFundedTokens+' unexpected paid tokens'):'Your models · your keys');
@@ -330,6 +362,44 @@ const VIEWS={
  dashboard:(s)=>el('<div><div class=card><h2>Company dashboard</h2><div class=row><div><b>'+(s.company?.name||'(no company yet)')+'</b><div class=mut>Runs on <span class=ok>your own models</span></div></div><div class=mut>Departments: '+(s.departments||[]).join(', ')+'<br>Agents: '+((s.agents||[]).length)+' (dormant by default)</div></div></div>'+
   '<div class=card><h2>Agents</h2><table><tr><th>Agent</th><th>Dept/Role</th><th>Models (slot → provider)</th><th>Status</th></tr>'+(s.agentViews||[]).map(a=>'<tr><td>'+a.id+'</td><td>'+a.department+'/'+a.role+'</td><td>'+Object.entries(a.models).map(([k,m])=>'<div><span class=mut>'+k+':</span> '+m+'</div>').join('')+'</td><td><span class="pill dormant">'+a.activation+'</span></td></tr>').join('')+'</table></div>'+
   '<div class=card><h2>Recent executions</h2>'+((s.executions||[]).slice(-5).reverse().map(e=>'<div class=node style="display:block;margin-bottom:6px">'+e.department+' · '+e.shape+' · '+e.graph.map(g=>g.model?(g.provider+'/'+g.model):g.needsConfiguration?'UNCONFIGURED':g.costSource).join(' → ')+' · <span class=mut>'+(e.summary?e.summary.tokens+' tok':'')+'</span></div>').join('')||'<span class=mut>none yet</span>')+'</div></div>'),
+ advanced:(s)=>{const agents=s.agents||[];const conns=s.connections||[];
+  const A=S.adv||(S.adv={agentId:(agents[0]||{}).id||''});
+  const a=agents.find(x=>x.id===A.agentId)||agents[0];
+  const opt=(sel)=>'<option value="">— use the slot default —</option>'+conns.map(c=>'<option value="'+c.id+'" '+(sel===c.id?'selected':'')+'>'+c.provider+'/'+c.model+' · '+(c.costSource||'')+'</option>').join('');
+  const st=(a&&a.stageRuntimes)||{},adv=(a&&a.advanced)||{};
+  const d=el('<div><div class=card><h2>⚙ Advanced — per-agent configuration</h2>'
+   +'<div class=mut>Give each execution stage its own model, runtime and provider. Set context budgets, privacy, cost limits and approval rules. Regular mode keeps one default model per agent and picks the smallest sufficient graph automatically.</div>'
+   +'<label style="margin-top:10px">Agent</label><select id=ag>'+agents.map(x=>'<option value="'+x.id+'" '+(a&&x.id===a.id?'selected':'')+'>'+x.id+' ('+x.department+'/'+x.role+')</option>').join('')+'</select>'
+   +(a?'<div class=row style="margin-top:12px">'
+     +'<div><label>Conversation model</label><select id=s_conversation>'+opt(st.conversation)+'</select></div>'
+     +'<div><label>Planner model</label><select id=s_planner>'+opt(st.planner)+'</select></div></div>'
+     +'<div class=row><div><label>Worker model</label><select id=s_worker>'+opt(st.worker)+'</select></div>'
+     +'<div><label>Reviewer model</label><select id=s_reviewer>'+opt(st.reviewer)+'</select></div></div>'
+     +'<div class=row style="margin-top:8px">'
+      +'<div><label>Fallbacks (ordered, never a paid auto-fallback)</label><select id=fb multiple size=3>'+conns.map(c=>'<option value="'+c.id+'" '+((adv.fallbacks||[]).includes(c.id)?'selected':'')+'>'+c.provider+'/'+c.model+'</option>').join('')+'</select></div>'
+      +'<div><label>Context budget (tokens)</label><input id=cb type=number value="'+(adv.contextLimits||'')+'" placeholder="e.g. 32000">'
+        +'<label>Cost limit (per run, your own spend)</label><input id=cl type=number value="'+(adv.costLimit??'')+'" placeholder="optional"></div>'
+      +'<div><label>Privacy classification</label><select id=pv>'+['public','internal','confidential','restricted'].map(p=>'<option '+((adv.privacy||'internal')===p?'selected':'')+'>'+p+'</option>').join('')+'</select>'
+        +'<label>Reasoning</label><select id=rs>'+['','low','medium','high'].map(r=>'<option value="'+r+'" '+((adv.reasoning||'')===r?'selected':'')+'>'+(r||'default')+'</option>').join('')+'</select></div>'
+     +'</div>'
+     +'<div class=row style="margin-top:8px"><div><label>Approval required for (comma-separated actions)</label><input id=ap value="'+Object.keys(a.approvalThresholds||{}).join(', ')+'" placeholder="publish, payment, deploy"></div>'
+      +'<div><label>Permissions</label><input id=pm value="'+(a.permissions||[]).join(', ')+'"></div></div>'
+     +'<div class=warn style="margin-top:8px;font-size:12px">Privacy <b>confidential</b> or <b>restricted</b> means every stage must run on a LOCAL model — a cloud model is never silently used; the stage is left unconfigured instead.</div>'
+     +'<button class=act id=save style="margin-top:12px">Save advanced settings</button> <span class=mut id=msg></span>'
+   :'<div class=mut>No agents yet — generate an organization first.</div>')+'</div></div>');
+  d.querySelector('#ag').onchange=e=>{S.adv.agentId=e.target.value;render()};
+  if(a)d.querySelector('#save').onclick=async()=>{
+    const g=id=>{const v=d.querySelector('#'+id);return v&&v.value?v.value:null};
+    const approvals={};(g('ap')||'').split(',').map(x=>x.trim()).filter(Boolean).forEach(k=>approvals[k]='human');
+    const r=await api('/api/agent-advanced',{agentId:a.id,
+      stages:{conversation:g('s_conversation'),planner:g('s_planner'),worker:g('s_worker'),reviewer:g('s_reviewer')},
+      fallbacks:[...d.querySelectorAll('#fb option:checked')].map(o=>o.value),
+      contextLimits:g('cb')?Number(g('cb')):null,costLimit:g('cl')?Number(g('cl')):null,
+      privacy:g('pv'),reasoning:g('rs'),
+      approvals,permissions:(g('pm')||'').split(',').map(x=>x.trim()).filter(Boolean)});
+    if(r.error){alert(r.error);return}
+    d.querySelector('#msg').textContent='saved';await refresh();render()};
+  return d},
  chat:(s)=>{const C=S.chat;const depts=s.departments||[];const agents=s.agents||[];
   const conv=(s.conversations||[]).find(x=>x.id===C.convId)||(s.conversations||[]).slice(-1)[0]||null;
   if(conv&&!C.convId)C.convId=conv.id;   // restore the latest conversation on load (history persists)
@@ -341,7 +411,7 @@ const VIEWS={
      +'<div><label>Department</label><select id=dp><option value="">—</option>'+depts.map(x=>'<option '+(C.dept===x?'selected':'')+'>'+x+'</option>').join('')+'</select></div>'
      +'<div><label>Agent</label><select id=ag><option value="">—</option>'+agents.map(a=>'<option value="'+a.id+'" '+(C.agent===a.id?'selected':'')+'>'+a.id+'</option>').join('')+'</select></div>'
      +'<div><label>Mode</label><select id=md>'+['ask','plan','execute','review'].map(x=>'<option '+(C.mode===x?'selected':'')+'>'+x+'</option>').join('')+'</select></div>'
-   +'</div></div>'
+   +'</div>'+(((s.settings||{}).mode==='advanced'&&C.agent)?advSummary((s.agents||[]).find(x=>x.id===C.agent)):'')+'</div>'
    +'<div class=card><div id=tr style="max-height:340px;overflow:auto">'+(conv?conv.messages.map(m=>'<div style="margin-bottom:10px"><b>'+(m.role==='user'?'You':'BrainOutput')+'</b> <span class=mut style="font-size:11px">'+m.mode+(m.meta&&m.meta.model?' · '+m.meta.provider+'/'+m.meta.model+' · '+(m.meta.costSource||''):'')+'</span><div style="white-space:pre-wrap">'+String(m.text).replace(/[&<]/g,c=>c==='&'?'&amp;':'&lt;')+'</div>'+(m.meta&&m.meta.citations&&m.meta.citations.length?'<div class=mut style="font-size:11px">sources: '+m.meta.citations.join(' · ')+'</div>':'')+'</div>').join(''):'<span class=mut>No messages yet — ask something, or switch to Plan to draft a mission.</span>')+'</div>'
    +'<textarea id=msg rows=2 placeholder="e.g. Draft a refund policy reply in Spanish  (use @agent-id to talk to one agent)"></textarea>'
    +'<button class=act id=send style="margin-top:8px">Send</button> <span class=mut id=busy></span></div>'
@@ -385,6 +455,10 @@ const VIEWS={
   ((ex.codeFiles&&ex.codeFiles.length)?('<h2 style="margin-top:14px">Files (real OpenCode output)</h2>'+ex.codeFiles.map(f=>'<div class=mut style="margin-top:6px">'+f.name+'</div><pre>'+(f.content||'').replace(/[&<]/g,c=>c==="&"?"&amp;":"&lt;")+'</pre>').join('')):'')+
   '<h2 style="margin-top:14px">Logs</h2><pre>'+ex.logs.join('\\n')+'</pre></div></div>')}
 };
+function advSummary(a){if(!a)return '';const st=a.stageRuntimes||{},ad=a.advanced||{};
+ const parts=Object.entries(st).filter(([,v])=>v).map(([k,v])=>k+'→'+v);
+ return '<div class=mut style="margin-top:8px;font-size:12px">⚙ advanced · '+(parts.join(' · ')||'no per-stage overrides')
+  +' · privacy: '+(ad.privacy||'internal')+(ad.contextLimits?' · budget: '+ad.contextLimits+' tok':'')+(ad.costLimit!=null?' · cost limit: '+ad.costLimit:'')+'</div>'}
 function missionCard(m){const g=(m.graph&&m.graph.nodes||[]).join(' → ');
  return '<div class=card><h2>Mission composer</h2>'
   +'<div class=row><div><label>Objective</label><input id=mo value="'+String(m.objective||'').replace(/"/g,'&quot;')+'"></div>'

@@ -12,7 +12,7 @@ import { join } from "node:path";
 
 const DEFAULT_DIR = process.env.BO_CE_DATA || join(process.env.HOME || ".", ".local", "share", "bo-community");
 
-const EMPTY_DEF = { company: { name: "", brainoutputFundedInference: "forbidden" }, departments: [], agents: [], modelConnections: [], modelAssignments: {}, policies: {} };
+const EMPTY_DEF = { company: { name: "", brainoutputFundedInference: "forbidden" }, departments: [], agents: [], modelConnections: [], modelAssignments: {}, policies: {}, settings: { mode: "regular" } };
 const EMPTY_RUNTIME = { projects: [], tasks: [], executions: [], artifacts: [], approvals: [], conversations: [], missions: [] };
 
 // Runtime history bounds: runtime.json must not grow without limit. Oldest records are dropped
@@ -62,6 +62,7 @@ export class Store {
   setConnections(list) { this.def.modelConnections = list.map(stripSecrets); return this; }
   setAssignments(map) { this.def.modelAssignments = { ...map }; return this; }
   setPolicies(p) { this.def.policies = { ...p }; return this; }
+  setSettings(p) { this.def.settings = { mode: "regular", ...(this.def.settings || {}), ...p }; return this; }
 
   // ── runtime records (append/update by id) ───────────────────────────────────────────────────
   _upsert(coll, rec) { const i = this.runtime[coll].findIndex((x) => x.id === rec.id); if (i >= 0) this.runtime[coll][i] = { ...this.runtime[coll][i], ...rec }; else this.runtime[coll].push(rec); return rec; }
