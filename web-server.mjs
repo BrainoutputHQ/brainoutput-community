@@ -27,6 +27,8 @@ import { createWorkTwin, setMode as twinSetMode, connectWorkSource, grantTwinSco
   meetingBrief, followUpSuggestions, draftReply, sendDraft, emailToMission, taskPacket, recordDelegation,
   withAudit, auditRecord, WORK_TWIN_MODES, publicTwin, setModelPolicy, modelForStage, TWIN_MODEL_STAGES } from "./worktwin.mjs";
 import { connectMailSource, workSourceOptions, smtpSend } from "./mail-sources.mjs";
+import { connectDriveSource, driveProviderOptions } from "./drive-sources.mjs";
+import { indexFiles, searchFiles } from "./worktwin.mjs";
 import { efficiencyReport } from "./efficiency.mjs";
 import { selectModel } from "./ce-core.mjs";
 
@@ -157,7 +159,7 @@ async function api(req, res, url) {
       return json(res, publicState());
     } catch (e) { return json(res, { error: e.message }, 400); }
   }
-  if (url.pathname === "/api/worktwin/options") return json(res, { options: workSourceOptions(), modes: WORK_TWIN_MODES });
+  if (url.pathname === "/api/worktwin/options") return json(res, { options: workSourceOptions(), drives: driveProviderOptions(), modes: WORK_TWIN_MODES });
   if (url.pathname === "/api/worktwin/create") return twinCreate(res, b);
   if (url.pathname === "/api/worktwin/connect") return twinConnect(res, b);
   if (url.pathname === "/api/worktwin/mode") return twinMode(res, b);
@@ -176,6 +178,12 @@ async function api(req, res, url) {
   return json(res, { error: "unknown endpoint" }, 404);
 }
 
+// Work-source kinds that are DOCUMENT stores rather than mail.
+const DRIVE_KINDS = new Set(["drive", "local-drive", "google-drive", "onedrive", "sharepoint", "nextcloud"]);
+const driveSpecFor = (acc) => connectDriveSource({
+  provider: acc.config?.provider || (acc.kind === "drive" ? "local" : acc.kind),
+  account: acc.account, ...(acc.config || {}) });
+
 // ── Work Twin ───────────────────────────────────────────────────────────────────────────────────
 const twins = () => store.runtime.workTwins || [];
 const getTwin = (id) => twins().find((t) => t.id === id) || twins()[0] || null;
@@ -192,10 +200,16 @@ async function twinConnect(res, b) {
   let t = getTwin(b.twinId);
   if (!t) return json(res, { error: "no Work Twin yet — create one first" }, 404);
   try {
-    // Probe the source so a connection is only stored if it actually works.
-    const src = connectMailSource({ ...b.source, account: b.source?.account || t.employee.id });
+    // Probe the source so a connection is only stored if it actually works — mail and document
+    // stores use different clients, so route on the kind.
+    const isDrive = DRIVE_KINDS.has(b.source?.kind);
+    const src = isDrive
+      ? connectDriveSource({ provider: b.source.provider || (b.source.kind === "drive" ? "local" : b.source.kind),
+          ...b.source, account: b.source?.account || t.employee.id })
+      : connectMailSource({ ...b.source, account: b.source?.account || t.employee.id });
     let sample = [];
-    try { sample = await src.listMessages({ limit: 5 }); } finally { await src.close?.(); }
+    try { sample = isDrive ? await src.listFiles({ limit: 5 }) : await src.listMessages({ limit: 5 }); }
+    finally { await src.close?.(); }
     const { kind, account, label, resources, password, ...cfg } = b.source;
     t = connectWorkSource(t, { kind, account: account || t.employee.id, label,
       resources: resources || ["INBOX"],
@@ -228,9 +242,19 @@ async function twinSync(res, b) {
   let fetched = 0;
   const errors = [];
   t = { ...t, index: [], events: [] };
+  t = { ...t, files: [] };
   for (const acc of t.accounts) {
     try {
       const pwd = store.openSecret(acc.secret) || (acc.config?.passwordEnv ? process.env[acc.config.passwordEnv] : null);
+      if (DRIVE_KINDS.has(acc.kind)) {
+        // Documents: index metadata + a bounded snippet, exactly like mail — never whole files.
+        const dsrc = driveSpecFor(acc);
+        const files = await dsrc.listFiles({ limit: b.limit || 200 });
+        await dsrc.close?.();
+        t = indexFiles(t, files.map((x) => ({ ...x, accountId: acc.id })));
+        fetched += files.length;
+        continue;
+      }
       const src = connectMailSource({ kind: acc.kind, account: acc.account, ...(acc.config || {}),
         ...(pwd ? { password: pwd } : {}), ...(b.credentials?.[acc.id] || {}) });
       const msgs = await src.listMessages({ limit: b.limit || 50 });
@@ -242,7 +266,7 @@ async function twinSync(res, b) {
     } catch (e) { errors.push(`${acc.id}: ${e.message}`); }
   }
   saveTwin(t);
-  return json(res, { indexed: (t.index || []).length, fetched, errors, twin: publicTwin(t) });
+  return json(res, { indexed: (t.index || []).length, files: (t.files || []).length, fetched, errors, twin: publicTwin(t) });
 }
 
 /** Work Twin capabilities. Every result carries its sources and the permission that allowed it. */
@@ -260,6 +284,7 @@ async function twinAction(res, b) {
       case "priority-summary": return json(res, { permission: perm, items: prioritySummary(t, { now, vip: b.vip || [] }) });
       case "unanswered": return json(res, { permission: perm, threads: unansweredThreads(t, { now, olderThanHours: b.olderThanHours || 0 }) });
       case "search-mail": return json(res, { permission: perm, hits: retrieveForRequest(t, b.query || "", { k: b.k || 8 }) });
+      case "search-files": return json(res, { permission: perm, hits: searchFiles(t, b.query || "", { k: b.k || 8 }) });
       case "commitments": return json(res, { permission: perm, items: extractCommitments(t, { refs: b.refs || null }) });
       case "meeting-brief": return json(res, { permission: perm, briefs: meetingBrief(t, b.events || t.events || [], { window: 5 }) });
       case "follow-ups": return json(res, { permission: perm, items: followUpSuggestions(t, { now, olderThanHours: b.olderThanHours ?? 48 }) });
@@ -483,8 +508,12 @@ async function chatSend(res, b) {
             reply = `Prepared a compact task packet for ${packet.department} (${packet.facts.length} fact(s), ${packet.sources.length} source(s)). Your mailbox and this chat were not forwarded. Use the Work Twin tab or Plan mode to launch it.`;
           }
         } else {
-          reply = src.length ? `Found ${src.length}:\n` + src.map((x) => `• ${x.subject} — ${x.from}\n  ${x.snippet.slice(0, 120)}`).join("\n")
-            : "Nothing matched in the folders you authorized.";
+          // Results span mail AND documents — format each by what it actually is.
+          reply = src.length
+            ? `Found ${src.length}:\n` + src.map((x) => x.subject !== undefined
+                ? `• ${x.subject} — ${x.from}\n  ${String(x.snippet || "").replace(/\s+/g, " ").slice(0, 120)}`
+                : `• ${x.citation}\n  ${String(x.snippet || "").replace(/\s+/g, " ").slice(0, 120)}`).join("\n")
+            : "Nothing matched in the mail or documents you authorized.";
         }
         reply += `\n\n(permission: ${perm.scope} in ${t.mode} mode${perm.requiresApproval ? " · approval required" : ""})`;
       }

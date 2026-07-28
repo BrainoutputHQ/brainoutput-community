@@ -40,6 +40,19 @@ export const CONNECTOR_CATALOG = {
   "mastodon":{ label: "Mastodon",mechanism: "api-key-local", category: "social", openSource: true, altTo: ["x-twitter"], needsImageGen: true, worksWith: "Mastodon", scopes: ["read", "draft", "communicate"] },
   "x-twitter":{label: "X (Twitter)", mechanism: "oauth",    category: "social", openSource: false, needsImageGen: true, worksWith: "X", scopes: ["read", "draft", "communicate"] },
   "linkedin":{ label: "LinkedIn",mechanism: "oauth",         category: "social", openSource: false, needsImageGen: true, worksWith: "LinkedIn", scopes: ["read", "draft", "communicate"] },
+  // — Banking / crypto (value-moving actions are ALWAYS sensitive + human-approved) —
+  "plaid":   { label: "Plaid",    mechanism: "api-key-local", category: "banking", openSource: false, worksWith: "Plaid", scopes: ["read"] },
+  "coinbase":{ label: "Coinbase", mechanism: "api-key-local", category: "crypto",  openSource: false, worksWith: "Coinbase", scopes: ["read", "sensitive"] },
+  "binance": { label: "Binance",  mechanism: "api-key-local", category: "crypto",  openSource: false, worksWith: "Binance", scopes: ["read", "sensitive"] },
+  // — Calendars & drives —
+  "google-calendar": { label: "Google Calendar", mechanism: "oauth", category: "calendar", openSource: false, worksWith: "Google Calendar", scopes: ["read", "draft", "write"] },
+  "outlook-calendar":{ label: "Outlook Calendar",mechanism: "oauth", category: "calendar", openSource: false, worksWith: "Microsoft 365", scopes: ["read", "draft", "write"] },
+  "caldav":  { label: "CalDAV",   mechanism: "api-key-local", category: "calendar", openSource: true, altTo: ["google-calendar"], worksWith: "any CalDAV server", scopes: ["read", "draft", "write"] },
+  "google-drive": { label: "Google Drive", mechanism: "oauth", category: "files", openSource: false, worksWith: "Google Drive", scopes: ["read", "draft", "write", "sensitive"] },
+  "onedrive": { label: "OneDrive", mechanism: "oauth", category: "files", openSource: false, worksWith: "OneDrive", scopes: ["read", "draft", "write", "sensitive"] },
+  "sharepoint": { label: "SharePoint", mechanism: "oauth", category: "files", openSource: false, worksWith: "SharePoint", scopes: ["read", "draft", "write", "sensitive"] },
+  "local-drive": { label: "A folder on this computer", mechanism: "file-rag", category: "files", openSource: true, altTo: ["google-drive", "onedrive"], worksWith: "your filesystem", scopes: ["read"] },
+
   // — Knowledge / files —
   "nextcloud":{label: "Nextcloud",mechanism: "api-key-local",category: "files", openSource: true, altTo: ["google-drive", "sharepoint"], worksWith: "Nextcloud", scopes: ["read", "write"] },
   // — Generic —

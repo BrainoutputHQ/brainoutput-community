@@ -135,6 +135,37 @@ export function parseIcs(text) {
   return events.sort((a, b) => (a.start || 0) - (b.start || 0));
 }
 
+/**
+ * A CalDAV calendar (Nextcloud, Radicale, Fastmail, iCloud…). Fetches the collection with a REPORT and
+ * parses the returned iCalendar data. Uses the user's own credentials.
+ */
+export function caldavCalendarSource({ account, url, user = null, password = null, timeoutMs = 15000 } = {}) {
+  const accountId = `calendar:${account}`;
+  const auth = user ? { Authorization: `Basic ${Buffer.from(`${user}:${password || ""}`).toString("base64")}` } : {};
+  return {
+    kind: "calendar", accountId, verified: true,
+    async listMessages() { return []; },
+    async listEvents({ from = null, to = null } = {}) {
+      const u = new URL(url);
+      const lib = u.protocol === "https:" ? https : http;
+      const body = `<?xml version="1.0"?><c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:prop><c:calendar-data/></d:prop><c:filter><c:comp-filter name="VCALENDAR"><c:comp-filter name="VEVENT"/></c:comp-filter></c:filter></c:calendar-query>`;
+      const xml = await new Promise((resolve, reject) => {
+        const req = lib.request(u, { method: "REPORT", timeout: timeoutMs,
+          headers: { "Content-Type": "application/xml", Depth: "1", "Content-Length": Buffer.byteLength(body), ...auth } },
+          (res) => { let d = ""; res.on("data", (c) => (d += c));
+            res.on("end", () => (res.statusCode < 400 ? resolve(d) : reject(new Error(`caldav ${res.statusCode}`)))); });
+        req.on("error", reject); req.on("timeout", () => req.destroy(new Error("caldav: timeout")));
+        req.write(body); req.end();
+      });
+      // calendar-data comes back escaped inside the multistatus body
+      const decoded = String(xml).replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+      const events = parseIcs(decoded);
+      return events.filter((e) => (from == null || (e.start ?? 0) >= from) && (to == null || (e.start ?? 0) <= to));
+    },
+    async close() {},
+  };
+}
+
 /** A local calendar: an .ics file or inline events. Fully local. */
 export function localCalendarSource({ account = "local", ics = null, icsText = null, events = null } = {}) {
   const accountId = `calendar:${account}`;
@@ -388,7 +419,7 @@ export function connectMailSource(spec = {}) {
     case "imap": return imapSource(spec);
     case "google-workspace": return googleWorkspaceSource(spec);
     case "microsoft-365": return microsoft365Source(spec);
-    case "calendar": return localCalendarSource(spec);
+    case "calendar": return spec.url ? caldavCalendarSource(spec) : localCalendarSource(spec);
     default: throw new Error(`unknown work source kind '${spec.kind}'`);
   }
 }

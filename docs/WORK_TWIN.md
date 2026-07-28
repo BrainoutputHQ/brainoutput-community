@@ -42,10 +42,28 @@ One abstraction, normalized messages and events (`mail-sources.mjs`):
 | **Local / imported mail** — Maildir · mbox · JSON | ✅ verified |
 | **Google Workspace / Gmail** | ⚠️ request shapes implemented; **unverified** — needs your OAuth credentials |
 | **Microsoft 365 / Outlook** | ⚠️ request shapes implemented; **unverified** — needs your OAuth credentials |
-| calendars · Drive/OneDrive/SharePoint · workplace chat · existing connectors & RAG | share the same abstraction |
+| **Calendars** — iCalendar (.ics) files and **CalDAV** (Nextcloud, Radicale, Fastmail…) | ✅ verified (ICS); CalDAV client implemented |
+| **Drives** — a folder on this computer, and **WebDAV/Nextcloud** | ✅ verified (local); WebDAV verified against a PROPFIND responder |
+| **Google Drive · OneDrive · SharePoint** | ⚠️ request shapes implemented; **unverified** — need your OAuth credentials |
+| workplace chat · existing connectors & RAG | share the same abstraction |
 
 **Every new connection defaults to Mirror (read-only).** Credentials stay local: a password is stored
 in the local store (or referenced via `config.passwordEnv`) and is **stripped from every API response**.
+
+## Capabilities
+
+Documents are indexed the same way as mail — **metadata plus a bounded snippet, never whole files** —
+and `searchFiles` / the chat search across mail *and* documents in one place, with citations.
+
+## Financial accounts (`finance-connectors.mjs`)
+
+**Plaid · Coinbase · Binance.** Reading (balances, transactions, positions) is allowed once connected.
+Anything that **moves value** — an order, a transfer, a withdrawal — is `sensitive`: it needs a
+**separate explicit grant AND a human approval every time**, a withdrawal destination must be on an
+**allowlist**, and an optional **amount ceiling** applies. There is no setting that makes any of it
+silent, and an unauthorized action is refused **before a request is ever built**. Plaid is read-only by
+design here — no money movement at all. Signing is unit-tested (Binance against the published HMAC
+test vector); the **live endpoints are unverified** — no bank or exchange credentials exist here.
 
 ## Capabilities
 

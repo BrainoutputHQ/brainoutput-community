@@ -34,7 +34,11 @@ export function modeScopes(mode) { return [...(MODE_SCOPES[mode] || [])]; }
 // Work-source kinds sharing one connection abstraction.
 export const WORK_SOURCE_KINDS = [
   "google-workspace", "microsoft-365", "imap", "local-mail",
-  "calendar", "drive", "onedrive", "sharepoint", "workplace-chat", "connector", "rag",
+  "calendar", "caldav", "drive", "onedrive", "sharepoint", "google-drive", "nextcloud", "local-drive",
+  "workplace-chat", "connector", "rag",
+  // Financial accounts: readable by the twin; anything that moves value goes through
+  // finance-connectors.authorizeFinanceAction (explicit grant + human approval, every time).
+  "plaid", "coinbase", "binance",
 ];
 
 const tokenize = (s) => (String(s).toLowerCase().match(/[a-z0-9]+/g) || []).filter((w) => w.length > 2);
@@ -63,6 +67,7 @@ export function createWorkTwin({ id, employee, name = null, modelPolicy = null }
     taskHistory: [],
     audit: [],
     index: [],             // deterministic message index (headers + snippets) — NOT full bodies
+    files: [],             // deterministic document index (metadata + snippets) — NOT whole files
     activation: "dormant",
   };
 }
@@ -135,7 +140,7 @@ export function grantTwinScope(twin, { scope, action = null, resource = null, ap
 // treated as WRITE — fail-safe: an unknown verb never silently counts as reading.
 const READ_ACTIONS = new Set([
   "priority-summary", "unanswered", "search-mail", "commitments", "meeting-brief", "follow-ups",
-  "explain", "inspect", "email-to-mission", "delegate",
+  "explain", "inspect", "email-to-mission", "delegate", "search-files", "balances", "transactions",
 ]);
 // Different surfaces name the same act differently ("send-draft" in the API, "send-email" inside).
 // Canonicalize so a grant the user creates for what they SEE always matches what is checked.
@@ -267,6 +272,44 @@ export function indexMessages(twin, messages = [], { snippetChars = 240 } = {}) 
   return { ...twin, index: [...(twin.index || []), ...entries] };
 }
 
+/**
+ * Index DRIVE FILES: metadata plus a bounded snippet — never whole documents. Same discipline as mail:
+ * a drive must never become model context. Files outside the authorized folders are not indexed.
+ */
+export function indexFiles(twin, files = [], { snippetChars = 400 } = {}) {
+  const allowed = new Set(twin.resources || []);
+  const admissible = allowed.size
+    ? files.filter((f) => !f.folder || allowed.has(f.folder) || allowed.has(f.accountId) || [...allowed].some((a) => String(f.path || "").startsWith(a)))
+    : files;
+  const entries = admissible.map((f) => ({
+    kind: "file",
+    id: f.id, accountId: f.accountId || null, name: f.name, path: f.path, mimeType: f.mimeType,
+    size: f.size ?? null, modified: f.modified ?? null, folder: f.folder ?? null,
+    snippet: String(f.snippet || "").slice(0, snippetChars),
+    ref: `${f.accountId || "drive"}:${f.id}`,
+    terms: tokenize(`${f.name || ""} ${f.path || ""} ${String(f.snippet || "").slice(0, snippetChars)}`),
+  }));
+  return { ...twin, files: [...(twin.files || []), ...entries] };
+}
+
+/** Search authorized documents. Returns compact, cited results — never file contents in bulk. */
+export function searchFiles(twin, query, { k = 8 } = {}) {
+  const q = new Set(tokenize(query));
+  return (twin.files || [])
+    .map((f) => {
+      const tf = {};
+      for (const t of f.terms) tf[t] = (tf[t] || 0) + 1;
+      let score = 0;
+      for (const t of q) if (tf[t]) score += 1 + Math.log(1 + tf[t]);
+      return { f, score };
+    })
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.score - a.score || (b.f.modified || 0) - (a.f.modified || 0))
+    .slice(0, k)
+    .map((x) => ({ ref: x.f.ref, name: x.f.name, path: x.f.path, mimeType: x.f.mimeType, modified: x.f.modified,
+      snippet: x.f.snippet, citation: `${x.f.name}${x.f.folder && x.f.folder !== "." ? ` (${x.f.folder})` : ""}` }));
+}
+
 /** Only the resources the twin is permitted to see. */
 function permittedIndex(twin) {
   const allowed = new Set(twin.resources || []);
@@ -278,9 +321,10 @@ function permittedIndex(twin) {
  * Retrieve ONLY what is relevant to this request, as compact, source-referenced items. This is the
  * boundary: the mailbox never becomes context — this small set does.
  */
-export function retrieveForRequest(twin, query, { k = 5 } = {}) {
+export function retrieveForRequest(twin, query, { k = 5, includeFiles = true } = {}) {
   const q = new Set(tokenize(query));
-  return permittedIndex(twin)
+  const docs = includeFiles ? searchFiles(twin, query, { k }) : [];
+  const mail = permittedIndex(twin)
     .map((e) => {
       const tf = {};
       for (const t of e.terms) tf[t] = (tf[t] || 0) + 1;
@@ -293,6 +337,8 @@ export function retrieveForRequest(twin, query, { k = 5 } = {}) {
     .slice(0, k)
     .map((x) => ({ ref: x.e.ref, subject: x.e.subject, from: x.e.from, date: x.e.date,
       snippet: x.e.snippet, citation: `${x.e.from || "unknown"} — ${x.e.subject || "(no subject)"}` }));
+  // Mail and documents share one retrieval surface, and the caller still gets at most `k` items.
+  return [...mail, ...docs].slice(0, k);
 }
 
 // ── Core capabilities (deterministic; a model only writes prose) ─────────────────────────────────

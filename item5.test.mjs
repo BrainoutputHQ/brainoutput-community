@@ -77,6 +77,28 @@ test("OSS company playbook: 5 depts, all free/local + OSS + read-only + dormant"
   assert.equal(listPlaybooks()[0].key, "oss-company");
 });
 
+test("catalog covers calendars, drives and financial accounts with the right scopes", () => {
+  for (const k of ["google-calendar", "outlook-calendar", "caldav", "google-drive", "onedrive", "sharepoint", "local-drive"])
+    assert.ok(CONNECTOR_CATALOG[k], `missing ${k}`);
+  // Banking is READ-ONLY by catalog; crypto exposes sensitive but never write/communicate.
+  assert.deepEqual(CONNECTOR_CATALOG.plaid.scopes, ["read"]);
+  for (const k of ["coinbase", "binance"]) {
+    assert.deepEqual(CONNECTOR_CATALOG[k].scopes, ["read", "sensitive"]);
+    assert.ok(!CONNECTOR_CATALOG[k].scopes.includes("write"));
+  }
+  // a local folder / CalDAV are the open-source alternatives
+  assert.equal(CONNECTOR_CATALOG["local-drive"].openSource, true);
+  assert.equal(CONNECTOR_CATALOG.caldav.openSource, true);
+});
+
+test("a financial connector cannot be granted anything but sensitive/read", () => {
+  const c = newConnector("binance");
+  assert.throws(() => grantScope(c, { scope: "communicate" }), /does not expose/);
+  assert.throws(() => grantScope(newConnector("plaid"), { scope: "sensitive" }), /does not expose/); // Plaid: read only
+  const g = grantScope(c, { scope: "sensitive", principal: { level: "agent", id: "fin" } });
+  assert.equal(g.grants[0].approval, "human");   // forced human, always
+});
+
 test("connectorCatalog surfaces category/openSource/replaces for the picker", () => {
   const cat = connectorCatalog();
   const gitea = cat.find((c) => c.connector === "gitea");

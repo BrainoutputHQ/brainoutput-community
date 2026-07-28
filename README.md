@@ -96,8 +96,10 @@ product says which for every agent. All user/free/local; never a BrainOutput cre
 A **Work Twin** is a dedicated agent for **one employee** and their authorized work context — distinct
 from a departmental agent. Three modes: **Mirror** (read/search/summarize, the default) · **Copilot**
 (prepares drafts, never sends) · **Delegate** (executes explicitly granted actions, with approvals).
-It connects to **IMAP/SMTP, local/imported mail (Maildir · mbox · JSON), Google Workspace and
-Microsoft 365**, and it never treats your mailbox as context: it indexes headers plus a snippet and
+It connects to **mail** (IMAP/SMTP · Maildir · mbox · JSON · Google Workspace · Microsoft 365),
+**calendars** (.ics · CalDAV · Google · Outlook), **drives** (a local folder · Nextcloud/WebDAV ·
+Google Drive · OneDrive · SharePoint) and **financial accounts** (Plaid · Coinbase · Binance — reading
+only, unless you grant and approve each value-moving action), and it never treats your mailbox as context: it indexes headers plus a snippet and
 retrieves only what a request needs, with sources. **No silent impersonation** — every draft is
 attributed and every action is audited (who · on whose behalf · which model · which permission · which
 approval · which sources). See **[docs/WORK_TWIN.md](docs/WORK_TWIN.md)**.
