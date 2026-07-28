@@ -8,7 +8,7 @@ import { newConnector } from "./connectors.mjs";
 
 const free = (model, provider = "free-provider", extra = {}) =>
   runtimeConnection({ runtime: "generic-llm", provider, model, authSource: "free", ...extra });
-const local = (model = "qwen2.5-7b-32k") =>
+const local = (model = "qwen3.5-122b") =>
   runtimeConnection({ runtime: "local-openai", provider: "ollama", model, authSource: "local", modelLocation: "local", contextLimit: 32000 });
 
 /**

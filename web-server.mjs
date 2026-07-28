@@ -716,24 +716,67 @@ label{display:block;margin:8px 0 4px;color:var(--mut);font-size:12px}.row{displa
 <header><h1>🏢 BrainOutput Community</h1><span class=mut id=coname></span><span class=zero id=zero>Your models · your keys</span></header>
 <nav id=nav></nav><main id=view></main>
 <script>
-const S={state:null,tab:'chat',twin:{busy:'',out:null},chat:{scope:'company',dept:'',agent:'',mode:'ask',convId:null,mission:null,busy:false}};
+const S={state:null,tab:'chat',settingsOpen:false,settingsTab:'connections',setupDone:false,twin:{busy:'',out:null},chat:{scope:'company',dept:'',agent:'',mode:'ask',convId:null,mission:null,busy:false}};
 const el=(h)=>{const d=document.createElement('div');d.innerHTML=h;return d.firstElementChild};
 const CSRF='__BO_CSRF__';
 async function api(p,body){const r=await fetch(p,body?{method:'POST',headers:{'Content-Type':'application/json','X-BO-CSRF':CSRF},body:JSON.stringify(body)}:{headers:{'X-BO-CSRF':CSRF}});return r.json()}
 async function refresh(){S.state=await api('/api/state');render()}
-const TABS=[['chat','💬 Chat'],['twin','👤 Work Twin'],['dashboard','Dashboard'],['connections','1 · Connections'],['company','2 · Company'],['org','3 · Organization'],['assign','4 · Assignments'],['task','6 · New Objective'],['exec','7 · Executions'],['advanced','⚙ Advanced']];
-function nav(){const n=document.getElementById('nav');n.innerHTML='';const adv=(S.state&&S.state.settings&&S.state.settings.mode)==='advanced';
- TABS.forEach(([k,l])=>{if(k==='advanced'&&!adv)return;const b=el('<button>'+l+'</button>');if(k===S.tab)b.className='on';b.onclick=()=>{S.tab=k;render()};n.appendChild(b)});
+// Daily surface first; everything configurable lives behind Settings. Until a company exists the
+// nav collapses to the guided Setup flow — a first-time user should not land on an empty chat.
+const MAIN_TABS=[['chat','💬 Chat'],['twin','👤 Work Twin'],['work','📁 Work'],['settings','⚙ Settings']];
+const SETUP_TABS=[['connections','1 · Connect a model'],['company','2 · Your company'],['org','3 · Your team'],['assign','4 · Models per role']];
+const SETTINGS_TABS=[['connections','Models & runtimes'],['company','Company'],['org','Team'],['assign','Assignments'],['advanced','Advanced'],['exec','Run history']];
+function onboarded(s){return !!(s&&(s.agents||[]).length)}
+function nav(){const n=document.getElementById('nav');n.innerHTML='';const s=S.state||{};
+ const adv=(s.settings&&s.settings.mode)==='advanced';
+ if(!onboarded(s)){                                   // FIRST RUN — the guided sequence, in order
+   n.appendChild(el('<span class=mut style="align-self:center;margin-right:10px;font-size:12px">Setup</span>'));
+   SETUP_TABS.forEach(([k,l])=>{const b=el('<button>'+l+'</button>');if(k===S.tab)b.className='on';b.onclick=()=>{S.tab=k;render()};n.appendChild(b)});
+   const skip=el('<button title="Skip setup and go straight to the chat">Skip →</button>');
+   skip.style.marginLeft='auto';skip.onclick=()=>{S.setupDone=true;S.tab='chat';render()};n.appendChild(skip);
+   return;
+ }
+ MAIN_TABS.forEach(([k,l])=>{const b=el('<button>'+l+'</button>');if(k===S.tab||(k==='settings'&&S.settingsOpen))b.className='on';
+   b.onclick=()=>{if(k==='settings'){S.settingsOpen=true;S.tab=S.settingsTab||'connections'}else{S.settingsOpen=false;S.tab=k}render()};n.appendChild(b)});
  const sw=el('<button title="Regular: one model per agent. Advanced: per-stage models, budgets, privacy, limits.">'+(adv?'⚙ Advanced mode':'Regular mode')+'</button>');
- sw.style.marginLeft='auto';sw.onclick=async()=>{await api('/api/settings',{mode:adv?'regular':'advanced'});if(adv&&S.tab==='advanced')S.tab='chat';await refresh();render()};n.appendChild(sw)}
+ sw.style.marginLeft='auto';sw.onclick=async()=>{await api('/api/settings',{mode:adv?'regular':'advanced'});await refresh();render()};n.appendChild(sw)}
+
+/** Settings sub-navigation, shown only inside Settings. */
+function settingsNav(){const adv=((S.state||{}).settings||{}).mode==='advanced';
+ const d=el('<div class=card style="padding:10px 12px"><span class=mut style="font-size:12px;margin-right:10px">Settings</span><span id=sn></span></div>');
+ const host=d.querySelector('#sn');
+ SETTINGS_TABS.forEach(([k,l])=>{if(k==='advanced'&&!adv)return;const b=el('<button>'+l+'</button>');
+   if(k===S.tab)b.className='on';b.onclick=()=>{S.settingsTab=k;S.tab=k;render()};host.appendChild(b)});
+ return d}
 function fmtCost(c){return c==='local-compute'?'your local compute':c==='free'?'free':c==='user-subscription'?'your subscription':c==='user-api-account'?'your API account':c||'-'}
 function bindActions(root){root.querySelectorAll('[data-approve]').forEach(b=>{b.onclick=()=>approve(b.dataset.approve)});root.querySelectorAll('[data-act]').forEach(b=>{b.onclick=()=>missionAct(b.dataset.mid,b.dataset.act)})}
 function render(){nav();const s=S.state||{};document.getElementById('coname').textContent=s.company?.name?('· '+s.company.name):'';document.getElementById('zero').textContent=(s.brainoutputFundedTokens?('⚠ '+s.brainoutputFundedTokens+' unexpected paid tokens'):'Your models · your keys');
-const v=document.getElementById('view');v.innerHTML='';const view=VIEWS[S.tab](s);v.appendChild(view);bindActions(v)}
+const v=document.getElementById('view');v.innerHTML='';// Route a fresh install into setup; once there is a team, land on the chat.
+ if(!onboarded(s)&&!S.setupDone&&!SETUP_TABS.some(([k])=>k===S.tab))S.tab='connections';
+ if(onboarded(s)&&SETUP_TABS.some(([k])=>k===S.tab)&&!S.settingsOpen){S.settingsOpen=true;S.settingsTab=S.tab}
+ if(S.settingsOpen)v.appendChild(settingsNav());
+ const view=VIEWS[S.tab](s);v.appendChild(view);bindActions(v)}
 const VIEWS={
  dashboard:(s)=>el('<div><div class=card><h2>Company dashboard</h2><div class=row><div><b>'+(s.company?.name||'(no company yet)')+'</b><div class=mut>Runs on <span class=ok>your own models</span></div></div><div class=mut>Departments: '+(s.departments||[]).join(', ')+'<br>Agents: '+((s.agents||[]).length)+' (dormant by default)</div></div></div>'+
   '<div class=card><h2>Agents</h2><table><tr><th>Agent</th><th>Dept/Role</th><th>Models (slot → provider)</th><th>Status</th></tr>'+(s.agentViews||[]).map(a=>'<tr><td>'+a.id+'</td><td>'+a.department+'/'+a.role+'</td><td>'+Object.entries(a.models).map(([k,m])=>'<div><span class=mut>'+k+':</span> '+m+'</div>').join('')+'</td><td><span class="pill dormant">'+a.activation+'</span></td></tr>').join('')+'</table></div>'+
   '<div class=card><h2>Recent executions</h2>'+((s.executions||[]).slice(-5).reverse().map(e=>'<div class=node style="display:block;margin-bottom:6px">'+e.department+' · '+e.shape+' · '+e.graph.map(g=>g.model?(g.provider+'/'+g.model):g.needsConfiguration?'UNCONFIGURED':g.costSource).join(' → ')+' · <span class=mut>'+(e.summary?e.summary.tokens+' tok':'')+'</span></div>').join('')||'<span class=mut>none yet</span>')+'</div></div>'),
+ work:(s)=>{const ms=(s.missions||[]).slice().reverse();const ex=(s.executions||[]).slice().reverse();
+  const badge=(st)=>'<span class="pill '+(st==='done'?'ok':st==='approved'?'':'dormant')+'">'+st+'</span>';
+  const d=el('<div><div class=card><h2>📁 Work</h2>'
+   +'<div class=mut>Missions you started from the chat, and what came of them. Start a new one by describing it in the chat — switch to <b>Plan</b> and BrainOutput drafts the mission for you to approve.</div>'
+   +'<button class=act id=newwork style="margin-top:10px">Start something in the chat →</button></div>'
+   +'<div class=card><h2>Missions</h2>'
+    +(ms.length?'<table><tr><th>Objective</th><th>Department</th><th>Graph</th><th>Status</th></tr>'
+      +ms.slice(0,12).map(m=>'<tr><td>'+String(m.objective||'').replace(/[&<]/g,c=>c==='&'?'&amp;':'&lt;').slice(0,80)+'</td><td>'+(m.department||'-')+'</td><td class=mut>'+((m.graph&&m.graph.shape)||'-')+'</td><td>'+badge(m.status)+'</td></tr>').join('')+'</table>'
+      :'<span class=mut>No missions yet — describe what you want done in the chat.</span>')+'</div>'
+   +'<div class=card><h2>Recent runs</h2>'
+    +(ex.length?ex.slice(0,6).map(e=>'<div class=node style="display:block;margin-bottom:8px">'
+      +'<b>'+(e.department||'-')+'</b> · '+e.shape+' · '+(e.graph||[]).map(g=>g.node+(g.model?'['+g.provider+'/'+g.model+']':'')).join(' → ')
+      +(e.efficiency&&e.efficiency.stagesSkipped&&e.efficiency.stagesSkipped.length?'<div class=mut style="font-size:12px">skipped: '+e.efficiency.stagesSkipped.join(', ')+' · '+(e.efficiency.tokensTotal||0)+' tokens</div>':'')
+      +'</div>').join('')
+      :'<span class=mut>Nothing has run yet.</span>')+'</div></div>');
+  d.querySelector('#newwork').onclick=()=>{S.settingsOpen=false;S.tab='chat';S.chat.mode='plan';render()};
+  return d},
  twin:(s)=>{const T=(s.workTwins||[])[0]||null;const O=S.twin;
   if(!T){const d=el('<div class=card><h2>Connect your work and create your Work Twin</h2>'
     +'<div class=mut>A Work Twin is your own agent: it reads only the work you authorize, prepares drafts, and never sends anything without your approval. It starts in <b>Mirror</b> mode — read-only.</div>'

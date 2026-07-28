@@ -3,8 +3,8 @@
   "company": { "name": "Starter Studio", "brainoutputFundedInference": "forbidden" },
   "departments": ["technical", "customer-service", "finance"],
   "modelConnections": [
-    { "id": "local-small", "kind": "local", "provider": "ollama", "model": "qwen2.5:3b", "endpoint": "http://127.0.0.1:11434/v1/chat/completions", "costSource": "local-compute", "funder": "local", "contextSize": 8192 },
-    { "id": "local-coder", "kind": "local", "provider": "ollama", "model": "qwen2.5:7b", "endpoint": "http://127.0.0.1:11434/v1/chat/completions", "costSource": "local-compute", "funder": "local", "contextSize": 8192 }
+    { "id": "local-small", "kind": "local", "provider": "ollama", "model": "qwen3-30b-a3b", "endpoint": "http://127.0.0.1:11434/v1/chat/completions", "costSource": "local-compute", "funder": "local", "contextSize": 8192 },
+    { "id": "local-coder", "kind": "local", "provider": "ollama", "model": "qwen3-coder-30b", "endpoint": "http://127.0.0.1:11434/v1/chat/completions", "costSource": "local-compute", "funder": "local", "contextSize": 8192 }
   ],
   "modelAssignments": {
     "reasoning-premium": "local-coder",

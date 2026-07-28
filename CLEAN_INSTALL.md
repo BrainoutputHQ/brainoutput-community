@@ -48,14 +48,14 @@ Point setup at one with: `node bo-community.mjs setup --config samples/starter-c
 ## Local-model example (Ollama)
 
 ```bash
-ollama pull qwen2.5:7b          # any OpenAI-compatible local model works
+ollama pull qwen3-coder-30b          # any OpenAI-compatible local model works
 node bo-community.mjs doctor    # detects local models on 127.0.0.1:11434
 ```
 
 Connection shape (cost source = your machine):
 
 ```json
-{ "id": "local:qwen", "kind": "local", "provider": "ollama", "model": "qwen2.5:7b",
+{ "id": "local:qwen", "kind": "local", "provider": "ollama", "model": "qwen3-coder-30b",
   "endpoint": "http://127.0.0.1:11434/v1/chat/completions", "costSource": "local-compute", "funder": "local" }
 ```
 

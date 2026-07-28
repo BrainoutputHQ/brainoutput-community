@@ -26,6 +26,8 @@ own, free, or local — you always see who pays for each model, and your keys ne
   **policies bound to that work** (loaded by department/tag, not the worker's raw instructions); a
   human is pulled in **only when the reviewer can't clear it**, with a decision-ready brief. Money
   movement and deploys always gate. See **[REVIEW_AND_APPROVAL.md](docs/REVIEW_AND_APPROVAL.md)**.
+- **Setup once, then just work.** A fresh install walks the four setup steps in order; after that the
+  product is **Chat · Work Twin · Work**, with everything configurable tucked into **Settings**.
 - **Talk to it.** A Command Center chat: speak to the company, a department, one agent, or your own
   **Work Twin**; plan a mission, approve it, watch it run — the transcript never leaves your machine.
 - **A Work Twin per person** — read‑only by default, drafts you review, and nothing sent without an
@@ -38,7 +40,7 @@ own, free, or local — you always see who pays for each model, and your keys ne
 git clone https://github.com/brainoutputhq/brainoutput-community.git
 cd brainoutput-community
 node bo-community.mjs setup      # loads a starter company (agents dormant)
-node bo-community.mjs serve      # dashboard → http://127.0.0.1:3100
+node bo-community.mjs serve      # dashboard → http://127.0.0.1:4177
 ```
 
 First run with no company launches onboarding automatically. Verify the whole clean‑install path in a

@@ -263,7 +263,7 @@ export function onboardingExample() {
     {
       id: "legal-clerk", department: "legal-compliance", role: "clerk",
       objectives: ["answer policy questions from the company's own documents"],
-      runtime: runtimeConnection({ runtime: "local-openai", provider: "ollama", model: "qwen2.5-7b-32k", authSource: "local", modelLocation: "local", contextLimit: 32000 }),
+      runtime: runtimeConnection({ runtime: "local-openai", provider: "ollama", model: "qwen3.5-122b", authSource: "local", modelLocation: "local", contextLimit: 32000 }),
       tools: ["policy", "rag:private-legal"], permissions: ["read-policy", "read:rag"], approvalThresholds: { "legal-commitment": "human" }, activation: "dormant",
       rag: { source: "private-legal-docs", access: "read-only" },
       note: "A FULLY LOCAL model + a private RAG source — nothing leaves the machine.",

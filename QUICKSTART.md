@@ -16,8 +16,8 @@ node bo-community.mjs doctor
 ```
 
 ## 2. Connect a model (pick any — all run on models you own or control)
-- **Local** (recommended): install [ollama](https://ollama.com), then `ollama pull qwen2.5:3b`
-  (and optionally `qwen2.5:7b` for coding). See `samples/connections.local.json`.
+- **Local** (recommended): install [ollama](https://ollama.com), then `ollama pull qwen3-30b-a3b`
+  (and optionally `qwen3-coder-30b` for coding). See `samples/connections.local.json`.
 - **Free**: a currently-available free OpenAI-compatible model. See `samples/connections.free.json`.
   The app only ever picks a free model that is actually available; it **never** falls back to paid.
 - **BYOK**: your own provider key. `export USER_OWN_ANTHROPIC_KEY=sk-...` See

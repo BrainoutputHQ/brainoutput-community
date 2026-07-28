@@ -1,9 +1,9 @@
 {
   "company": { "name": "Demo Co (Community Edition)", "brainoutputFundedInference": "forbidden" },
   "modelConnections": [
-    { "id": "local-reasoning", "kind": "local", "provider": "ollama", "model": "qwen2.5-7b-32k:latest", "endpoint": "http://127.0.0.1:11434/v1/chat/completions", "costSource": "local-compute", "funder": "local", "contextSize": 32000 },
-    { "id": "local-coder", "kind": "local", "provider": "ollama", "model": "qwen2.5:7b", "endpoint": "http://127.0.0.1:11434/v1/chat/completions", "costSource": "local-compute", "funder": "local" },
-    { "id": "local-fast", "kind": "local", "provider": "ollama", "model": "qwen2.5:3b", "endpoint": "http://127.0.0.1:11434/v1/chat/completions", "costSource": "local-compute", "funder": "local" },
+    { "id": "local-reasoning", "kind": "local", "provider": "ollama", "model": "qwen3.5-122b", "endpoint": "http://127.0.0.1:11434/v1/chat/completions", "costSource": "local-compute", "funder": "local", "contextSize": 128000 },
+    { "id": "local-coder", "kind": "local", "provider": "ollama", "model": "qwen3-coder-30b", "endpoint": "http://127.0.0.1:11434/v1/chat/completions", "costSource": "local-compute", "funder": "local" },
+    { "id": "local-fast", "kind": "local", "provider": "ollama", "model": "qwen3-30b-a3b", "endpoint": "http://127.0.0.1:11434/v1/chat/completions", "costSource": "local-compute", "funder": "local" },
     { "id": "example-byok-premium", "kind": "byok", "provider": "user-anthropic", "model": "claude-opus-4-8", "endpoint": "https://api.anthropic.com/v1/chat/completions", "apiKeyEnv": "USER_OWN_ANTHROPIC_KEY", "costSource": "user-subscription", "funder": "user", "_note": "example of a user's OWN premium model (BYOK); NOT used in the demo run and never BrainOutput's account" }
   ],
   "modelAssignments": {

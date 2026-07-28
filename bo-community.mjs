@@ -33,7 +33,7 @@ async function doctor() {
   const ollama = await probe("127.0.0.1", 11434, "/api/tags");
   let localModels = [];
   try { localModels = (JSON.parse(ollama).models || []).map((m) => m.name); } catch {}
-  console.log(`${localModels.length ? "✓" : "○"} Local models (ollama): ${localModels.join(", ") || "none — install ollama + `ollama pull qwen2.5:3b`, or use a free/BYOK model"}`);
+  console.log(`${localModels.length ? "✓" : "○"} Local models (ollama): ${localModels.join(", ") || "none — install ollama + `ollama pull qwen3-30b-a3b`, or use a free/BYOK model"}`);
   const byok = ["USER_OWN_ANTHROPIC_KEY", "USER_OWN_OPENAI_KEY", "USER_OWN_OPENROUTER_KEY"].filter((k) => process.env[k]);
   console.log(`${byok.length ? "✓" : "○"} BYOK keys present: ${byok.join(", ") || "none set (optional)"}`);
   console.log(`\nNeeds NONE of: a BrainOutput account, BrainOutput credits, Claude, Kimi, the hosted agent fleet.`);

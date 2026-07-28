@@ -45,7 +45,8 @@ One abstraction, normalized messages and events (`mail-sources.mjs`):
 | **Calendars** — iCalendar (.ics) files and **CalDAV** (Nextcloud, Radicale, Fastmail…) | ✅ verified (ICS); CalDAV client implemented |
 | **Drives** — a folder on this computer, and **WebDAV/Nextcloud** | ✅ verified (local); WebDAV verified against a PROPFIND responder |
 | **Google Drive · OneDrive · SharePoint** | ⚠️ request shapes implemented; **unverified** — need your OAuth credentials |
-| workplace chat · existing connectors & RAG | share the same abstraction |
+| **Workplace chat** — Slack · Discord · Mattermost (open-source) | read by default; posting needs a grant + approval |
+| existing connectors & RAG | share the same abstraction |
 
 **Every new connection defaults to Mirror (read-only).** Credentials stay local: a password is stored
 in the local store (or referenced via `config.passwordEnv`) and is **stripped from every API response**.

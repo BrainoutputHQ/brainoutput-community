@@ -2,7 +2,7 @@
 // Item 5 — connector vertical slice: OSS-alternative catalog, read adapters, free-OSS-company playbook.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { CONNECTOR_CATALOG, ossAlternatives, newConnector, grantScope, connectorCatalog } from "./connectors.mjs";
+import { CONNECTOR_CATALOG, ossAlternatives, newConnector, grantScope, connectorCatalog, resolvePermission } from "./connectors.mjs";
 import { connectorAction } from "./connector-adapters.mjs";
 import { ossCompanyPlaybook, validatePlaybook, listPlaybooks } from "./playbooks.mjs";
 import { CAPABILITY_SLOTS } from "./ce-core.mjs";
@@ -105,4 +105,24 @@ test("connectorCatalog surfaces category/openSource/replaces for the picker", ()
   assert.equal(gitea.openSource, true);
   assert.equal(gitea.category, "dev");
   assert.ok(cat.every((c) => c.readOnlyDefault === true));
+});
+
+test("workplace chat connectors: Slack, Discord and an open-source alternative", () => {
+  for (const k of ["slack", "discord", "mattermost"]) {
+    assert.ok(CONNECTOR_CATALOG[k], `missing ${k}`);
+    assert.equal(CONNECTOR_CATALOG[k].category, "chat");
+    assert.ok(CONNECTOR_CATALOG[k].scopes.includes("communicate"));
+  }
+  assert.equal(CONNECTOR_CATALOG.mattermost.openSource, true);
+  assert.deepEqual(CONNECTOR_CATALOG.mattermost.altTo, ["slack"]);
+  // read is fine by default; posting to a channel is not
+  const slack = newConnector("slack");
+  assert.equal(resolvePermission(slack, { action: "read-messages" }).allowed, true);
+  assert.equal(resolvePermission(slack, { action: "send-message" }).allowed, false);
+  const granted = grantScope(slack, { scope: "communicate", principal: { level: "agent", id: "cs" }, resource: "#support" });
+  const ok = resolvePermission(granted, { action: "send-message", agent: { id: "cs" }, resource: "#support" });
+  assert.equal(ok.allowed, true);
+  assert.equal(ok.requiresApproval, true);                       // never silent
+  // a different channel is not covered by that grant
+  assert.equal(resolvePermission(granted, { action: "send-message", agent: { id: "cs" }, resource: "#exec" }).allowed, false);
 });

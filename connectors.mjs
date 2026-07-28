@@ -35,6 +35,10 @@ export const CONNECTOR_CATALOG = {
   "medusa":  { label: "Medusa",  mechanism: "api-key-local", category: "commerce", openSource: true, altTo: ["shopify"], worksWith: "Medusa", scopes: RWS },
   "stripe":  { label: "Stripe",  mechanism: "api-key-local", category: "payments", openSource: false, worksWith: "Stripe", scopes: ["read", "sensitive"] },
   "lago":    { label: "Lago",    mechanism: "api-key-local", category: "billing",  openSource: true, altTo: ["stripe-billing"], worksWith: "Lago", scopes: ["read", "write", "sensitive"] },
+  // — Workplace chat —
+  "slack":   { label: "Slack",    mechanism: "oauth",         category: "chat", openSource: false, worksWith: "Slack", scopes: ["read", "draft", "write", "communicate", "sensitive"] },
+  "discord": { label: "Discord",  mechanism: "api-key-local", category: "chat", openSource: false, worksWith: "Discord", scopes: ["read", "draft", "write", "communicate", "sensitive"] },
+  "mattermost": { label: "Mattermost", mechanism: "api-key-local", category: "chat", openSource: true, altTo: ["slack"], worksWith: "Mattermost", scopes: ["read", "draft", "write", "communicate", "sensitive"] },
   // — Messaging / social (posting typically needs image generation) —
   "twilio":  { label: "Twilio",  mechanism: "api-key-local", category: "messaging", openSource: false, worksWith: "Twilio", scopes: ["read", "communicate"] },
   "mastodon":{ label: "Mastodon",mechanism: "api-key-local", category: "social", openSource: true, altTo: ["x-twitter"], needsImageGen: true, worksWith: "Mastodon", scopes: ["read", "draft", "communicate"] },

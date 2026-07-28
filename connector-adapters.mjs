@@ -23,6 +23,9 @@ const SAMPLE_READS = {
   mastodon: () => ({ notifications: [{ id: 1, type: "mention", note: "loved your post" }] }),
   nextcloud:() => ({ files: [{ path: "/legal/policy.md", size: 3400 }] }),
   "generic-rag":  () => ({ chunks: [{ source: "policy.md", text: "Refunds within 30 days.", score: 0.82 }] }),
+  slack:    () => ({ channel: "#sales", messages: [{ user: "@dana", ts: "1753651200.0", text: "Can we confirm the Q3 renewal terms before Friday?" }] }),
+  discord:  () => ({ channel: "#support", messages: [{ user: "kai#4417", text: "The installer fails on step 3 — any workaround?" }] }),
+  mattermost: () => ({ channel: "~ops", messages: [{ user: "@sam", text: "Deploy window moved to Thursday." }] }),
   "generic-chat": () => ({ messages: [{ author: "customer", text: "Is there a student discount?" }] }),
 };
 
