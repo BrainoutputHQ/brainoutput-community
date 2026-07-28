@@ -1,7 +1,7 @@
 {
   "name": "brainoutput-community",
   "version": "0.1.0-alpha.1",
-  "description": "BrainOutput Community Edition — a configurable, token-efficient AI company that runs on your own free / local / BYOK models. Zero BrainOutput-funded inference.",
+  "description": "BrainOutput Community Edition — a configurable, token-efficient AI company that runs on your own free / local / BYOK models. Open source, zero-dependency, and yours to self-host.",
   "type": "module",
   "license": "Apache-2.0",
   "engines": {
