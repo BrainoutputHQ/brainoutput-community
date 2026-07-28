@@ -43,7 +43,7 @@ function setup() {
   const s = new Store().migrateFromConfig(starter);
   console.log(`Loaded starter company "${s.def.company.name}" → ${s.dir}`);
   console.log(`  departments: ${s.def.departments.join(", ")}`);
-  console.log(`  agents: ${s.def.agents.length} (dormant) · connections: ${s.def.modelConnections.length} · funded inference: $0`);
+  console.log(`  agents: ${s.def.agents.length} (dormant) · connections: ${s.def.modelConnections.length} · every model free / local / your own`);
   console.log(`\nNext:\n  bo-community serve      # web dashboard → http://127.0.0.1:4177\n  bo-community demo       # run the 3 sample workflows headless`);
 }
 

@@ -10,6 +10,7 @@ own, free, or local — you always see who pays for each model, and your keys ne
 
 [Quick start](#quick-start) · [Full install & examples](CLEAN_INSTALL.md) · [Quickstart](QUICKSTART.md) · [Safety](SAFETY.md)
 
+![Community dashboard — every model free / local / your own, agents dormant, per-slot local models](docs/community-dashboard.png)
 
 ## Why
 
