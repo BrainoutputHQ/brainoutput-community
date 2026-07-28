@@ -5,6 +5,9 @@ RUN addgroup -S bo && adduser -S -G bo bo
 WORKDIR /app
 COPY --chown=bo:bo . /app
 RUN rm -rf /app/.git /app/node_modules /app/*.test.mjs
+# Create the data directory owned by the app user BEFORE declaring the volume: Docker seeds a new
+# volume from the image, so this is what makes a non-root container able to write its own store.
+RUN mkdir -p /data && chown bo:bo /data
 USER bo
 ENV BO_CE_DATA=/data BO_CE_WEB_PORT=4177 BO_CE_WEB_HOST=0.0.0.0
 VOLUME ["/data"]
