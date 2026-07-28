@@ -9,7 +9,7 @@ recommended for real runs.)
 ## Clean-install command
 
 ```bash
-git clone https://github.com/dimfra/brainoutput-community.git
+git clone https://github.com/brainoutputhq/brainoutput-community.git
 cd brainoutput-community
 node bo-community.mjs setup      # loads a starter company (agents dormant, $0)
 node bo-community.mjs serve      # dashboard → http://127.0.0.1:3100
