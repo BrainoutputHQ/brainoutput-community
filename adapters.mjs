@@ -73,7 +73,7 @@ export async function runNode(node, nodeModel, input = {}, opts = {}) {
     }
     const reviewPrompt =
       `You are an INDEPENDENT reviewer. Validate the work strictly against these criteria and reply ONLY with JSON: {"pass":true|false,"flags":["..."],"notes":"...","recommendation":"..."}.\n\nCriteria:\n${criteria}\n\nWork to review:\n${target}`;
-    const rr = await chatCompletion({ endpoint, model: conn.model, apiKey, prompt: reviewPrompt, maxTokens: opts.maxTokens || 400 });
+    const rr = await chatCompletion({ endpoint, model: conn.model, apiKey, prompt: reviewPrompt, maxTokens: opts.maxTokens || 400, timeoutMs: opts.timeoutMs || 60000 });
     let review;
     try {
       const m = (rr.content || "").match(/\{[\s\S]*\}/);
@@ -87,7 +87,7 @@ export async function runNode(node, nodeModel, input = {}, opts = {}) {
 
   const prompt = input.prompt || opts.prompt || "Respond concisely.";
   if (opts.dryRun) return { node: node.node, model: conn.model, provider: conn.provider, costSource: conn.costSource, funder: conn.funder, tokens: 0, artifact: "(dry-run: not executed)", output: null };
-  const r = await chatCompletion({ endpoint, model: conn.model, apiKey, prompt, maxTokens: opts.maxTokens || 400 });
+  const r = await chatCompletion({ endpoint, model: conn.model, apiKey, prompt, maxTokens: opts.maxTokens || 400, timeoutMs: opts.timeoutMs || 60000 });
   return { node: node.node, model: conn.model, provider: conn.provider, costSource: conn.costSource, funder: conn.funder, tokens: r.tokens, output: r.content, artifact: `completion:${conn.provider}/${conn.model}` };
 }
 

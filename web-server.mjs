@@ -17,6 +17,11 @@ import { runOpenCode } from "./opencode-adapter.mjs";
 import { DEPARTMENT_TEMPLATES } from "./departments.mjs";
 import { detectConnections, generateOrg, recommendAssignments, applyOverrides, confirmZeroFunded, renderAgentView } from "./onboarding.mjs";
 import { runtimeCards, runtimeConnection, runtimeToConnection } from "./runtimes.mjs";
+import { newConversation, addMessage, pin, resolveMention, rollSummary, compactContext, draftMissionSpec,
+  editMissionSpec, approveMission, rejectMission, modeAllows, missionComposer, reviewMission, saveAsWorkflow } from "./chat.mjs";
+import { connectRagSource, indexDocuments, searchRag } from "./rag.mjs";
+import { efficiencyReport } from "./efficiency.mjs";
+import { selectModel } from "./ce-core.mjs";
 
 const PORT = Number(process.env.BO_CE_WEB_PORT || 4177);
 const store = new Store();
@@ -76,7 +81,159 @@ async function api(req, res, url) {
   if (url.pathname === "/api/task") return runTask(res, b);
   if (url.pathname.startsWith("/api/execution/")) { const e = store.runtime.executions.find((x) => x.id === url.pathname.split("/").pop()); return e ? json(res, e) : json(res, { error: "not found" }, 404); }
   if (url.pathname === "/api/approval") { const ap = store.runtime.approvals.find((x) => x.id === b.id); if (ap) { ap.status = b.decision || "approved"; store.saveRuntime(); } return json(res, publicState()); }
+  if (url.pathname === "/api/chat/send") return chatSend(res, b);
+  if (url.pathname === "/api/chat/mission") return chatMission(res, b);
+  if (url.pathname === "/api/chat/launch") return chatLaunch(res, b);
   return json(res, { error: "unknown endpoint" }, 404);
+}
+
+// ── Command Center ──────────────────────────────────────────────────────────────────────────────
+// Company knowledge as a READ-ONLY RAG source, built from the user's own company definition.
+function knowledgeSource() {
+  const docs = [
+    { id: "company", resource: "company", text: `Company ${store.def.company?.name || "(unnamed)"}. Departments: ${(store.def.departments || []).join(", ")}.` },
+    ...(store.def.agents || []).map((a) => ({ id: a.id, resource: `agent/${a.id}`,
+      text: `Agent ${a.id} is the ${a.role} in ${a.department}. Objectives: ${(a.objectives || []).join("; ")}. Tools: ${(a.tools || []).join(", ")}. Permissions: ${(a.permissions || []).join(", ")}. Approvals: ${Object.keys(a.approvalThresholds || {}).join(", ") || "none"}. Activation: ${a.activation}.` })),
+  ];
+  return indexDocuments(connectRagSource({ id: "company-knowledge", label: "Company knowledge", resources: ["company"] }), docs, { now: Date.now() });
+}
+
+/** Resolve the conversation model for a scope — the agent's own model, else a light company default. */
+function chatModelFor({ department = null, agentId = null } = {}) {
+  const agents = store.def.agents || [];
+  const agent = agentId ? agents.find((a) => a.id === agentId)
+    : department ? agents.find((a) => a.department === department) : agents[0];
+  const caps = agent?.capabilities || {};
+  const slot = caps.worker || caps.planner || "fast-cheap";
+  try { return { agent: agent?.id || null, ...selectModel(slot, { assignments: store.def.modelAssignments, connections: store.def.modelConnections, catalog }) }; }
+  catch { return { agent: agent?.id || null, slot, needsConfiguration: true }; }
+}
+
+function getConversation(id) { return (store.runtime.conversations || []).find((c) => c.id === id) || null; }
+function saveConversation(c) { store.addConversation({ ...c, updatedAt: Date.now() }); store.saveRuntime(); return c; }
+
+async function chatSend(res, b) {
+  let conv = b.conversationId ? getConversation(b.conversationId) : null;
+  if (!conv) conv = newConversation({ scope: b.scope || "company", department: b.department || null, agentId: b.agentId || null });
+  const mode = b.mode || "ask";
+  // An @mention retargets to that agent for this conversation.
+  const mentioned = resolveMention(b.text || "", store.def.agents || []);
+  if (mentioned) { conv = { ...conv, scope: "agent", agentId: mentioned.id, department: mentioned.department }; }
+  conv = addMessage(conv, { role: "user", text: b.text || "", mode, at: Date.now() });
+
+  const model = chatModelFor(conv);
+  let reply = null, mission = null, rag = [];
+
+  if (mode === "ask") {
+    // READ-ONLY: retrieve from company knowledge, then answer with the conversation model if available.
+    rag = searchRag([knowledgeSource()], b.text || "", { agent: { id: conv.agentId, department: conv.department }, topK: 3 });
+    const ctx = compactContext(conv, { query: b.text || "", k: 3 });
+    if (model.connection && !model.needsConfiguration) {
+      const prompt = `Answer the question using ONLY the context. Be brief.\n\nContext:\n${rag.map((r) => `- ${r.text} (${r.citation})`).join("\n") || "(no matching company knowledge)"}\n\nPinned constraints: ${ctx.pinned.map((p) => p.text).join("; ") || "none"}\n\nQuestion: ${b.text}`;
+      try {
+        const r = await runNode({ node: "chat", slot: model.slot }, model, { prompt }, { maxTokens: 300 });
+        reply = r.output || null;
+      } catch (e) { reply = null; }
+    }
+    if (!reply) reply = rag.length
+      ? `From your company knowledge:\n${rag.map((r) => `• ${r.text}  [${r.citation}]`).join("\n")}`
+      : "No matching company knowledge, and no conversation model is configured — connect a free/local/BYOK model or ask about your departments and agents.";
+  } else if (mode === "plan") {
+    const gate = modeAllows(mode, "draft-plan");
+    if (!gate.allowed) return json(res, { error: gate.reason }, 400);
+    const agent = conv.agentId ? (store.def.agents || []).find((a) => a.id === conv.agentId) : null;
+    const dept = conv.department || agent?.department || (store.def.departments || [])[0] || null;
+    mission = draftMissionSpec(conv, {
+      department: dept,
+      agents: agent ? [agent.id] : (store.def.agents || []).filter((a) => a.department === dept).map((a) => a.id).slice(0, 1),
+      tools: agent?.tools || [], permissions: agent?.permissions || [], approvals: agent?.approvalThresholds || {},
+      policies: store.def.policies || {}, complexity: b.complex ? "high" : null, risk: b.risk || null,
+    });
+    store.addMission(mission);
+    conv = { ...conv, missionId: mission.id };
+    reply = `Drafted a mission for ${mission.department}. Review it below — edit anything, then approve to launch.`;
+  } else if (mode === "review") {
+    const m = (store.runtime.missions || []).find((x) => x.id === (b.missionId || conv.missionId));
+    const exec = (store.runtime.executions || []).filter((e) => e.missionId === m?.id).at(-1);
+    const rev = m ? reviewMission(m, exec?.results || []) : null;
+    reply = rev ? (rev.allMet ? "All acceptance criteria are met." :
+      `Unmet criteria: ${rev.unmet.join("; ")}${rev.independentReviewJustified ? " — an independent reviewer is justified." : ""}`)
+      : "No mission to review yet.";
+  } else {
+    reply = "Switch to Execute mode and approve the mission below to launch it.";
+  }
+
+  conv = addMessage(conv, { role: "assistant", text: reply, mode, at: Date.now(),
+    meta: { model: model.model || null, provider: model.provider || null, costSource: model.costSource || null, citations: rag.map((r) => r.citation) } });
+  conv = rollSummary(conv, { every: 10, keepTail: 4 });
+  saveConversation(conv);
+  return json(res, { conversation: conv, mission: mission || (conv.missionId ? (store.runtime.missions || []).find((m) => m.id === conv.missionId) : null),
+    composer: mission ? missionComposer(mission) : null, model, citations: rag.map((r) => r.citation) });
+}
+
+function chatMission(res, b) {
+  const missions = store.runtime.missions || [];
+  let m = missions.find((x) => x.id === b.missionId);
+  if (!m) return json(res, { error: "mission not found" }, 404);
+  try {
+    if (b.action === "edit") m = editMissionSpec(m, b.patch || {});
+    else if (b.action === "approve") m = approveMission(m);
+    else if (b.action === "reject" || b.action === "cancel") m = rejectMission(m, { reason: b.reason || null });
+    else if (b.action === "save-workflow") {
+      const wf = saveAsWorkflow(m, { name: b.name });
+      store.addProject({ id: `wf-${Date.now().toString(36)}`, kind: "workflow", ...wf });
+      store.saveRuntime();
+      return json(res, { mission: m, workflowSaved: true, composer: missionComposer(m) });
+    } else return json(res, { error: `unknown action '${b.action}'` }, 400);
+  } catch (e) { return json(res, { error: e.message }, 400); }
+  store.addMission(m); store.saveRuntime();
+  return json(res, { mission: m, composer: missionComposer(m) });
+}
+
+/** Execute an APPROVED mission through the existing direct executor — no management relay. */
+async function chatLaunch(res, b) {
+  const m = (store.runtime.missions || []).find((x) => x.id === b.missionId);
+  if (!m) return json(res, { error: "mission not found" }, 404);
+  const gate = modeAllows("execute", "execute", { mission: m });
+  if (!gate.allowed) return json(res, { error: gate.reason }, 400);
+
+  const r = routeTask({ department: m.department, task: { ...m.task, summary: m.objective } }, ctx());
+  if (!r.ok) return json(res, { error: r.reason }, 400);
+  store.addMission({ ...m, status: "running" });
+  // The executor receives the compact mission context — never the transcript.
+  const conv = getConversation(m.conversationId);
+  const cc = conv ? compactContext(conv, { query: m.objective, k: 3 }) : { pinned: [], relevant: [] };
+  const prompt = `${m.objective}\n\nConstraints: ${(m.constraints || []).join("; ") || "none"}\nAcceptance: ${(m.acceptanceCriteria || []).join("; ") || "none"}`;
+  let results = [];
+  try { results = await executePlan(r.plan, { _all: { prompt } }, { maxTokens: 400, boundPolicies: r.boundPolicies, task: m.task, timeoutMs: b.timeoutMs || 120000 }); }
+  catch (e) {
+    // A failed run must never leave a mission stuck mid-flight: record the failure, say so in the
+    // conversation, and put the mission back to APPROVED so the user can retry or edit and re-approve.
+    const failed = { ...m, status: "approved", lastError: String(e.message || e) };
+    store.addMission(failed);
+    const cf = getConversation(m.conversationId);
+    if (cf) saveConversation(addMessage(cf, { role: "assistant", mode: "execute", at: Date.now(),
+      text: `Mission did not run: ${e.message}. Nothing was changed. Check the model connection (Connections tab) and launch again.` }));
+    store.saveRuntime();
+    return json(res, { error: `execution failed: ${e.message}`, mission: failed }, 500);
+  }
+
+  const rep = costReport(results);
+  const eff = efficiencyReport({ plan: r.plan, results, shape: r.shape });
+  const exec = store.addExecution({ id: uid("exec"), missionId: m.id, conversationId: m.conversationId, department: r.department,
+    agent: r.agent, shape: r.shape, graph: r.plan.map((n) => ({ node: n.node, model: n.model?.model || null, provider: n.model?.provider || null,
+      costSource: n.model?.costSource || null, needsConfiguration: !!n.model?.needsConfiguration })),
+    results, costBySource: rep.byCostSource, efficiency: eff, status: "done", createdAt: Date.now() });
+  const done = { ...m, status: "done", artifacts: eff.artifacts };
+  store.addMission(done);
+
+  const review = reviewMission(done, results);
+  let c2 = conv ? addMessage(conv, { role: "assistant", mode: "execute", at: Date.now(),
+    text: `Mission complete — graph ${eff.graph}${eff.stagesSkipped.length ? `, skipped ${eff.stagesSkipped.join(", ")}` : ""}. ${review.allMet ? "Acceptance criteria met." : review.unmet.length ? `Unmet: ${review.unmet.join("; ")}` : ""}`,
+    meta: { executionId: exec.id, efficiency: eff } }) : null;
+  if (c2) saveConversation(c2);
+  store.saveRuntime();
+  return json(res, { mission: done, execution: exec, efficiency: eff, review, conversation: c2 || null });
 }
 
 function publicState() {
@@ -85,6 +242,7 @@ function publicState() {
     connections: store.def.modelConnections, assignments: store.def.modelAssignments,
     agentViews: store.def.agents.map((a) => renderAgentView(a, store.def.modelAssignments, store.def.modelConnections)),
     tasks: store.runtime.tasks, executions: store.runtime.executions, approvals: store.runtime.approvals,
+    conversations: store.runtime.conversations || [], missions: store.runtime.missions || [],
     brainoutputFundedTokens: funded };
 }
 
@@ -158,19 +316,47 @@ label{display:block;margin:8px 0 4px;color:var(--mut);font-size:12px}.row{displa
 <header><h1>🏢 BrainOutput Community</h1><span class=mut id=coname></span><span class=zero id=zero>Your models · your keys</span></header>
 <nav id=nav></nav><main id=view></main>
 <script>
-const S={state:null,tab:'dashboard'};
+const S={state:null,tab:'chat',chat:{scope:'company',dept:'',agent:'',mode:'ask',convId:null,mission:null,busy:false}};
 const el=(h)=>{const d=document.createElement('div');d.innerHTML=h;return d.firstElementChild};
 async function api(p,body){const r=await fetch(p,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{});return r.json()}
 async function refresh(){S.state=await api('/api/state');render()}
-const TABS=[['dashboard','Dashboard'],['connections','1 · Connections'],['company','2 · Company'],['org','3 · Organization'],['assign','4 · Assignments'],['task','6 · New Objective'],['exec','7 · Executions']];
+const TABS=[['chat','💬 Chat'],['dashboard','Dashboard'],['connections','1 · Connections'],['company','2 · Company'],['org','3 · Organization'],['assign','4 · Assignments'],['task','6 · New Objective'],['exec','7 · Executions']];
 function nav(){const n=document.getElementById('nav');n.innerHTML='';TABS.forEach(([k,l])=>{const b=el('<button>'+l+'</button>');if(k===S.tab)b.className='on';b.onclick=()=>{S.tab=k;render()};n.appendChild(b)})}
 function fmtCost(c){return c==='local-compute'?'your local compute':c==='free'?'free':c==='user-subscription'?'your subscription':c==='user-api-account'?'your API account':c||'-'}
+function bindActions(root){root.querySelectorAll('[data-approve]').forEach(b=>{b.onclick=()=>approve(b.dataset.approve)});root.querySelectorAll('[data-act]').forEach(b=>{b.onclick=()=>missionAct(b.dataset.mid,b.dataset.act)})}
 function render(){nav();const s=S.state||{};document.getElementById('coname').textContent=s.company?.name?('· '+s.company.name):'';document.getElementById('zero').textContent=(s.brainoutputFundedTokens?('⚠ '+s.brainoutputFundedTokens+' unexpected paid tokens'):'Your models · your keys');
-const v=document.getElementById('view');v.innerHTML='';v.appendChild(VIEWS[S.tab](s))}
+const v=document.getElementById('view');v.innerHTML='';const view=VIEWS[S.tab](s);v.appendChild(view);bindActions(v)}
 const VIEWS={
  dashboard:(s)=>el('<div><div class=card><h2>Company dashboard</h2><div class=row><div><b>'+(s.company?.name||'(no company yet)')+'</b><div class=mut>Runs on <span class=ok>your own models</span></div></div><div class=mut>Departments: '+(s.departments||[]).join(', ')+'<br>Agents: '+((s.agents||[]).length)+' (dormant by default)</div></div></div>'+
   '<div class=card><h2>Agents</h2><table><tr><th>Agent</th><th>Dept/Role</th><th>Models (slot → provider)</th><th>Status</th></tr>'+(s.agentViews||[]).map(a=>'<tr><td>'+a.id+'</td><td>'+a.department+'/'+a.role+'</td><td>'+Object.entries(a.models).map(([k,m])=>'<div><span class=mut>'+k+':</span> '+m+'</div>').join('')+'</td><td><span class="pill dormant">'+a.activation+'</span></td></tr>').join('')+'</table></div>'+
   '<div class=card><h2>Recent executions</h2>'+((s.executions||[]).slice(-5).reverse().map(e=>'<div class=node style="display:block;margin-bottom:6px">'+e.department+' · '+e.shape+' · '+e.graph.map(g=>g.model?(g.provider+'/'+g.model):g.needsConfiguration?'UNCONFIGURED':g.costSource).join(' → ')+' · <span class=mut>'+(e.summary?e.summary.tokens+' tok':'')+'</span></div>').join('')||'<span class=mut>none yet</span>')+'</div></div>'),
+ chat:(s)=>{const C=S.chat;const depts=s.departments||[];const agents=s.agents||[];
+  const conv=(s.conversations||[]).find(x=>x.id===C.convId)||(s.conversations||[]).slice(-1)[0]||null;
+  if(conv&&!C.convId)C.convId=conv.id;   // restore the latest conversation on load (history persists)
+  const mission=C.mission||(conv&&(s.missions||[]).find(m=>m.id===conv.missionId))||null;
+  const d=el('<div><div class=card><h2>Command Center</h2>'
+   +'<div class=mut>Talk to your company, a department, or one agent. Ask is read-only · Plan drafts an editable mission · Execute launches only after you approve · Review checks the result.</div>'
+   +'<div class=row style="margin-top:10px">'
+     +'<div><label>Scope</label><select id=sc>'+['company','department','agent'].map(x=>'<option '+(C.scope===x?'selected':'')+'>'+x+'</option>').join('')+'</select></div>'
+     +'<div><label>Department</label><select id=dp><option value="">—</option>'+depts.map(x=>'<option '+(C.dept===x?'selected':'')+'>'+x+'</option>').join('')+'</select></div>'
+     +'<div><label>Agent</label><select id=ag><option value="">—</option>'+agents.map(a=>'<option value="'+a.id+'" '+(C.agent===a.id?'selected':'')+'>'+a.id+'</option>').join('')+'</select></div>'
+     +'<div><label>Mode</label><select id=md>'+['ask','plan','execute','review'].map(x=>'<option '+(C.mode===x?'selected':'')+'>'+x+'</option>').join('')+'</select></div>'
+   +'</div></div>'
+   +'<div class=card><div id=tr style="max-height:340px;overflow:auto">'+(conv?conv.messages.map(m=>'<div style="margin-bottom:10px"><b>'+(m.role==='user'?'You':'BrainOutput')+'</b> <span class=mut style="font-size:11px">'+m.mode+(m.meta&&m.meta.model?' · '+m.meta.provider+'/'+m.meta.model+' · '+(m.meta.costSource||''):'')+'</span><div style="white-space:pre-wrap">'+String(m.text).replace(/[&<]/g,c=>c==='&'?'&amp;':'&lt;')+'</div>'+(m.meta&&m.meta.citations&&m.meta.citations.length?'<div class=mut style="font-size:11px">sources: '+m.meta.citations.join(' · ')+'</div>':'')+'</div>').join(''):'<span class=mut>No messages yet — ask something, or switch to Plan to draft a mission.</span>')+'</div>'
+   +'<textarea id=msg rows=2 placeholder="e.g. Draft a refund policy reply in Spanish  (use @agent-id to talk to one agent)"></textarea>'
+   +'<button class=act id=send style="margin-top:8px">Send</button> <span class=mut id=busy></span></div>'
+   +(mission?missionCard(mission):'')+'</div>');
+  const set=(k,v)=>{C[k]=v};
+  d.querySelector('#sc').onchange=e=>{set('scope',e.target.value);render()};
+  d.querySelector('#dp').onchange=e=>{set('dept',e.target.value)};
+  d.querySelector('#ag').onchange=e=>{set('agent',e.target.value)};
+  d.querySelector('#md').onchange=e=>{set('mode',e.target.value)};
+  d.querySelector('#send').onclick=async()=>{const t=d.querySelector('#msg').value.trim();if(!t)return;
+    d.querySelector('#busy').textContent='thinking…';
+    const r=await api('/api/chat/send',{conversationId:C.convId,scope:C.scope,department:C.dept||null,agentId:C.agent||null,mode:C.mode,text:t});
+    if(r.error){alert(r.error);d.querySelector('#busy').textContent='';return}
+    C.convId=r.conversation.id;C.mission=r.mission||C.mission;await refresh();render()};
+  return d},
  connections:(s)=>{const d=el('<div><div class=card><h2>1 · Model connections (user / free / local only)</h2><div class=mut>No BrainOutput-hosted paid models are ever used. Detected local models below.</div><div id=det class=mut style="margin:8px 0">detecting…</div><table id=ct></table></div><div class=card><h2>Runtimes</h2><div class=mut>Assign a different runtime to any agent or execution stage. &ldquo;Works with&rdquo; &mdash; no partnership or endorsement implied. A local CLI is not a local model.</div><div id=rt style="margin-top:10px">loading&hellip;</div></div></div>');
   api('/api/detect').then(r=>{document.getElementById('det').textContent=r.detected.length?('Detected '+r.detected.length+' local model(s).'):'No local model detected — start ollama or connect a model.'});
   d.querySelector('#ct').innerHTML='<tr><th>Connection</th><th>Provider / Model</th><th>Pays</th></tr>'+(s.connections||[]).map(c=>'<tr><td>'+c.id+'</td><td>'+c.provider+' / '+c.model+'</td><td class=ok>'+fmtCost(c.costSource)+'</td></tr>').join('');
@@ -195,10 +381,34 @@ const VIEWS={
     '<div>'+(ex.summary.zeroFundedOk?'<span class=ok>✓ ran entirely on your own models</span>':'<span class=warn>⚠ '+ex.summary.brainoutputFundedTokens+' unexpected paid tokens</span>')+'</div>'+
     '<div>artifacts: '+(ex.summary.artifacts.length?ex.summary.artifacts.length+' ('+ex.summary.artifacts.slice(0,5).join(', ')+(ex.summary.artifacts.length>5?', …':'')+')':'none')+'</div>'+
     '</div></div>'):'')+
-  (s.approvals||[]).filter(a=>a.taskId===ex.taskId&&a.status==='pending').map(a=>'<div class=warn style="margin-top:8px">⚠ human approval required ('+a.kind+') — <button class=act onclick="approve(\\''+a.id+'\\')">Approve</button></div>').join('')+
+  (s.approvals||[]).filter(a=>a.taskId===ex.taskId&&a.status==='pending').map(a=>'<div class=warn style="margin-top:8px">⚠ human approval required ('+a.kind+') — <button class=act data-approve="'+a.id+'">Approve</button></div>').join('')+
   ((ex.codeFiles&&ex.codeFiles.length)?('<h2 style="margin-top:14px">Files (real OpenCode output)</h2>'+ex.codeFiles.map(f=>'<div class=mut style="margin-top:6px">'+f.name+'</div><pre>'+(f.content||'').replace(/[&<]/g,c=>c==="&"?"&amp;":"&lt;")+'</pre>').join('')):'')+
   '<h2 style="margin-top:14px">Logs</h2><pre>'+ex.logs.join('\\n')+'</pre></div></div>')}
 };
+function missionCard(m){const g=(m.graph&&m.graph.nodes||[]).join(' → ');
+ return '<div class=card><h2>Mission composer</h2>'
+  +'<div class=row><div><label>Objective</label><input id=mo value="'+String(m.objective||'').replace(/"/g,'&quot;')+'"></div>'
+  +'<div><label>Department</label><input id=mdp value="'+(m.department||'')+'"></div></div>'
+  +'<div class=mut style="margin-top:8px">graph: '+(m.graph&&m.graph.shape)+' · '+g+'</div>'
+  +'<div class=mut>agents: '+(m.agents||[]).join(', ')+' · tools: '+(m.tools||[]).join(', ')+' · permissions: '+(m.permissions||[]).join(', ')+'</div>'
+  +'<div class=mut>approval gates: '+(Object.keys(m.approvals||{}).join(', ')||'none')+' · policies: '+((m.policies||[]).join(', ')||'none')+'</div>'
+  +'<div class=mut>constraints: '+((m.constraints||[]).join('; ')||'none')+' · acceptance: '+((m.acceptanceCriteria||[]).join('; ')||'none')+'</div>'
+  +'<div style="margin-top:10px">status: <span class='+(m.status==='approved'?'ok':'mut')+'>'+m.status+'</span></div>'
+  +'<div style="margin-top:10px">'
+   +'<button class=act data-mid="'+m.id+'" data-act="edit">Edit</button> '
+   +'<button class=act data-mid="'+m.id+'" data-act="launch">Approve &amp; launch</button> '
+   +'<button class=act data-mid="'+m.id+'" data-act="save-workflow">Save as workflow</button> '
+   +'<button class=act data-mid="'+m.id+'" data-act="cancel">Cancel</button></div></div>'}
+window.missionAct=async(id,action)=>{
+ if(action==='edit'){const o=document.getElementById('mo'),dp=document.getElementById('mdp');
+   const r=await api('/api/chat/mission',{missionId:id,action:'edit',patch:{objective:o.value,department:dp.value}});
+   if(r.error){alert(r.error);return}S.chat.mission=r.mission;await refresh();render();return}
+ if(action==='launch'){const a=await api('/api/chat/mission',{missionId:id,action:'approve'});
+   if(a.error){alert(a.error);return}
+   const r=await api('/api/chat/launch',{missionId:id});
+   if(r.error){alert(r.error);return}S.chat.mission=r.mission;await refresh();render();return}
+ const r=await api('/api/chat/mission',{missionId:id,action:action==='cancel'?'cancel':'save-workflow'});
+ if(r.error){alert(r.error);return}S.chat.mission=r.mission;await refresh();render()};
 window.approve=async(id)=>{await api('/api/approval',{id,decision:'approved'});await refresh()};
 function runtimeCardHtml(c){return '<div class=node style="display:block;margin:8px 0;padding:12px">'
  +'<b>'+c.label+'</b> <span class=mut>&middot; Works with '+c.worksWith+'</span>'+(c.connected?' <span class=ok>&#10003; connected</span>':'')

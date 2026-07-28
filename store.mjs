@@ -13,11 +13,11 @@ import { join } from "node:path";
 const DEFAULT_DIR = process.env.BO_CE_DATA || join(process.env.HOME || ".", ".local", "share", "bo-community");
 
 const EMPTY_DEF = { company: { name: "", brainoutputFundedInference: "forbidden" }, departments: [], agents: [], modelConnections: [], modelAssignments: {}, policies: {} };
-const EMPTY_RUNTIME = { projects: [], tasks: [], executions: [], artifacts: [], approvals: [] };
+const EMPTY_RUNTIME = { projects: [], tasks: [], executions: [], artifacts: [], approvals: [], conversations: [], missions: [] };
 
 // Runtime history bounds: runtime.json must not grow without limit. Oldest records are dropped
 // first; ACTIVE records (running/pending tasks, pending approvals) are never dropped.
-export const HISTORY_LIMITS = { projects: 100, tasks: 200, executions: 200, artifacts: 500, approvals: 200 };
+export const HISTORY_LIMITS = { projects: 100, tasks: 200, executions: 200, artifacts: 500, approvals: 200, conversations: 100, missions: 200 };
 const ACTIVE_STATUS = new Set(["running", "pending"]);
 
 // Fields that must NEVER be written into a connection (defense in depth — apiKeyEnv is a NAME, not a key).
@@ -70,6 +70,8 @@ export class Store {
   addExecution(rec) { return this._upsert("executions", rec); }
   addArtifact(rec) { return this._upsert("artifacts", rec); }
   addApproval(rec) { return this._upsert("approvals", rec); }
+  addConversation(rec) { return this._upsert("conversations", rec); }
+  addMission(rec) { return this._upsert("missions", rec); }
 
   // ── migration from the current JSON config (demo/company.json or an onboarding output) ───────
   migrateFromConfig(cfg) {
