@@ -87,6 +87,24 @@ requests like:
 Every reply shows its **sources** and the **permission** that allowed it. Intent matching is
 deterministic, so the chat works even with no model configured; a model only writes prose.
 
+## Scale
+
+The index is a **bounded cache** of the connected sources, rebuilt by sync — 20,000 messages and
+5,000 documents, newest first (`INDEX_LIMITS`). Search uses an **inverted index** built once per
+index revision, so a query touches only the entries that contain its terms rather than scanning the
+mailbox. Measured on 50,000 messages + 10,000 documents:
+
+| operation | naive scan | now |
+|---|---|---|
+| retrieval (every chat turn) | 823 ms | **10 ms** |
+| document search | 44 ms | **0.5 ms** |
+| meeting brief | 80 ms | **41 ms** |
+| commitments (full sweep) | 193 ms | **83 ms** |
+| heap | 312 MB | **115 MB** |
+| store serialization | 29 MB | **8 MB** |
+
+Pinned by `scale.test.mjs`, which fails if the inverted index is ever bypassed.
+
 ## Dormancy
 
 Work Twins are **dormant**. There is no timer and no polling anywhere in the module — a twin wakes on a

@@ -22,6 +22,10 @@ import { resolvePermission } from "./connectors.mjs";
 
 export const WORK_TWIN_MODES = ["mirror", "copilot", "delegate"];
 
+// The index is a bounded CACHE of the connected sources (sync rebuilds it), so it must not grow without
+// limit: an unbounded index means an unbounded store file rewritten on every save. Newest wins.
+export const INDEX_LIMITS = { messages: 20000, files: 5000 };
+
 // A mode grants a set of connector SCOPES. Elevated scopes still require an explicit grant and the
 // applicable approval — the mode is a ceiling, never a bypass.
 const MODE_SCOPES = {
@@ -267,9 +271,12 @@ export function indexMessages(twin, messages = [], { snippetChars = 240 } = {}) 
     attachments: (m.attachments || []).map((a) => (typeof a === "string" ? a : a.name)),
     snippet: String(m.body || m.snippet || "").slice(0, snippetChars),
     ref: `${m.accountId || "mail"}:${m.id}`,
-    terms: tokenize(`${m.subject || ""} ${m.from || ""} ${(m.attachments || []).map((a) => (typeof a === "string" ? a : a.name)).join(" ")} ${String(m.body || m.snippet || "").slice(0, snippetChars)}`),
   }));
-  return { ...twin, index: [...(twin.index || []), ...entries] };
+  // `indexRev` invalidates the derived search index exactly — no stale results, no rebuild per query.
+  const all = [...(twin.index || []), ...entries];
+  const kept = all.length > INDEX_LIMITS.messages
+    ? all.slice().sort((a, b) => (b.date || 0) - (a.date || 0)).slice(0, INDEX_LIMITS.messages) : all;
+  return { ...twin, index: kept, indexRev: (twin.indexRev || 0) + 1 };
 }
 
 /**
@@ -287,34 +294,80 @@ export function indexFiles(twin, files = [], { snippetChars = 400 } = {}) {
     size: f.size ?? null, modified: f.modified ?? null, folder: f.folder ?? null,
     snippet: String(f.snippet || "").slice(0, snippetChars),
     ref: `${f.accountId || "drive"}:${f.id}`,
-    terms: tokenize(`${f.name || ""} ${f.path || ""} ${String(f.snippet || "").slice(0, snippetChars)}`),
   }));
-  return { ...twin, files: [...(twin.files || []), ...entries] };
+  const all = [...(twin.files || []), ...entries];
+  const kept = all.length > INDEX_LIMITS.files
+    ? all.slice().sort((a, b) => (b.modified || 0) - (a.modified || 0)).slice(0, INDEX_LIMITS.files) : all;
+  return { ...twin, files: kept, indexRev: (twin.indexRev || 0) + 1 };
 }
 
 /** Search authorized documents. Returns compact, cited results — never file contents in bulk. */
 export function searchFiles(twin, query, { k = 8 } = {}) {
-  const q = new Set(tokenize(query));
-  return (twin.files || [])
-    .map((f) => {
-      const tf = {};
-      for (const t of f.terms) tf[t] = (tf[t] || 0) + 1;
-      let score = 0;
-      for (const t of q) if (tf[t]) score += 1 + Math.log(1 + tf[t]);
-      return { f, score };
-    })
-    .filter((x) => x.score > 0)
-    .sort((a, b) => b.score - a.score || (b.f.modified || 0) - (a.f.modified || 0))
+  return scoreVia(searchIndex(twin).files, twin.files || [], query)
+    .sort((a, b) => b.score - a.score || (b.e.modified || 0) - (a.e.modified || 0))
     .slice(0, k)
-    .map((x) => ({ ref: x.f.ref, name: x.f.name, path: x.f.path, mimeType: x.f.mimeType, modified: x.f.modified,
-      snippet: x.f.snippet, citation: `${x.f.name}${x.f.folder && x.f.folder !== "." ? ` (${x.f.folder})` : ""}` }));
+    .map(({ e: f }) => ({ ref: f.ref, name: f.name, path: f.path, mimeType: f.mimeType, modified: f.modified,
+      snippet: f.snippet, citation: `${f.name}${f.folder && f.folder !== "." ? ` (${f.folder})` : ""}` }));
+}
+
+// ── search index ────────────────────────────────────────────────────────────────────────────────
+// Scanning every message on every query is O(mailbox) — at 50k messages that measured 823 ms, on the
+// hot path of every chat turn. Build an inverted index (term → postings) ONCE per index revision and
+// a query then touches only the entries that actually contain its terms.
+const textOfMail = (e) => `${e.subject || ""} ${e.from || ""} ${(e.attachments || []).join(" ")} ${e.snippet || ""}`;
+const textOfFile = (f) => `${f.name || ""} ${f.path || ""} ${f.snippet || ""}`;
+// Keyed by the ARRAY IDENTITY of the index itself. Every index* call produces a new array, so this
+// can never serve stale postings — and two twins that happen to share an id can never collide.
+// WeakMap lets the postings be collected with the index they describe.
+const _postings = new WeakMap();
+
+function buildPostings(entries, textOf) {
+  const postings = new Map();     // term → [{ i, tf }]
+  entries.forEach((e, i) => {
+    const tf = new Map();
+    for (const t of tokenize(textOf(e))) tf.set(t, (tf.get(t) || 0) + 1);
+    for (const [t, n] of tf) {
+      let list = postings.get(t);
+      if (!list) postings.set(t, (list = []));
+      list.push({ i, tf: n });
+    }
+  });
+  return postings;
+}
+
+function postingsFor(entries, textOf) {
+  if (!entries || !entries.length) return new Map();
+  let p = _postings.get(entries);
+  if (!p) { p = buildPostings(entries, textOf); _postings.set(entries, p); }
+  return p;
+}
+function searchIndex(twin) {
+  return { mail: postingsFor(twin.index, textOfMail), files: postingsFor(twin.files, textOfFile) };
+}
+
+/** Score only the entries that contain a query term. Returns [{entry, score}] sorted. */
+function scoreVia(postings, entries, query, allow = null) {
+  const scores = new Map();
+  for (const t of new Set(tokenize(query))) {
+    const list = postings.get(t);
+    if (!list) continue;
+    for (const { i, tf } of list) {
+      if (allow && !allow(entries[i])) continue;
+      scores.set(i, (scores.get(i) || 0) + 1 + Math.log(1 + tf));
+    }
+  }
+  return [...scores.entries()].map(([i, score]) => ({ e: entries[i], score }));
 }
 
 /** Only the resources the twin is permitted to see. */
-function permittedIndex(twin) {
+function permittedSet(twin) {
   const allowed = new Set(twin.resources || []);
-  if (!allowed.size) return twin.index || [];
-  return (twin.index || []).filter((e) => !e.folder || allowed.has(e.folder) || (e.labels || []).some((l) => allowed.has(l)));
+  if (!allowed.size) return null;                       // unrestricted
+  return (e) => !e.folder || allowed.has(e.folder) || (e.labels || []).some((l) => allowed.has(l));
+}
+function permittedIndex(twin) {
+  const ok = permittedSet(twin);
+  return ok ? (twin.index || []).filter(ok) : (twin.index || []);
 }
 
 /**
@@ -322,17 +375,9 @@ function permittedIndex(twin) {
  * boundary: the mailbox never becomes context — this small set does.
  */
 export function retrieveForRequest(twin, query, { k = 5, includeFiles = true } = {}) {
-  const q = new Set(tokenize(query));
   const docs = includeFiles ? searchFiles(twin, query, { k }) : [];
-  const mail = permittedIndex(twin)
-    .map((e) => {
-      const tf = {};
-      for (const t of e.terms) tf[t] = (tf[t] || 0) + 1;
-      let score = 0;
-      for (const t of q) if (tf[t]) score += 1 + Math.log(1 + tf[t]);
-      return { e, score };
-    })
-    .filter((x) => x.score > 0)
+  const allowed = permittedSet(twin);
+  const mail = scoreVia(searchIndex(twin).mail, twin.index || [], query, allowed)
     .sort((a, b) => b.score - a.score || (b.e.date || 0) - (a.e.date || 0))
     .slice(0, k)
     .map((x) => ({ ref: x.e.ref, subject: x.e.subject, from: x.e.from, date: x.e.date,
@@ -419,14 +464,26 @@ export function relatedToEvent(twin, ev, { k = 5 } = {}) {
   const attendees = new Set((ev.attendees || []).map((a) => String(a).toLowerCase()));
   const me = (twin.employee.email || "").toLowerCase();
   const titleTerms = new Set(tokenize(ev.title || ""));
-  const scored = permittedIndex(twin).map((e) => {
+  const allow = permittedSet(twin);
+  const entries = twin.index || [];
+  // Two cheap passes instead of tokenizing every message: an attendee match is a plain string compare,
+  // and title overlap comes from the inverted index. (Re-tokenizing here cost 344 ms on 50k messages.)
+  const cand = new Map();
+  entries.forEach((e, i) => {
+    if (allow && !allow(e)) return;
     const from = String(e.from || "").toLowerCase();
-    const tos = (e.to || []).map((x) => String(x).toLowerCase());
-    const withAttendee = attendees.has(from) || tos.some((t) => attendees.has(t) && t !== me);
-    const overlap = [...titleTerms].filter((t) => e.terms.includes(t)).length;
-    const score = (withAttendee ? 10 : 0) + overlap;
-    return { e, score, withAttendee };
-  }).filter((x) => x.withAttendee || x.score >= Math.max(2, Math.ceil(titleTerms.size * 0.5)));
+    const withAttendee = attendees.has(from) || (e.to || []).some((t) => { const x = String(t).toLowerCase(); return attendees.has(x) && x !== me; });
+    if (withAttendee) cand.set(i, { e, score: 10, withAttendee: true });
+  });
+  if (titleTerms.size) {
+    for (const { e, score } of scoreVia(searchIndex(twin).mail, entries, ev.title || "", allow)) {
+      const i = entries.indexOf(e);
+      const prev = cand.get(i);
+      if (prev) prev.score += score;
+      else if (score >= Math.max(2, Math.ceil(titleTerms.size * 0.5))) cand.set(i, { e, score, withAttendee: false });
+    }
+  }
+  const scored = [...cand.values()];
   return scored.sort((a, b) => b.score - a.score || (b.e.date || 0) - (a.e.date || 0)).slice(0, k)
     .map((x) => ({ ref: x.e.ref, subject: x.e.subject, from: x.e.from, date: x.e.date, snippet: x.e.snippet,
       citation: `${x.e.from || "unknown"} — ${x.e.subject || "(no subject)"}`, viaAttendee: x.withAttendee }));
