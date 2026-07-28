@@ -26,6 +26,10 @@ own, free, or local — you always see who pays for each model, and your keys ne
   **policies bound to that work** (loaded by department/tag, not the worker's raw instructions); a
   human is pulled in **only when the reviewer can't clear it**, with a decision-ready brief. Money
   movement and deploys always gate. See **[REVIEW_AND_APPROVAL.md](docs/REVIEW_AND_APPROVAL.md)**.
+- **Talk to it.** A Command Center chat: speak to the company, a department, one agent, or your own
+  **Work Twin**; plan a mission, approve it, watch it run — the transcript never leaves your machine.
+- **A Work Twin per person** — read‑only by default, drafts you review, and nothing sent without an
+  explicit grant *and* your approval.
 - **Zero‑dependency Node ESM.** Requires only **Node ≥ 18**.
 
 ## Quick start
@@ -123,6 +127,8 @@ node bo-community.mjs onboard --advanced  # Advanced: per-stage models, fallback
 node bo-community.mjs onboard --example   # the mixed-runtime example (Claude Code · Codex · local · free)
 node bo-community.mjs demo       # run the sample workflows on your local models
 node bo-community.mjs playbook   # print the free open-source company playbook
+node bo-community.mjs twin-demo  # Work Twin walkthrough on imported mail (no account, no model)
+node bo-community.mjs write-demo # how an approved write actually happens (grant → approval → execute)
 npm test                         # node --test *.test.mjs  (zero-dep)
 npm run smoke:community-clean    # end-to-end clean-install smoke in a temp dir
 ```
