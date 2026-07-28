@@ -143,7 +143,7 @@ unconfigured to show the no‑paid‑fallback path). Every run reports model / p
 
 ## Status
 
-**Alpha 0.3.1** — early but real; open source and free to run, self-host, or build on. See
+**Alpha 0.4.0** — early but real; open source and free to run, self-host, or build on. See
 **[SAFETY.md](SAFETY.md)**. Zero external dependencies; the test suite runs with `npm test`.
 
 ## License

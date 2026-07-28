@@ -50,7 +50,7 @@ One abstraction, normalized messages and events (`mail-sources.mjs`):
 **Every new connection defaults to Mirror (read-only).** Credentials stay local: a password is stored
 in the local store (or referenced via `config.passwordEnv`) and is **stripped from every API response**.
 
-## Capabilities
+## Documents
 
 Documents are indexed the same way as mail — **metadata plus a bounded snippet, never whole files** —
 and `searchFiles` / the chat search across mail *and* documents in one place, with citations.
@@ -100,4 +100,6 @@ Connect another email server · Use local/imported email · Skip for now → a c
 Regular mode uses one model for the twin; Advanced mode can set separate conversation, planning,
 drafting, reviewing and long-context models (`modelPolicy`).
 
-API: `worktwin.mjs` · sources: `mail-sources.mjs` · tests: `worktwin.test.mjs`, `mail-sources.test.mjs`.
+API: `worktwin.mjs` · sources: `mail-sources.mjs` (mail + calendars), `drive-sources.mjs` (documents),
+`finance-connectors.mjs` (bank/crypto) · tests: `worktwin.test.mjs`, `mail-sources.test.mjs`,
+`drive-sources.test.mjs`, `finance-connectors.test.mjs`.
