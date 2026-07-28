@@ -137,3 +137,6 @@ lives in [`NOTICE`](NOTICE). Contributions are accepted under a Developer Certif
 > The **Community Edition** is the open-source base. BrainOutput's **hosted** service and **solutions**
 > (diagnostic, AI audit, implementation) are built on this same base — you can always run it yourself
 > for free.
+
+Editions & repository boundary (Community vs Cloud packages, the edition-capability interface, the
+hosted-release manifest): **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
