@@ -16,6 +16,7 @@ import { readFileSync } from "node:fs";
 import { request } from "node:http";
 import { Store } from "./store.mjs";
 import { ossCompanyPlaybook, validatePlaybook } from "./playbooks.mjs";
+import { substituteInstalled } from "./onboarding.mjs";
 import { describeLocation } from "./runtimes.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -36,13 +37,36 @@ async function doctor() {
   console.log(`${localModels.length ? "✓" : "○"} Local models (ollama): ${localModels.join(", ") || "none — install ollama + `ollama pull qwen3-30b-a3b`, or use a free/BYOK model"}`);
   const byok = ["USER_OWN_ANTHROPIC_KEY", "USER_OWN_OPENAI_KEY", "USER_OWN_OPENROUTER_KEY"].filter((k) => process.env[k]);
   console.log(`${byok.length ? "✓" : "○"} BYOK keys present: ${byok.join(", ") || "none set (optional)"}`);
+  // Which models does the shipped example expect, and does this machine have them?
+  try {
+    const starter = JSON.parse(readFileSync(join(HERE, "samples", "starter-company.json"), "utf8"));
+    const wanted = [...new Set((starter.modelConnections || []).filter((c) => c.funder === "local").map((c) => c.model))];
+    const missing = wanted.filter((m) => !localModels.includes(m));
+    if (missing.length) {
+      console.log(`○ Example (appliance-class) models not installed here: ${missing.join(", ")}`);
+      console.log(`  BrainOutput will fit the example to what you have. To run it as designed:`);
+      for (const m of missing) console.log(`     ollama pull ${m}`);
+    } else if (wanted.length) console.log(`✓ Every model the example expects is installed`);
+  } catch {}
   console.log(`\nNeeds NONE of: a BrainOutput account, BrainOutput credits, Claude, Kimi, the hosted agent fleet.`);
   console.log(localModels.length || byok.length ? "\nReady. Next: bo-community setup && bo-community serve" : "\nConnect at least one model source (local/free/BYOK), then: bo-community setup");
 }
 
-function setup() {
+async function setup() {
   const starter = JSON.parse(readFileSync(join(HERE, "samples", "starter-company.json"), "utf8"));
+  // The starter names appliance-class models. Fit it to what this machine actually has, out loud.
+  let installed = [];
+  try { installed = (JSON.parse(await probe("127.0.0.1", 11434, "/api/tags")).models || []).map((m) => m.name); } catch {}
+  const sub = substituteInstalled(starter.modelConnections, installed);
+  starter.modelConnections = sub.connections;
   const s = new Store().migrateFromConfig(starter);
+  if (sub.substitutions.length) {
+    console.log(`Fitted the starter company to the models you have installed:`);
+    for (const x of sub.substitutions) console.log(`   • ${x.role.padEnd(9)} ${x.wanted}  →  ${x.used}`);
+    console.log(`   (the example is sized for a 128 GB appliance — \`ollama pull <model>\` for the originals)`);
+  } else if (!installed.length) {
+    console.log(`No local models detected. Connect one in the dashboard, or: ollama pull qwen3-30b-a3b`);
+  }
   console.log(`Loaded starter company "${s.def.company.name}" → ${s.dir}`);
   console.log(`  departments: ${s.def.departments.join(", ")}`);
   console.log(`  agents: ${s.def.agents.length} (dormant) · connections: ${s.def.modelConnections.length} · runs on your own models`);
@@ -51,7 +75,7 @@ function setup() {
 
 switch (cmd) {
   case "doctor": await doctor(); break;
-  case "setup": setup(); break;
+  case "setup": await setup(); break;
   case "serve": run("web-server.mjs", rest); break;
   case "onboard": run("bo-ce-onboard.mjs", rest); break;
   case "demo": run("bo-ce.mjs", rest); break;

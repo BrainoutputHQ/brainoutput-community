@@ -17,12 +17,19 @@ export async function chatCompletion({ endpoint, model, apiKey, prompt, maxToken
     const req = lib.request(url, { method: "POST", headers, timeout: timeoutMs }, (res) => {
       let data = ""; res.on("data", (d) => (data += d));
       res.on("end", () => {
-        try {
-          const j = JSON.parse(data);
-          const content = j.choices?.[0]?.message?.content ?? "";
-          const usage = j.usage || {};
-          resolve({ content, tokens: usage.total_tokens ?? ((usage.prompt_tokens || 0) + (usage.completion_tokens || 0)), raw: j });
-        } catch (e) { reject(new Error(`bad completion response: ${data.slice(0, 200)}`)); }
+        let j;
+        try { j = JSON.parse(data); }
+        catch { return reject(new Error(`bad completion response from ${url.host}: ${data.slice(0, 200)}`)); }
+        // An API error must NEVER look like a successful empty answer. A missing model, a bad key or a
+        // rate limit has to surface as a failure the caller can act on.
+        const apiErr = j.error?.message || j.error || j.detail;
+        if (res.statusCode >= 400 || apiErr)
+          return reject(new Error(`model '${model}' failed (${res.statusCode}): ${typeof apiErr === "string" ? apiErr : JSON.stringify(apiErr || j).slice(0, 160)}`));
+        const content = j.choices?.[0]?.message?.content;
+        if (content == null)
+          return reject(new Error(`model '${model}' returned no content — response: ${JSON.stringify(j).slice(0, 160)}`));
+        const usage = j.usage || {};
+        resolve({ content, tokens: usage.total_tokens ?? ((usage.prompt_tokens || 0) + (usage.completion_tokens || 0)), raw: j });
       });
     });
     req.on("error", reject); req.on("timeout", () => req.destroy(new Error("timeout")));

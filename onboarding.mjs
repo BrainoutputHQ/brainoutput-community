@@ -70,6 +70,35 @@ export function capabilityAlternatives(slot, connections = []) {
   return ["Use a free model for this", "Run a local model for this", "Connect your own provider", "Skip it for now"];
 }
 
+/**
+ * Match a company's LOCAL model connections against what is actually installed on this machine.
+ * The shipped examples name appliance-class models (a GB10 runs them comfortably); a laptop will not
+ * have them. Rather than failing, substitute the closest installed model by ROLE and say so out loud —
+ * a silent substitution would be worse than an error. Pure: pass the installed list in.
+ */
+export function substituteInstalled(connections = [], installed = []) {
+  if (!installed.length) return { connections, substitutions: [], installed };
+  const sizeOf = (n) => { const m = String(n).match(/(\d+(?:\.\d+)?)\s*b\b/i); return m ? Number(m[1]) : 0; };
+  const isCoder = (n) => /coder|code/i.test(n);
+  const roleOf = (c) => isCoder(`${c.id} ${c.model}`) ? "coder"
+    : /fast|small|mini|cheap|a3b/i.test(`${c.id} ${c.model}`) ? "fast" : "reasoning";
+  const bySize = [...installed].sort((a, b) => sizeOf(b) - sizeOf(a));
+  const pick = (role) => {
+    if (role === "coder") return bySize.find(isCoder) || bySize[0];
+    if (role === "fast") return [...bySize].reverse()[0];
+    return bySize[0];
+  };
+  const substitutions = [];
+  const out = connections.map((c) => {
+    if (c.funder !== "local" || installed.includes(c.model)) return c;
+    const used = pick(roleOf(c));
+    if (!used || used === c.model) return c;
+    substitutions.push({ id: c.id, wanted: c.model, used, role: roleOf(c) });
+    return { ...c, model: used, _substitutedFor: c.model };
+  });
+  return { connections: out, substitutions, installed };
+}
+
 // Step 5 — generate the minimum useful org for the selected departments (dormant-by-default).
 export function generateOrg({ companyDoes = "", departments = [] } = {}) {
   const agents = [];

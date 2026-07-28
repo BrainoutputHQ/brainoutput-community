@@ -102,3 +102,40 @@ test("buildCompanyConfig deploys agents dormant; renderAgentView shows models + 
   assert.ok(Object.keys(view.models).length >= 1);
   assert.ok(Object.keys(view.approvals).includes("payment"));   // finance controller: payment→human
 });
+
+test("substituteInstalled fits an appliance-class example to the machine, and says so", async () => {
+  const { substituteInstalled } = await import("./onboarding.mjs");
+  const conns = [
+    { id: "local-reasoning", model: "qwen3.5-122b", funder: "local" },
+    { id: "local-coder", model: "qwen3-coder-30b", funder: "local" },
+    { id: "local-fast", model: "qwen3-30b-a3b", funder: "local" },
+    { id: "byok", model: "claude-opus-4-8", funder: "user" },
+  ];
+  const installed = ["qwen2.5-7b-32k:latest", "qwen2.5-coder:7b", "qwen2.5:3b"];
+  const { connections, substitutions } = substituteInstalled(conns, installed);
+  assert.equal(substitutions.length, 3);                       // the three local ones
+  assert.equal(connections.find((c) => c.id === "byok").model, "claude-opus-4-8"); // BYOK untouched
+  assert.equal(connections.find((c) => c.id === "local-coder").model, "qwen2.5-coder:7b"); // coder → coder
+  assert.equal(connections.find((c) => c.id === "local-fast").model, "qwen2.5:3b");        // fast → smallest
+  assert.equal(connections.find((c) => c.id === "local-reasoning").model, "qwen2.5-7b-32k:latest"); // → largest
+  assert.ok(connections.every((c) => !c._substitutedFor || c._substitutedFor !== c.model));
+  // nothing installed → leave the config alone so the (loud) error guides the user
+  assert.deepEqual(substituteInstalled(conns, []).substitutions, []);
+  // already installed → no substitution
+  assert.deepEqual(substituteInstalled([{ id: "x", model: "qwen2.5:3b", funder: "local" }], installed).substitutions, []);
+});
+
+test("an API error is a FAILURE, never a silent empty answer", async () => {
+  const { chatCompletion } = await import("./adapters.mjs");
+  const http = await import("node:http");
+  const server = http.createServer((req, res) => {
+    res.writeHead(404, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: { message: "model 'ghost-70b' not found" } }));
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  try {
+    await assert.rejects(
+      () => chatCompletion({ endpoint: `http://127.0.0.1:${server.address().port}/v1/chat/completions`, model: "ghost-70b", prompt: "hi" }),
+      /ghost-70b.*not found/);
+  } finally { server.close(); }
+});

@@ -10,6 +10,8 @@ import { dirname, join } from "node:path";
 import { routeTask, makeCatalog, costReport, validateCompanyConfig } from "./ce-core.mjs";
 import { executePlan } from "./adapters.mjs";
 import { DEPARTMENT_TEMPLATES } from "./departments.mjs";
+import { substituteInstalled } from "./onboarding.mjs";
+import { request as httpRequest } from "node:http";
 import { efficiencyReport, efficiencyLine } from "./efficiency.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -27,6 +29,24 @@ if (!pre.ok) {
   process.exit(2);
 }
 console.log(`preflight: company config OK (${pre.errors.length} errors, ${pre.warnings.length} warnings)`);
+
+// The shipped example names appliance-class models. If this machine has different ones installed,
+// substitute by role and SAY SO — never silently, and never a hidden failure.
+const installedModels = await new Promise((resolve) => {
+  const req = httpRequest({ host: "127.0.0.1", port: 11434, path: "/api/tags", timeout: 2000 }, (res) => {
+    let d = ""; res.on("data", (c) => (d += c));
+    res.on("end", () => { try { resolve((JSON.parse(d).models || []).map((m) => m.name)); } catch { resolve([]); } });
+  });
+  req.on("error", () => resolve([])); req.on("timeout", () => { req.destroy(); resolve([]); }); req.end();
+});
+const sub = substituteInstalled(cfg.modelConnections, installedModels);
+cfg.modelConnections = sub.connections;
+if (sub.substitutions.length) {
+  console.log(`\nThis machine does not have the example's appliance-class models installed, so the demo is`);
+  console.log(`running on what you do have (the example is sized for a 128 GB box):`);
+  for (const x of sub.substitutions) console.log(`   • ${x.role.padEnd(9)} ${x.wanted}  →  ${x.used}`);
+  console.log(`   Install the originals with: ollama pull <model>\n`);
+}
 
 // Refreshable free-model catalog (health-checked). The free profile picks only from here.
 const catalog = makeCatalog([
