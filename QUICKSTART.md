@@ -2,7 +2,7 @@
 
 A configurable, token-efficient **AI company** that runs entirely on **your own free / local / BYOK
 models**. Roles are durable; execution happens only when there's work. **It never uses a BrainOutput
-account, BrainOutput credits, Claude, or Kimi — every model is free, local, or your own.**
+account, BrainOutput credits, Claude, or Kimi — runs on your own models.**
 
 ## 1. Install (one command)
 ```bash
@@ -15,7 +15,7 @@ Check prerequisites any time:
 node bo-community.mjs doctor
 ```
 
-## 2. Connect a model (pick any — all $0 to BrainOutput)
+## 2. Connect a model (pick any — all run on models you own or control)
 - **Local** (recommended): install [ollama](https://ollama.com), then `ollama pull qwen2.5:3b`
   (and optionally `qwen2.5:7b` for coding). See `samples/connections.local.json`.
 - **Free**: a currently-available free OpenAI-compatible model. See `samples/connections.free.json`.
@@ -33,11 +33,11 @@ node bo-community.mjs onboard
 In the dashboard: connect models → describe your company + pick departments → review the generated
 org → edit model assignments → submit an objective → watch it execute → see the result, model,
 provider, **cost source**, tokens, artifacts, and any approvals. The header always shows
-**Every model free / local / your own.**
+**Runs on your own models.**
 
 ## 4. Three sample workflows
 
-Headless (runs all three against your local models, prints model/provider/cost/$0):
+Headless (runs all three against your local models, prints model/provider/cost source):
 ```bash
 node bo-community.mjs demo
 ```

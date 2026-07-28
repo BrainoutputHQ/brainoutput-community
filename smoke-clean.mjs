@@ -94,7 +94,7 @@ async function run() {
     `agent=${routed.agent} dept=${routed.department} provider=${worker.provider} model=${worker.model} cost=${worker.costSource} tokens=${worker.tokens}`);
 
   // ── 11. BrainOutput-funded inference is exactly $0 ──────────────────────────────────────────────
-  check("11. BrainOutput-funded inference is exactly $0", summary.zeroFundedOk && summary.brainoutputFundedTokens === 0, `funded=${summary.brainoutputFundedTokens}`);
+  check("11. runs entirely on your own models (no BrainOutput inference)", summary.zeroFundedOk && summary.brainoutputFundedTokens === 0, `funded=${summary.brainoutputFundedTokens}`);
 
   // ── 10. runtime history + company config survive a restart ──────────────────────────────────────
   const restarted = new Store(process.env.BO_CE_DATA);
@@ -103,7 +103,7 @@ async function run() {
   check("10. company config + runtime history survive an application restart", companyOk && historyOk);
 
   const passed = results.every((r) => r.ok);
-  console.log(`\n${passed ? "✓ CLEAN-INSTALL SMOKE PASSED" : "✗ CLEAN-INSTALL SMOKE FAILED"} — ${results.filter((r) => r.ok).length}/${results.length} checks · every model free / local / your own`);
+  console.log(`\n${passed ? "✓ CLEAN-INSTALL SMOKE PASSED" : "✗ CLEAN-INSTALL SMOKE FAILED"} — ${results.filter((r) => r.ok).length}/${results.length} checks · runs on your own models`);
   return passed;
 }
 

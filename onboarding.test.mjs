@@ -16,7 +16,7 @@ test("onboardingModelPaths: 'free' is first and the only default; local + BYOK a
 
 test("payerLabel is plain-language and never implies BrainOutput pays", () => {
   assert.match(payerLabel("free"), /free/i);
-  assert.match(payerLabel("local"), /\$0/);
+  assert.match(payerLabel("local"), /your own computer/i);
   assert.match(payerLabel("user"), /your own/i);
   assert.match(payerLabel("brainoutput"), /not available|never pays/i);
 });

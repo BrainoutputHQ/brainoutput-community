@@ -44,7 +44,7 @@ export function detectConnections({ localModels = [], byokKeys = {}, freeAvailab
 export function onboardingModelPaths() {
   return [
     { key: "free",  label: "Use free models",                  default: true,  payer: "free — the model provider pays, not you" },
-    { key: "local", label: "Use local models on this computer", default: false, payer: "$0 — runs on your own computer" },
+    { key: "local", label: "Use local models on this computer", default: false, payer: "runs on your own computer" },
     { key: "byok",  label: "Connect my own provider (API key)", default: false, payer: "your own provider account" },
   ];
 }
@@ -53,9 +53,9 @@ export function onboardingModelPaths() {
 export function payerLabel(funder) {
   switch (funder) {
     case "free":  return "free — the provider pays";
-    case "local": return "$0 — your computer";
+    case "local": return "runs on your own computer";
     case "user":  return "your own provider account";
-    default:      return "not available — BrainOutput never pays";
+    default:      return "not available — connect a model you own";
   }
 }
 

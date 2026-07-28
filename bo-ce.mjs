@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // BrainOutput Community Edition — vertical-slice demo (product architecture 2026-07-27).
 // One objective per department → identify the agent → smallest execution graph → run on the
-// user's configured (here: local, $0) models → results with model/provider/tokens/cost-source/
+// user's configured (here: local) models → results with model/provider/tokens/cost-source/
 // artifacts → prove ZERO BrainOutput-funded inference. Pass --dry to skip real inference.
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -58,7 +58,7 @@ async function scenario(title, objective, req, inputs, execOpts = {}) {
     else if (res?.output) console.log(`      ↳ ${String(res.output).replace(/\s+/g, " ").slice(0, 160)}`);
     if (res?.brief) console.log(`      ↳ human brief: decision="${res.brief.decision}" · escalatedBecause=${res.brief.escalatedBecause}`);
   }
-  console.log(`  cost sources: ${JSON.stringify(rep.byCostSource)} · every model free / local / your own`);
+  console.log(`  cost sources: ${JSON.stringify(rep.byCostSource)} · runs on your own models`);
   return { funded: rep.brainoutputFundedTokens };
 }
 
@@ -109,5 +109,5 @@ runs.push(await scenario(
 const totalFunded = runs.reduce((s, r) => s + (r.funded || 0), 0);
 console.log(`\n================ SUMMARY ================`);
 console.log(`Every scenario ran on your own free / local models.`);
-console.log(totalFunded === 0 ? "✓ Every scenario ran entirely on your free / local / own models." : "✗ UNEXPECTED PAID TOKENS — see above");
+console.log(totalFunded === 0 ? "✓ Every scenario ran entirely on your own models." : "✗ UNEXPECTED PAID TOKENS — see above");
 process.exit(totalFunded === 0 ? 0 : 1);

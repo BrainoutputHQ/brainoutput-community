@@ -27,13 +27,13 @@ Actual:
 Model source used:  local (ollama/…) | free (…) | BYOK (provider)
 Approx. task latency:
 Environment:        OS, Node version (from doctor)
-Everything ran on your free / local / own models (nothing charged to any BrainOutput account)?   yes / no  (if no — that's a priority bug, tell us!)
+Everything ran on your own models (nothing charged to any BrainOutput account)?   yes / no  (if no — that's a priority bug, tell us!)
 Anything that asked for a BrainOutput account / Claude / Kimi / BrainOutput credentials?  yes / no
 ```
 
 ## Most useful signals right now
 - Anything that was **confusing** in onboarding or the dashboard.
-- Any moment inference did **not** clearly show its **cost source** / **$0**.
+- Any moment inference did **not** clearly show its **cost source**.
 - Model/latency experience (which models, how fast, what you'd want).
 - Whether the three sample workflows (technical / customer-service / finance-with-approval) ran.
 - Any human-approval gate that was missing where money/publishing/deploys were involved.

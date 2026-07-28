@@ -43,7 +43,7 @@ function setup() {
   const s = new Store().migrateFromConfig(starter);
   console.log(`Loaded starter company "${s.def.company.name}" → ${s.dir}`);
   console.log(`  departments: ${s.def.departments.join(", ")}`);
-  console.log(`  agents: ${s.def.agents.length} (dormant) · connections: ${s.def.modelConnections.length} · every model free / local / your own`);
+  console.log(`  agents: ${s.def.agents.length} (dormant) · connections: ${s.def.modelConnections.length} · runs on your own models`);
   console.log(`\nNext:\n  bo-community serve      # web dashboard → http://127.0.0.1:4177\n  bo-community demo       # run the 3 sample workflows headless`);
 }
 
@@ -55,6 +55,6 @@ switch (cmd) {
   case "demo": run("bo-ce.mjs", rest); break;
   case "store": run("bo-ce-store.mjs", rest); break;
   default:
-    console.log("BrainOutput Community Edition — runs on YOUR free / local / BYOK models ($0 BrainOutput).\n");
+    console.log("BrainOutput Community Edition — runs on YOUR own models (free, local, subscription, or BYOK).\n");
     console.log("usage: bo-community <doctor|setup|serve|onboard|demo|store>");
 }

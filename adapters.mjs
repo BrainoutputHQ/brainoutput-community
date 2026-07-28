@@ -117,7 +117,7 @@ export async function executePlan(plan, inputsByNode = {}, opts = {}) {
 export const ADAPTERS = {
   "opencode": "engineering/repository work — runs through the hardened sandbox with a user/free/local coding model (never a BrainOutput-hosted paid model in Community)",
   "generic-llm-agent": "customer service, sales, marketing, HR, finance, general tool workflows via an OpenAI-compatible endpoint (free/BYOK/local)",
-  "local-openai-compatible": "a user's local model server (e.g. ollama/vLLM) — local compute, $0 BrainOutput",
+  "local-openai-compatible": "a user's local model server (e.g. ollama/vLLM) — runs on your own machine",
   "deterministic-workflow": "pure tools, no model",
   "human-approval": "a person authorizes a real-world action; no model",
 };

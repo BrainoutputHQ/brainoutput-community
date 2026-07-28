@@ -56,13 +56,13 @@ async function getAnswers() {
 }
 
 const line = (s = "") => console.log(s);
-const money = { free: "FREE", "local-compute": "your local compute ($0)", "user-subscription": "your subscription", "user-api-account": "your API account" };
+const money = { free: "FREE", "local-compute": "your local compute", "user-subscription": "your subscription", "user-api-account": "your API account" };
 
 (async () => {
   line("BrainOutput Community Edition — first-run onboarding\n" + "=".repeat(52));
-  line("Every model is free, local, or your own — you always choose who pays for each model.\n");
+  line("Runs on your own models — you always choose who pays for each model.\n");
   // Step 0 — how do you want to power your AI company? Free is the simplest default; all are $0-safe.
-  line("How would you like to run your models? (every option is free, local, or your own)");
+  line("How would you like to run your models? (all run on models you own or control)");
   for (const p of onboardingModelPaths())
     line(`   ${p.default ? "▸" : " "} ${p.label}${p.default ? "  (recommended)" : ""} — ${p.payer}`);
   line("");
@@ -99,7 +99,7 @@ const money = { free: "FREE", "local-compute": "your local compute ($0)", "user-
   if (Object.keys(answers.overrides || {}).length) line(`\n8) Applied ${Object.keys(answers.overrides).length} override(s).`);
   else line(`\n8) No overrides (every assignment is user-overridable).`);
 
-  // Step 9 — confirm every model is free / local / your own
+  // Step 9 — confirm every model is your own
   const z = confirmZeroFunded(assignments, connections);
   line(`\n9) Model ownership check: ${z.ok ? "✓ every model is free / your subscription / your account / local" : "✗ " + z.offenders.join(", ")}`);
   if (!z.ok) process.exit(1);

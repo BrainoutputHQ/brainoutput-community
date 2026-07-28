@@ -10,11 +10,11 @@ own, free, or local — you always see who pays for each model, and your keys ne
 
 [Quick start](#quick-start) · [Full install & examples](CLEAN_INSTALL.md) · [Quickstart](QUICKSTART.md) · [Safety](SAFETY.md)
 
-![Community dashboard — every model free / local / your own, agents dormant, per-slot local models](docs/community-dashboard.png)
+![Community dashboard — runs on your own models, agents dormant, per-slot local models](docs/community-dashboard.png)
 
 ## Why
 
-- **Every model is yours — free, local, or your own API key.** An unassigned capability slot offers
+- **Every model is yours — local, your subscription, or your own key.** An unassigned capability slot offers
   free / BYOK / local / stop; it **never** falls back to a paid model.
 - **Free models first**, your own API key (BYOK), or a **local** model (Ollama or any
   OpenAI‑compatible endpoint) — you always see who pays for each model.
@@ -33,7 +33,7 @@ own, free, or local — you always see who pays for each model, and your keys ne
 ```bash
 git clone https://github.com/brainoutputhq/brainoutput-community.git
 cd brainoutput-community
-node bo-community.mjs setup      # loads a starter company (agents dormant, $0)
+node bo-community.mjs setup      # loads a starter company (agents dormant)
 node bo-community.mjs serve      # dashboard → http://127.0.0.1:3100
 ```
 
@@ -41,7 +41,7 @@ First run with no company launches onboarding automatically. Verify the whole cl
 throwaway temp dir (touches nothing of yours):
 
 ```bash
-npm run smoke:community-clean    # ✓ 12/12 checks · every model free / local / your own
+npm run smoke:community-clean    # ✓ 12/12 checks · runs on your own models
 ```
 
 See **[CLEAN_INSTALL.md](CLEAN_INSTALL.md)** for local / free / BYOK examples, uninstall, and
@@ -65,12 +65,12 @@ troubleshooting.
   planner-parallel-workers · worker-reviewer · agent-tool · agent-approval-action. No planner for a
   clear task; no reviewer unless risk/policy requires; no CEO unless genuinely strategic.
 - **Router** (`routeTask`): department + role + task → agent → smallest graph → least‑cost permitted
-  model per node. Throws if any node would fall outside your free / local / own models; unassigned slots →
+  model per node. Throws if any node would fall outside your own models; unassigned slots →
   offer free/BYOK/local/stop, **never** an automatic paid fallback.
 - **Free catalog** (`makeCatalog`): refreshable, health‑checked; the free profile picks only
   currently‑available free models — never one hardcoded model.
 - **Config preflight** (`validateCompanyConfig`): validates a whole company definition before use
-  (the $0 invariant, unknown slots, dangling assignments, duplicate/missing ids).
+  (the zero-funded invariant, unknown slots, dangling assignments, duplicate/missing ids).
 
 ## Adapters (`adapters.mjs`) — executor‑neutral
 
@@ -85,7 +85,7 @@ Codex / Hermes are optional later adapters.
 node bo-community.mjs setup      # load the starter company
 node bo-community.mjs serve      # web dashboard
 node bo-community.mjs onboard    # interactive first-run onboarding (free-model first)
-node bo-community.mjs demo       # run the sample workflows on your local models ($0)
+node bo-community.mjs demo       # run the sample workflows on your local models
 npm test                         # node --test *.test.mjs  (zero-dep)
 npm run smoke:community-clean    # end-to-end clean-install smoke in a temp dir
 ```
@@ -94,7 +94,7 @@ The demo (`demo/company.json`) is three departments with **different** models �
 planner + free/local coding worker), Customer Service (multilingual worker), and Finance
 (deterministic reconciliation + human‑approved payment, with the vision slot intentionally
 unconfigured to show the no‑paid‑fallback path). Every run reports model / provider / tokens /
-**cost source** / artifacts — every model is free, local, or your own.
+**cost source** / artifacts — runs on your own models.
 
 ## Status
 

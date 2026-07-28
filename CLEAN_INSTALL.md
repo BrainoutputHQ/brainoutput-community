@@ -1,7 +1,7 @@
 # BrainOutput Community — Clean Install (alpha)
 
 The shortest reliable path to run BrainOutput Community on **your own free / local / BYOK models**.
-No BrainOutput account, no BrainOutput API key — **every model is free, local, or your own**.
+No BrainOutput account, no BrainOutput API key — **runs on your own models**.
 
 Requires only **Node.js ≥ 18**. (A local model via [Ollama](https://ollama.com) is optional but
 recommended for real runs.)
@@ -11,7 +11,7 @@ recommended for real runs.)
 ```bash
 git clone https://github.com/brainoutputhq/brainoutput-community.git
 cd brainoutput-community
-node bo-community.mjs setup      # loads a starter company (agents dormant, $0)
+node bo-community.mjs setup      # loads a starter company (agents dormant)
 node bo-community.mjs serve      # dashboard → http://127.0.0.1:3100
 ```
 
@@ -21,7 +21,7 @@ Verify the whole path in a throwaway temp dir (touches nothing of yours):
 
 ```bash
 npm run smoke:community-clean
-# → ✓ CLEAN-INSTALL SMOKE PASSED — 12/12 checks · every model free / local / your own
+# → ✓ CLEAN-INSTALL SMOKE PASSED — 12/12 checks · runs on your own models
 ```
 
 ## Uninstall / cleanup
@@ -52,7 +52,7 @@ ollama pull qwen2.5:7b          # any OpenAI-compatible local model works
 node bo-community.mjs doctor    # detects local models on 127.0.0.1:11434
 ```
 
-Connection shape (cost source = your machine, `$0`):
+Connection shape (cost source = your machine):
 
 ```json
 { "id": "local:qwen", "kind": "local", "provider": "ollama", "model": "qwen2.5:7b",
@@ -100,5 +100,5 @@ export USER_OWN_OPENROUTER_KEY=sk-...
 This is **early alpha software for local, technical evaluation**. See [`SAFETY.md`](SAFETY.md) for the
 full notice. In short: agents are **dormant** until you submit an objective; money movement /
 publishing / deploys require **human approval**; your API keys stay local (env-var names only);
-**Every model is free, local, or your own** and there is no paid automatic fallback. Review any
+**Every model is your own** and there is no paid automatic fallback. Review any
 free/BYOK provider's data-use terms before sending real data.
