@@ -108,7 +108,7 @@ Lago · Mastodon · Nextcloud** + generic **MCP/OpenAPI/RAG/chat**. Social conne
 `image-gen` capability.
 
 `node bo-community.mjs playbook` stands up a whole company on **open-source tools + free/local
-models — $0 from day one**, every connector read-only.
+models — free from day one**, every connector read-only.
 
 Documents and chat sources connect as **read-only knowledge** — searchable, cited, access-controlled,
 with retention and a strict read≠draft≠send separation (`rag.mjs`).

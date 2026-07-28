@@ -45,7 +45,7 @@ export function ossCompanyPlaybook() {
     departments: ["technical", "customer-service", "operations", "finance", "marketing"],
     agents,
     stack: [...new Set(agents.flatMap((a) => a.connectors.map((c) => c.label)))],
-    note: "A whole company on open-source tools + free/local models — $0 to start, every connector read-only by default.",
+    note: "A whole company on open-source tools + free/local models — free to start, every connector read-only by default.",
   };
 }
 

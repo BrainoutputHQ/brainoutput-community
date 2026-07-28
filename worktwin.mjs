@@ -242,7 +242,13 @@ export function draftAttribution(twin, { model = null, runtime = null } = {}) {
  * retrieval cheap and keeps the mailbox out of the model's context.
  */
 export function indexMessages(twin, messages = [], { snippetChars = 240 } = {}) {
-  const entries = messages.map((m) => ({
+  // PRIVACY AT INGEST: a message from a folder/label the twin was not authorized for is never
+  // indexed at all. permittedIndex() then acts as defence in depth at retrieval time.
+  const allowed = new Set(twin.resources || []);
+  const admissible = allowed.size
+    ? messages.filter((m) => !m.folder || allowed.has(m.folder) || (m.labels || []).some((l) => allowed.has(l)))
+    : messages;
+  const entries = admissible.map((m) => ({
     id: m.id,
     accountId: m.accountId || null,
     threadId: m.threadId || m.id,

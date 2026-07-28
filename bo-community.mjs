@@ -58,9 +58,10 @@ switch (cmd) {
   case "store": run("bo-ce-store.mjs", rest); break;
   case "playbook": playbook(); break;
   case "write-demo": run("bo-ce-write.mjs", rest); break;
+  case "twin-demo": run("bo-ce-twin.mjs", rest); break;
   default:
     console.log("BrainOutput Community Edition — runs on YOUR own models (free, local, subscription, or BYOK).\n");
-    console.log("usage: bo-community <doctor|setup|serve|onboard|demo|store|playbook|write-demo>");
+    console.log("usage: bo-community <doctor|setup|serve|onboard|demo|store|playbook|write-demo|twin-demo>");
 }
 
 function playbook() {
@@ -75,5 +76,5 @@ function playbook() {
     console.log(`    runs: ${describeLocation(a.runtime)}`);
     console.log(`    tools: ${conns}` + (Object.keys(a.approvalThresholds).length ? ` · approval: ${Object.keys(a.approvalThresholds).join(", ")}` : ""));
   }
-  console.log(`\n${v.ok ? "✓" : "✗"} Every runtime free/local, every connector read-only, every agent dormant — $0 to start.`);
+  console.log(`\n${v.ok ? "✓" : "✗"} Every runtime free/local, every connector read-only, every agent dormant — free to start.`);
 }

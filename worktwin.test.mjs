@@ -138,9 +138,11 @@ test("THE MAILBOX IS NOT CONTEXT: retrieval is relevant-only, compact and source
   assert.ok(t.index.every((e) => e.snippet.length <= 240));
 });
 
-test("permitted resources gate what the twin can even see", () => {
+test("permitted resources gate what the twin can even see — and it is never indexed", () => {
   const t = twinWith("mirror", ["INBOX"]);                       // Promotions not permitted
   assert.equal(retrieveForRequest(t, "newsletter digest", { k: 5 }).length, 0);
+  assert.equal(t.index.length, 3);                               // the Promotions message never entered the index
+  assert.ok(!t.index.some((e) => e.folder === "Promotions"));
   const wide = twinWith("mirror", ["INBOX", "Promotions"]);
   assert.ok(retrieveForRequest(wide, "newsletter digest", { k: 5 }).length > 0);
 });
