@@ -2,7 +2,7 @@
 // Runtimes + Regular/Advanced onboarding (product architecture 2026-07-28). Zero-dep: `node --test`.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { RUNTIME_KINDS, runtimeConnection, describeLocation, validateRuntime, runtimeCards } from "./runtimes.mjs";
+import { RUNTIME_KINDS, runtimeConnection, describeLocation, validateRuntime, runtimeCards, runtimeToConnection } from "./runtimes.mjs";
 import { onboardingModelPaths, regularOnboardingSteps, advancedOnboardingFields, applyAdvancedAgentConfig, onboardingExample } from "./onboarding.mjs";
 import { validateConnection } from "./ce-core.mjs";
 
@@ -41,6 +41,17 @@ test("validateRuntime rejects a BrainOutput-funded runtime, accepts user/free/lo
   assert.equal(validateRuntime(runtimeConnection({ runtime: "codex", authSource: "user-api-account" })).ok, true);
   assert.equal(validateRuntime({ runtime: "claude-code", funder: "brainoutput" }).ok, false);
   assert.equal(validateRuntime({ runtime: "codex", funder: "user", usesFounderCredential: true }).ok, false);
+});
+
+test("runtimeToConnection bridges to a valid ce-core connection (and fails closed on founder cred)", () => {
+  const rec = runtimeConnection({ runtime: "claude-code", provider: "anthropic", model: "claude", authSource: "user-subscription" });
+  const conn = runtimeToConnection(rec, { id: "c1" });
+  assert.equal(conn.id, "c1");
+  assert.equal(conn.kind, "claude-code");
+  assert.equal(conn.funder, "user");
+  assert.equal(conn.costSource, "user-subscription");
+  assert.equal(validateConnection(conn).ok, true);
+  assert.throws(() => runtimeToConnection({ runtime: "codex", funder: "brainoutput" }), /cannot connect runtime/);
 });
 
 test("runtimeCards surfaces all five first-class runtimes with Works-with labels", () => {

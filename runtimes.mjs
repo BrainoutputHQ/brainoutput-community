@@ -132,6 +132,30 @@ export function validateRuntime(rec) {
   return v.ok ? { ok: true } : { ok: false, reason: v.reason };
 }
 
+/**
+ * Bridge a validated runtime connection into a ce-core MODEL CONNECTION the router/store can use.
+ * Carries the runtime metadata alongside the connection fields. Pure. Throws if the runtime would
+ * not validate (fail-closed on any BrainOutput/founder credential).
+ */
+export function runtimeToConnection(rec, { id, endpoint, apiKeyEnv } = {}) {
+  const v = validateRuntime(rec);
+  if (!v.ok) throw new Error(`cannot connect runtime: ${v.reason}`);
+  return {
+    id: id || `runtime:${rec.runtime}`,
+    kind: rec.runtime,
+    provider: rec.provider || rec.runtime,
+    model: rec.model || "(user-selected)",
+    endpoint: endpoint || "",
+    ...(apiKeyEnv ? { apiKeyEnv } : {}),
+    costSource: rec.costSource,
+    funder: rec.funder,
+    ...(rec.contextLimit ? { contextSize: rec.contextLimit } : {}),
+    // runtime metadata the product surfaces:
+    runtime: rec.runtime, authSource: rec.authSource, location: rec.location,
+    capabilities: rec.capabilities, toolSupport: rec.toolSupport, health: rec.health,
+  };
+}
+
 /** The user-facing runtime cards (item 3): every catalog runtime + its surfaced fields. */
 export function runtimeCards() {
   return RUNTIME_KINDS.map((k) => {

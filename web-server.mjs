@@ -16,6 +16,7 @@ import { executePlan, runNode } from "./adapters.mjs";
 import { runOpenCode } from "./opencode-adapter.mjs";
 import { DEPARTMENT_TEMPLATES } from "./departments.mjs";
 import { detectConnections, generateOrg, recommendAssignments, applyOverrides, confirmZeroFunded, renderAgentView } from "./onboarding.mjs";
+import { runtimeCards, runtimeConnection, runtimeToConnection } from "./runtimes.mjs";
 
 const PORT = Number(process.env.BO_CE_WEB_PORT || 4177);
 const store = new Store();
@@ -48,7 +49,19 @@ const json = (res, obj, code = 200) => { res.writeHead(code, { "Content-Type": "
 async function api(req, res, url) {
   if (url.pathname === "/api/state") return json(res, publicState());
   if (url.pathname === "/api/detect") return json(res, { detected: await detectLocal() });
+  if (url.pathname === "/api/runtimes") {
+    const connected = new Set((store.def.modelConnections || []).map((c) => c.runtime).filter(Boolean));
+    return json(res, { cards: runtimeCards().map((c) => ({ ...c, connected: connected.has(c.runtime) })) });
+  }
   const b = await body(req);
+  if (url.pathname === "/api/connect-runtime") {
+    try {
+      const rec = runtimeConnection({ runtime: b.runtime, authSource: b.authSource, provider: b.provider, model: b.model, endpoint: b.endpoint, modelLocation: b.modelLocation });
+      const conn = runtimeToConnection(rec, { id: uid("runtime"), endpoint: b.endpoint, apiKeyEnv: b.apiKeyEnv });
+      store.setConnections([...(store.def.modelConnections || []), conn]).saveDefinition();
+      return json(res, publicState());
+    } catch (e) { return json(res, { error: e.message }, 400); }
+  }
   if (url.pathname === "/api/onboard") {
     const { connections } = detectConnections({ localModels: await detectLocal(), byokKeys: {} });
     const agents = generateOrg({ companyDoes: b.companyDoes, departments: b.departments || [] });
@@ -158,9 +171,10 @@ const VIEWS={
  dashboard:(s)=>el('<div><div class=card><h2>Company dashboard</h2><div class=row><div><b>'+(s.company?.name||'(no company yet)')+'</b><div class=mut>Runs on <span class=ok>your own models</span></div></div><div class=mut>Departments: '+(s.departments||[]).join(', ')+'<br>Agents: '+((s.agents||[]).length)+' (dormant by default)</div></div></div>'+
   '<div class=card><h2>Agents</h2><table><tr><th>Agent</th><th>Dept/Role</th><th>Models (slot → provider)</th><th>Status</th></tr>'+(s.agentViews||[]).map(a=>'<tr><td>'+a.id+'</td><td>'+a.department+'/'+a.role+'</td><td>'+Object.entries(a.models).map(([k,m])=>'<div><span class=mut>'+k+':</span> '+m+'</div>').join('')+'</td><td><span class="pill dormant">'+a.activation+'</span></td></tr>').join('')+'</table></div>'+
   '<div class=card><h2>Recent executions</h2>'+((s.executions||[]).slice(-5).reverse().map(e=>'<div class=node style="display:block;margin-bottom:6px">'+e.department+' · '+e.shape+' · '+e.graph.map(g=>g.model?(g.provider+'/'+g.model):g.needsConfiguration?'UNCONFIGURED':g.costSource).join(' → ')+' · <span class=mut>'+(e.summary?e.summary.tokens+' tok':'')+'</span></div>').join('')||'<span class=mut>none yet</span>')+'</div></div>'),
- connections:(s)=>{const d=el('<div class=card><h2>1 · Model connections (user / free / local only)</h2><div class=mut>No BrainOutput-hosted paid models are ever used. Detected local models below.</div><div id=det class=mut style="margin:8px 0">detecting…</div><table id=ct></table></div>');
+ connections:(s)=>{const d=el('<div><div class=card><h2>1 · Model connections (user / free / local only)</h2><div class=mut>No BrainOutput-hosted paid models are ever used. Detected local models below.</div><div id=det class=mut style="margin:8px 0">detecting…</div><table id=ct></table></div><div class=card><h2>Runtimes</h2><div class=mut>Assign a different runtime to any agent or execution stage. &ldquo;Works with&rdquo; &mdash; no partnership or endorsement implied. A local CLI is not a local model.</div><div id=rt style="margin-top:10px">loading&hellip;</div></div></div>');
   api('/api/detect').then(r=>{document.getElementById('det').textContent=r.detected.length?('Detected '+r.detected.length+' local model(s).'):'No local model detected — start ollama or connect a model.'});
-  d.querySelector('#ct').innerHTML='<tr><th>Connection</th><th>Provider / Model</th><th>Pays</th></tr>'+(s.connections||[]).map(c=>'<tr><td>'+c.id+'</td><td>'+c.provider+' / '+c.model+'</td><td class=ok>'+fmtCost(c.costSource)+'</td></tr>').join('');return d},
+  d.querySelector('#ct').innerHTML='<tr><th>Connection</th><th>Provider / Model</th><th>Pays</th></tr>'+(s.connections||[]).map(c=>'<tr><td>'+c.id+'</td><td>'+c.provider+' / '+c.model+'</td><td class=ok>'+fmtCost(c.costSource)+'</td></tr>').join('');
+  api('/api/runtimes').then(r=>{document.getElementById('rt').innerHTML=r.cards.map(runtimeCardHtml).join('')});return d},
  company:()=>{const d=el('<div class=card><h2>2 · Company & departments</h2><label>What does your company do?</label><input id=cd placeholder="e.g. a small software product studio"><label>Departments</label><div id=dep></div><button class=act style="margin-top:12px" id=go>Generate organization</button><div id=msg class=mut style="margin-top:8px"></div></div>');
   const deps=['technical','customer-service','finance','sales','marketing','human-resources','legal-compliance','operations','data-research','executive'];
   d.querySelector('#dep').innerHTML=deps.map(x=>'<label style="display:inline-block;margin-right:12px;color:var(--fg)"><input type=checkbox value="'+x+'" '+(['technical','customer-service','finance'].includes(x)?'checked':'')+' style="width:auto"> '+x+'</label>').join('');
@@ -186,5 +200,12 @@ const VIEWS={
   '<h2 style="margin-top:14px">Logs</h2><pre>'+ex.logs.join('\\n')+'</pre></div></div>')}
 };
 window.approve=async(id)=>{await api('/api/approval',{id,decision:'approved'});await refresh()};
+function runtimeCardHtml(c){return '<div class=node style="display:block;margin:8px 0;padding:12px">'
+ +'<b>'+c.label+'</b> <span class=mut>&middot; Works with '+c.worksWith+'</span>'+(c.connected?' <span class=ok>&#10003; connected</span>':'')
+ +'<div class=mut style="margin:4px 0">'+c.summary+'</div>'
+ +'<div class=mut style="font-size:12px">'+(c.cliLocal?'local CLI &middot; model '+c.defaultModelLocation:'model '+c.defaultModelLocation)+' &middot; caps: '+c.capabilities.join(', ')+' &middot; tools: '+(c.toolSupport?'yes':'model-dependent')+' &middot; auth: '+c.authSources.join('/')+'</div>'
+ +(c.note?'<div class=mut style="font-size:12px;margin-top:4px">'+c.note+'</div>':'')
+ +'<button class=act style="margin-top:8px" onclick="connectRuntime(\\''+c.runtime+'\\')">Connect (read-only default)</button></div>'}
+window.connectRuntime=async(runtime)=>{const defs={'local-openai':{authSource:'local',endpoint:'http://127.0.0.1:11434/v1/chat/completions',model:'(local model)'},'claude-code':{authSource:'user-subscription',model:'claude (your plan)'},'codex':{authSource:'user-api-account',model:'codex (your account)'},'opencode':{authSource:'free',model:'(free coding model)'},'generic-llm':{authSource:'free',model:'(free model)'}};const r=await api('/api/connect-runtime',{runtime,...(defs[runtime]||{authSource:'free'})});if(r.error){alert(r.error);return}S.tab='connections';await refresh();render()};
 refresh();
 </script></body></html>`;
