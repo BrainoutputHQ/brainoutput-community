@@ -98,3 +98,29 @@ test("REAL IMAP/SMTP round-trip: send, fetch, decode headers and body", { skip: 
     assert.equal(msgs[0].accountId, `imap:t`);
   } finally { await src.close(); }
 });
+
+test("iCalendar parsing: unfolding, dates, attendees — and a local calendar source", async () => {
+  const { parseIcs, parseIcsDate, localCalendarSource } = await import("./mail-sources.mjs");
+  const ics = [
+    "BEGIN:VCALENDAR", "BEGIN:VEVENT", "UID:ev-1",
+    "SUMMARY:Contract review with Bob", "DTSTART:20260729T090000Z", "DTEND:20260729T093000Z",
+    "ATTENDEE;CN=Bob:mailto:bob@partner.test", "ATTENDEE;CN=Alice:mailto:alice@acme.test",
+    "LOCATION:Room 2", "DESCRIPTION:Confirm payment ter", " ms before signing",   // folded line
+    "END:VEVENT", "BEGIN:VEVENT", "UID:ev-2", "SUMMARY:Standup", "DTSTART:20260728T080000Z",
+    "END:VEVENT", "END:VCALENDAR",
+  ].join("\r\n");
+  const evs = parseIcs(ics);
+  assert.equal(evs.length, 2);
+  assert.equal(evs[0].title, "Standup");                        // sorted by start
+  const review = evs.find((e) => e.id === "ev-1");
+  assert.deepEqual(review.attendees, ["bob@partner.test", "alice@acme.test"]);
+  assert.equal(review.location, "Room 2");
+  assert.match(review.description, /payment terms before signing/);   // unfolded correctly
+  assert.equal(parseIcsDate("20260729T090000Z"), Date.parse("2026-07-29T09:00:00Z"));
+
+  const cal = localCalendarSource({ account: "alice", icsText: ics });
+  assert.equal(cal.verified, true);
+  const upcoming = await cal.listEvents({ from: Date.parse("2026-07-29T00:00:00Z") });
+  assert.equal(upcoming.length, 1);
+  assert.equal(upcoming[0].id, "ev-1");
+});

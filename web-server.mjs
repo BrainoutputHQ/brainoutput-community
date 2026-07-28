@@ -24,7 +24,7 @@ import { connectRagSource, indexDocuments, searchRag } from "./rag.mjs";
 import { createWorkTwin, setMode as twinSetMode, connectWorkSource, grantTwinScope, twinPermission,
   indexMessages as twinIndex, retrieveForRequest, prioritySummary, unansweredThreads, extractCommitments,
   meetingBrief, followUpSuggestions, draftReply, sendDraft, emailToMission, taskPacket, recordDelegation,
-  withAudit, auditRecord, WORK_TWIN_MODES, publicTwin } from "./worktwin.mjs";
+  withAudit, auditRecord, WORK_TWIN_MODES, publicTwin, setModelPolicy, modelForStage, TWIN_MODEL_STAGES } from "./worktwin.mjs";
 import { connectMailSource, workSourceOptions, smtpSend } from "./mail-sources.mjs";
 import { efficiencyReport } from "./efficiency.mjs";
 import { selectModel } from "./ce-core.mjs";
@@ -114,6 +114,12 @@ async function api(req, res, url) {
   if (url.pathname === "/api/worktwin/connect") return twinConnect(res, b);
   if (url.pathname === "/api/worktwin/mode") return twinMode(res, b);
   if (url.pathname === "/api/worktwin/grant") return twinGrant(res, b);
+  if (url.pathname === "/api/worktwin/model-policy") {
+    let t = getTwin(b.twinId);
+    if (!t) return json(res, { error: "no Work Twin" }, 404);
+    try { t = setModelPolicy(t, { mode: b.mode, stages: b.stages || {} }); saveTwin(t); return json(res, { twin: publicTwin(t) }); }
+    catch (e) { return json(res, { error: e.message }, 400); }
+  }
   if (url.pathname === "/api/worktwin/sync") return twinSync(res, b);
   if (url.pathname === "/api/worktwin/action") return twinAction(res, b);
   if (url.pathname === "/api/chat/send") return chatSend(res, b);
@@ -173,16 +179,18 @@ async function twinSync(res, b) {
   if (!t) return json(res, { error: "no Work Twin" }, 404);
   let fetched = 0;
   const errors = [];
-  t = { ...t, index: [] };
+  t = { ...t, index: [], events: [] };
   for (const acc of t.accounts) {
     try {
       const pwd = acc.secret || (acc.config?.passwordEnv ? process.env[acc.config.passwordEnv] : null);
       const src = connectMailSource({ kind: acc.kind, account: acc.account, ...(acc.config || {}),
         ...(pwd ? { password: pwd } : {}), ...(b.credentials?.[acc.id] || {}) });
       const msgs = await src.listMessages({ limit: b.limit || 50 });
+      const evs = (await src.listEvents?.({}))?.map((e) => ({ ...e, accountId: acc.id })) || [];
       await src.close?.();
       t = twinIndex(t, msgs.map((m) => ({ ...m, accountId: acc.id })));
-      fetched += msgs.length;
+      if (evs.length) t = { ...t, events: [...(t.events || []), ...evs] };
+      fetched += msgs.length + evs.length;
     } catch (e) { errors.push(`${acc.id}: ${e.message}`); }
   }
   saveTwin(t);
@@ -193,7 +201,7 @@ async function twinSync(res, b) {
 async function twinAction(res, b) {
   let t = getTwin(b.twinId);
   if (!t) return json(res, { error: "no Work Twin" }, 404);
-  const model = chatModelFor({ agentId: null, department: null });
+  const model = twinModelFor(t, b.action === "draft-reply" ? "drafting" : "conversation");
   const now = Date.now();
   const perm = twinPermission(t, { action: b.action, resource: b.ref || null, accountId: b.accountId || null });
   // Fail-closed: no capability runs unless the twin's mode (and any required grant) permits it.
@@ -205,7 +213,7 @@ async function twinAction(res, b) {
       case "unanswered": return json(res, { permission: perm, threads: unansweredThreads(t, { now, olderThanHours: b.olderThanHours || 0 }) });
       case "search-mail": return json(res, { permission: perm, hits: retrieveForRequest(t, b.query || "", { k: b.k || 8 }) });
       case "commitments": return json(res, { permission: perm, items: extractCommitments(t, { refs: b.refs || null }) });
-      case "meeting-brief": return json(res, { permission: perm, briefs: meetingBrief(t, b.events || [], { window: 5 }) });
+      case "meeting-brief": return json(res, { permission: perm, briefs: meetingBrief(t, b.events || t.events || [], { window: 5 }) });
       case "follow-ups": return json(res, { permission: perm, items: followUpSuggestions(t, { now, olderThanHours: b.olderThanHours ?? 48 }) });
       case "draft-reply": {
         if (!perm.allowed) return json(res, { error: perm.reason, permission: perm }, 403);
@@ -270,6 +278,19 @@ function knowledgeSource() {
       text: `Agent ${a.id} is the ${a.role} in ${a.department}. Objectives: ${(a.objectives || []).join("; ")}. Tools: ${(a.tools || []).join(", ")}. Permissions: ${(a.permissions || []).join(", ")}. Approvals: ${Object.keys(a.approvalThresholds || {}).join(", ") || "none"}. Activation: ${a.activation}.` })),
   ];
   return indexDocuments(connectRagSource({ id: "company-knowledge", label: "Company knowledge", resources: ["company"] }), docs, { now: Date.now() });
+}
+
+/**
+ * Resolve the model for a Work Twin STAGE (advanced policy first, else the company default).
+ */
+function twinModelFor(twin, stage) {
+  const connId = modelForStage(twin, stage);
+  if (connId) {
+    const conn = (store.def.modelConnections || []).find((c) => c.id === connId);
+    if (conn) return { slot: `twin:${stage}`, connection: conn, provider: conn.provider, model: conn.model,
+      costSource: conn.costSource, funder: conn.funder };
+  }
+  return chatModelFor({});
 }
 
 /** Resolve the conversation model for a scope — the agent's own model, else a light company default. */
@@ -367,10 +388,10 @@ async function chatSend(res, b) {
           reply = it.length ? `Suggested follow-ups:\n` + it.slice(0, 8).map((x) => `• ${x.kind}: ${x.subject || x.text}${x.waitingHours ? ` (${x.waitingHours}h)` : ""}`).join("\n")
             : "Nothing to follow up on.";
         } else if (intent === "meeting-brief") {
-          const briefs = meetingBrief(t, b.events || [], { window: 4 });
+          const briefs = meetingBrief(t, b.events || t.events || [], { window: 4 });
           reply = briefs.length
             ? briefs.map((x) => `${x.event.title}: ${x.relatedMessages.length} related message(s), ${x.commitments.length} commitment(s), ${x.openRequests.length} open request(s)`).join("\n")
-            : "No calendar events were provided — connect a calendar or pass events to prepare a brief.";
+            : "No calendar events yet — connect a calendar (an .ics file works) and sync, then ask again.";
         } else if (intent === "draft-reply") {
           const ref = b.ref || src[0]?.ref;
           if (!ref) reply = "I could not find which message to reply to — name the sender or subject.";
@@ -697,6 +718,23 @@ const VIEWS={
      +'<div class=warn style="margin-top:8px;font-size:12px">Privacy <b>confidential</b> or <b>restricted</b> means every stage must run on a LOCAL model — a cloud model is never silently used; the stage is left unconfigured instead.</div>'
      +'<button class=act id=save style="margin-top:12px">Save advanced settings</button> <span class=mut id=msg></span>'
    :'<div class=mut>No agents yet — generate an organization first.</div>')+'</div></div>');
+  // Work Twin advanced model policy (separate conversation / planning / drafting / reviewing / long-context)
+  const T=(s.workTwins||[])[0];
+  if(T){const st=(T.modelPolicy&&T.modelPolicy.stages)||{};const adv=(T.modelPolicy||{}).mode==='advanced';
+   const tw=el('<div class=card><h2>⚙ Work Twin — '+T.name+'</h2>'
+    +'<div class=mut>Regular mode uses one model for the twin. Advanced gives each stage its own model.</div>'
+    +'<div style="margin:8px 0"><button class=act id=tpm>'+(adv?'Advanced (per-stage)':'Regular (one model)')+'</button></div>'
+    +(adv?'<div class=row>'+['conversation','planning','drafting','reviewing','longContext'].map(k=>
+      '<div><label>'+k+'</label><select id=tw_'+k+'><option value="">— default —</option>'
+      +conns.map(c=>'<option value="'+c.id+'" '+(st[k]===c.id?'selected':'')+'>'+c.provider+'/'+c.model+'</option>').join('')
+      +'</select></div>').join('')+'</div><button class=act id=tsave style="margin-top:10px">Save Work Twin models</button> <span class=mut id=tmsg></span>':'')
+    +'</div>');
+   tw.querySelector('#tpm').onclick=async()=>{const r=await api('/api/worktwin/model-policy',{twinId:T.id,mode:adv?'regular':'advanced',stages:st});if(r.error)alert(r.error);await refresh();render()};
+   const sv=tw.querySelector('#tsave');
+   if(sv)sv.onclick=async()=>{const stages={};['conversation','planning','drafting','reviewing','longContext'].forEach(k=>{const v=tw.querySelector('#tw_'+k).value;if(v)stages[k]=v});
+     const r=await api('/api/worktwin/model-policy',{twinId:T.id,mode:'advanced',stages});if(r.error){alert(r.error);return}
+     tw.querySelector('#tmsg').textContent='saved';await refresh();render()};
+   d.appendChild(tw)}
   d.querySelector('#ag').onchange=e=>{S.adv.agentId=e.target.value;render()};
   if(a)d.querySelector('#save').onclick=async()=>{
     const g=id=>{const v=d.querySelector('#'+id);return v&&v.value?v.value:null};

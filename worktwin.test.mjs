@@ -248,3 +248,34 @@ test("action names are canonical: a grant for what the user SEES matches what is
   let t2 = grantTwinScope(setMode(twinWith("copilot"), "delegate"), { scope: "communicate", action: "send-email" });
   assert.equal(twinPermission(t2, { action: "send-draft" }).allowed, true);
 });
+
+test("meeting relevance: an attendee's mail is authoritative, unrelated mail is excluded", async () => {
+  const { relatedToEvent } = await import("./worktwin.mjs");
+  const t = twinWith("mirror");
+  const contract = relatedToEvent(t, { title: "Contract review with Bob", attendees: ["bob@partner.test"] });
+  assert.ok(contract.length);
+  assert.ok(contract.every((r) => r.from === "bob@partner.test" || /contract/i.test(r.subject)));
+  assert.ok(contract.some((r) => r.viaAttendee));
+  const invoice = relatedToEvent(t, { title: "Invoice sync with Dan", attendees: ["dan@vendor.test"] });
+  assert.ok(invoice.every((r) => r.from === "dan@vendor.test" || /invoice/i.test(r.subject)));
+  // the two meetings do NOT return the same mail
+  assert.notDeepEqual(contract.map((r) => r.ref).sort(), invoice.map((r) => r.ref).sort());
+  // an event with no attendees and an unrelated title pulls nothing
+  assert.equal(relatedToEvent(t, { title: "Yoga class", attendees: [] }).length, 0);
+});
+
+test("Work Twin model policy: regular uses one model, advanced separates the stages", async () => {
+  const { setModelPolicy, modelForStage, TWIN_MODEL_STAGES } = await import("./worktwin.mjs");
+  let t = twinWith("copilot");
+  assert.equal(t.modelPolicy.mode, "regular");
+  assert.equal(modelForStage(t, "drafting"), null);                       // regular → company default
+  t = setModelPolicy(t, { mode: "advanced", stages: { conversation: "local-fast", drafting: "local-big", longContext: "local-32k" } });
+  assert.equal(modelForStage(t, "drafting"), "local-big");
+  assert.equal(modelForStage(t, "longContext"), "local-32k");
+  assert.equal(modelForStage(t, "reviewing"), "local-fast");              // falls back to conversation
+  assert.deepEqual(TWIN_MODEL_STAGES, ["conversation", "planning", "drafting", "reviewing", "longContext"]);
+  assert.throws(() => setModelPolicy(t, { mode: "advanced", stages: { nope: "x" } }), /unknown Work Twin model stage/);
+  assert.throws(() => setModelPolicy(t, { mode: "weird" }), /unknown model policy mode/);
+  // switching back to regular clears the per-stage map
+  assert.deepEqual(setModelPolicy(t, { mode: "regular" }).modelPolicy.stages, {});
+});

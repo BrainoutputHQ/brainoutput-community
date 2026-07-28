@@ -102,6 +102,53 @@ export function localMailSource({ account = "local", dir = null, mbox = null, me
   };
 }
 
+// ── calendars: iCalendar (.ics) — VERIFIED ──────────────────────────────────────────────────────
+
+/** Parse an iCalendar date (20260728T090000Z | 20260728 | with TZID) to epoch millis. */
+export function parseIcsDate(v = "") {
+  const s = String(v).replace(/^.*:/, "").trim();
+  const m = s.match(/^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})(Z)?)?$/);
+  if (!m) return Date.parse(s) || null;
+  const [, y, mo, d, hh = "00", mi = "00", ss = "00", z] = m;
+  const iso = `${y}-${mo}-${d}T${hh}:${mi}:${ss}${z ? "Z" : ""}`;
+  return Date.parse(iso) || null;
+}
+
+/** Parse VEVENTs out of an iCalendar document (RFC 5545 line-unfolding included). */
+export function parseIcs(text) {
+  const unfolded = String(text).replace(/\r\n/g, "\n").replace(/\n[ \t]/g, "");
+  const events = [];
+  for (const block of unfolded.split("BEGIN:VEVENT").slice(1)) {
+    const body = block.split("END:VEVENT")[0];
+    const get = (k) => (body.match(new RegExp(`^${k}[^:\n]*:(.*)$`, "m")) || [])[1]?.trim() || null;
+    const attendees = [...body.matchAll(/^ATTENDEE[^:\n]*:(.*)$/gm)]
+      .map((x) => x[1].trim().replace(/^mailto:/i, "")).filter(Boolean);
+    const start = parseIcsDate(get("DTSTART"));
+    events.push({
+      id: get("UID") || `ev-${events.length + 1}`,
+      title: (get("SUMMARY") || "").replace(/\\,/g, ","),
+      start, end: parseIcsDate(get("DTEND")),
+      attendees, location: (get("LOCATION") || "")?.replace(/\\,/g, ",") || null,
+      description: (get("DESCRIPTION") || "").replace(/\\n/g, " ").slice(0, 300),
+    });
+  }
+  return events.sort((a, b) => (a.start || 0) - (b.start || 0));
+}
+
+/** A local calendar: an .ics file or inline events. Fully local. */
+export function localCalendarSource({ account = "local", ics = null, icsText = null, events = null } = {}) {
+  const accountId = `calendar:${account}`;
+  return {
+    kind: "calendar", accountId, verified: true,
+    async listMessages() { return []; },
+    async listEvents({ from = null, to = null } = {}) {
+      const list = events || parseIcs(icsText || (ics ? readFileSync(ics, "utf8") : ""));
+      return list.filter((e) => (from == null || (e.start ?? 0) >= from) && (to == null || (e.start ?? 0) <= to));
+    },
+    async close() {},
+  };
+}
+
 // ── IMAP / SMTP (VERIFIED against a real IMAP server) ───────────────────────────────────────────
 
 function makeReader(sock) {
@@ -329,6 +376,7 @@ export function connectMailSource(spec = {}) {
     case "imap": return imapSource(spec);
     case "google-workspace": return googleWorkspaceSource(spec);
     case "microsoft-365": return microsoft365Source(spec);
+    case "calendar": return localCalendarSource(spec);
     default: throw new Error(`unknown work source kind '${spec.kind}'`);
   }
 }

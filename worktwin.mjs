@@ -74,6 +74,29 @@ export function publicTwin(twin) {
       config: config ? { ...config, password: undefined } : undefined, hasSecret: !!secret })) };
 }
 
+/** The Work Twin's own model stages (Advanced mode). Regular mode uses one model for everything. */
+export const TWIN_MODEL_STAGES = ["conversation", "planning", "drafting", "reviewing", "longContext"];
+
+/**
+ * Set the twin's model policy. Regular = one default model; Advanced = a separate model per stage.
+ * Values are connection ids from the user's own connections — validated where they are resolved.
+ */
+export function setModelPolicy(twin, { mode = "regular", stages = {} } = {}) {
+  if (!["regular", "advanced"].includes(mode)) throw new Error(`unknown model policy mode '${mode}'`);
+  const clean = {};
+  for (const k of TWIN_MODEL_STAGES) if (stages[k]) clean[k] = stages[k];
+  const unknown = Object.keys(stages).filter((k) => stages[k] && !TWIN_MODEL_STAGES.includes(k));
+  if (unknown.length) throw new Error(`unknown Work Twin model stage(s): ${unknown.join(", ")}`);
+  return { ...twin, modelPolicy: { mode, stages: mode === "advanced" ? clean : {} } };
+}
+
+/** Which connection id should power a given twin stage? Falls back to the regular default. */
+export function modelForStage(twin, stage) {
+  const p = twin.modelPolicy || { mode: "regular", stages: {} };
+  if (p.mode !== "advanced") return null;                       // caller uses the company default
+  return p.stages[stage] || p.stages.conversation || null;
+}
+
 export function setMode(twin, mode) {
   if (!WORK_TWIN_MODES.includes(mode)) throw new Error(`unknown Work Twin mode '${mode}'`);
   return { ...twin, mode };
@@ -335,11 +358,32 @@ export function extractCommitments(twin, { refs = null } = {}) {
   return out;
 }
 
+/**
+ * Messages actually related to an event. A message from/to an ATTENDEE is authoritative; otherwise a
+ * strong subject-term overlap is required. This is what stops every meeting from returning the same
+ * mail in a small mailbox.
+ */
+export function relatedToEvent(twin, ev, { k = 5 } = {}) {
+  const attendees = new Set((ev.attendees || []).map((a) => String(a).toLowerCase()));
+  const me = (twin.employee.email || "").toLowerCase();
+  const titleTerms = new Set(tokenize(ev.title || ""));
+  const scored = permittedIndex(twin).map((e) => {
+    const from = String(e.from || "").toLowerCase();
+    const tos = (e.to || []).map((x) => String(x).toLowerCase());
+    const withAttendee = attendees.has(from) || tos.some((t) => attendees.has(t) && t !== me);
+    const overlap = [...titleTerms].filter((t) => e.terms.includes(t)).length;
+    const score = (withAttendee ? 10 : 0) + overlap;
+    return { e, score, withAttendee };
+  }).filter((x) => x.withAttendee || x.score >= Math.max(2, Math.ceil(titleTerms.size * 0.5)));
+  return scored.sort((a, b) => b.score - a.score || (b.e.date || 0) - (a.e.date || 0)).slice(0, k)
+    .map((x) => ({ ref: x.e.ref, subject: x.e.subject, from: x.e.from, date: x.e.date, snippet: x.e.snippet,
+      citation: `${x.e.from || "unknown"} — ${x.e.subject || "(no subject)"}`, viaAttendee: x.withAttendee }));
+}
+
 /** Meeting preparation: each event with the related messages, commitments and open questions. */
 export function meetingBrief(twin, events = [], { window = 5 } = {}) {
   return events.map((ev) => {
-    const participants = (ev.attendees || []).map((a) => String(a).toLowerCase());
-    const related = retrieveForRequest(twin, `${ev.title || ""} ${participants.join(" ")}`, { k: window });
+    const related = relatedToEvent(twin, ev, { k: window });
     const refs = related.map((r) => r.ref);
     const commitments = extractCommitments(twin, { refs });
     return {
