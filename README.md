@@ -142,7 +142,15 @@ node bo-community.mjs twin-demo  # Work Twin walkthrough on imported mail (no ac
 node bo-community.mjs write-demo # how an approved write actually happens (grant → approval → execute)
 npm test                         # node --test *.test.mjs  (zero-dep)
 npm run smoke:community-clean    # end-to-end clean-install smoke in a temp dir
+
+node bo-ce-store.mjs backup my-company.json    # move a working install to another machine:
+node bo-ce-store.mjs restore my-company.json   # company + runtime + the key that decrypts credentials
 ```
+
+`backup` carries **everything** — the company, work twins, conversations, missions, audit, and the key
+that decrypts stored credentials — so an install moves to another machine intact. Treat the bundle
+like a password. `restore` verifies a checksum and refuses to overwrite an existing company without
+`--force`.
 
 The demo (`demo/company.json`) is three departments with **different** models — Technical (premium
 planner + free/local coding worker), Customer Service (multilingual worker), and Finance

@@ -161,3 +161,35 @@ test("a healthy store never reports a recovery", async () => {
     assert.equal(s2.def.company.name, "Fine");
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
+
+test("a whole-store backup moves a working install to another machine — credentials included", async () => {
+  const { Store } = await import("./store.mjs");
+  const src = mkdtempSync(join(tmpdir(), "bo-src-"));
+  const dst = mkdtempSync(join(tmpdir(), "bo-dst-"));
+  try {
+    const a = new Store(src);
+    a.setCompany({ name: "Acme Studio" }).setAgents([{ id: "eng" }]);
+    a.addWorkTwin({ id: "twin-alice", name: "Alice's Work Twin",
+      accounts: [{ id: "imap:alice", secret: a.sealSecret("real-password") }], index: [{ ref: "m1" }] });
+    a.addConversation({ id: "c1", messages: [{ i: 0, text: "hello" }] });
+    a.addMission({ id: "m1", objective: "Ship it", status: "done" });
+    a.save();
+
+    const bundle = a.backupBundle();
+    assert.deepEqual(Object.keys(bundle.files).sort(), ["definition.json", "runtime.json", "secret.key"]);
+
+    const b = new Store(dst);
+    b.restoreBundle(bundle);
+    assert.equal(b.def.company.name, "Acme Studio");
+    assert.equal(b.runtime.workTwins.length, 1);          // the definition-only export loses these
+    assert.equal(b.runtime.conversations.length, 1);
+    assert.equal(b.runtime.missions.length, 1);
+    // the whole point: the credential still decrypts on the other machine
+    assert.equal(b.openSecret(b.runtime.workTwins[0].accounts[0].secret), "real-password");
+
+    // refuses to clobber an existing company, and refuses a tampered bundle
+    assert.throws(() => b.restoreBundle(bundle), /already holds a company/);
+    const tampered = { ...bundle, files: { ...bundle.files, "definition.json": bundle.files["definition.json"].replace("Acme", "Evil") } };
+    assert.throws(() => b.restoreBundle(tampered, { force: true }), /corrupted \(checksum mismatch\)/);
+  } finally { rmSync(src, { recursive: true, force: true }); rmSync(dst, { recursive: true, force: true }); }
+});

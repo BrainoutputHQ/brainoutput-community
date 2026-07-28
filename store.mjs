@@ -9,7 +9,7 @@
 // exported company definition. ESM, zero-dep.
 import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync, chmodSync } from "node:fs";
 import { basename } from "node:path";
-import { randomBytes, createCipheriv, createDecipheriv } from "node:crypto";
+import { randomBytes, createCipheriv, createDecipheriv, createHash } from "node:crypto";
 import { join } from "node:path";
 
 const DEFAULT_DIR = process.env.BO_CE_DATA || join(process.env.HOME || ".", ".local", "share", "bo-community");
@@ -92,6 +92,39 @@ export class Store {
     d.setAuthTag(Buffer.from(rec.tag, "base64"));
     return Buffer.concat([d.update(Buffer.from(rec.ct, "base64")), d.final()]).toString("utf8");
   }
+  // ── portable backup / restore ────────────────────────────────────────────────────────────────
+  // A whole-store bundle: the company AND the runtime (work twins, conversations, missions, audit)
+  // AND the key that decrypts stored credentials. The definition-only export loses everything a
+  // trial user built — this is what moves a working install to another machine.
+  backupBundle() {
+    const files = {};
+    for (const name of ["definition.json", "runtime.json", "secret.key"]) {
+      const p = join(this.dir, name);
+      if (existsSync(p)) files[name] = readFileSync(p, "utf8");
+    }
+    const body = { _format: "brainoutput-community-backup/1", files };
+    body.checksum = createHash("sha256").update(JSON.stringify(files)).digest("hex");
+    return body;
+  }
+
+  /**
+   * Restore a bundle into this store. Verifies the checksum first and refuses to overwrite an existing
+   * store unless `force` — losing someone's company to a careless restore would be unforgivable.
+   */
+  restoreBundle(bundle, { force = false } = {}) {
+    if (!bundle || bundle._format !== "brainoutput-community-backup/1") throw new Error("not a BrainOutput backup bundle");
+    const expect = createHash("sha256").update(JSON.stringify(bundle.files || {})).digest("hex");
+    if (bundle.checksum !== expect) throw new Error("backup is corrupted (checksum mismatch) — refusing to restore");
+    const occupied = ["definition.json", "runtime.json"].filter((n) => existsSync(join(this.dir, n)));
+    if (occupied.length && !force)
+      throw new Error(`${this.dir} already holds a company (${occupied.join(", ")}). Re-run with --force to replace it.`);
+    for (const [name, content] of Object.entries(bundle.files || {}))
+      writeFileSync(join(this.dir, name), content, { mode: name === "secret.key" ? 0o600 : 0o600 });
+    this.def = this._read(this.defPath, EMPTY_DEF);
+    this.runtime = this._read(this.runtimePath, EMPTY_RUNTIME);
+    return { restored: Object.keys(bundle.files || {}), dir: this.dir };
+  }
+
   /** Re-seal any legacy plaintext work-source secret found in the runtime. */
   _sealLegacySecrets() {
     for (const t of this.runtime.workTwins || [])
