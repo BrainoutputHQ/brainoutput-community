@@ -781,7 +781,7 @@ async function refresh(){S.state=await api('/api/state');render()}
 // nav collapses to the guided Setup flow — a first-time user should not land on an empty chat.
 const MAIN_TABS=[['chat','💬 Chat'],['twin','👤 Work Twin'],['work','📁 Work'],['settings','⚙ Settings']];
 const SETUP_TABS=[['connections','1 · Connect a model'],['company','2 · Your company'],['org','3 · Your team'],['assign','4 · Models per role']];
-const SETTINGS_TABS=[['connections','Models & runtimes'],['company','Company'],['org','Team'],['assign','Assignments'],['advanced','Advanced'],['exec','Run history']];
+const SETTINGS_TABS=[['dashboard','Overview'],['connections','Models & runtimes'],['company','Company'],['org','Team'],['assign','Assignments'],['advanced','Advanced'],['exec','Run history']];
 function onboarded(s){return !!(s&&(s.agents||[]).length)}
 function nav(){const n=document.getElementById('nav');n.innerHTML='';const s=S.state||{};
  const adv=(s.settings&&s.settings.mode)==='advanced';
