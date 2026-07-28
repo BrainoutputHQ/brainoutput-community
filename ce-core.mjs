@@ -9,6 +9,7 @@
 export const CAPABILITY_SLOTS = [
   "reasoning-premium", "reasoning-free", "coding-premium", "coding-free", "fast-cheap",
   "long-context", "vision", "voice", "embeddings", "multilingual", "private-local", "high-trust-review",
+  "image-gen",
 ];
 
 // ── Cost sources a Community model may draw on. NONE is BrainOutput-funded. ─────────────────────

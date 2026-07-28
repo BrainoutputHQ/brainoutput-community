@@ -15,18 +15,46 @@ const SCOPE_RANK = { read: 0, draft: 1, write: 2, communicate: 3, sensitive: 4 }
 export const SAFE_SCOPES = ["read", "draft"];
 export const ELEVATED_SCOPES = ["write", "communicate", "sensitive"];
 
-// Initial connector targets. Each declares its mechanism + the scopes it can expose.
+// Connector targets. Each declares mechanism · exposed scopes · category · whether it is open-source ·
+// what SaaS it can replace (`altTo`) · whether it typically needs image generation (social posting).
+const RWS = ["read", "draft", "write", "sensitive"];               // read/manage records
+const RWCS = ["read", "draft", "write", "communicate", "sensitive"]; // + send externally
 export const CONNECTOR_CATALOG = {
-  "github":          { label: "GitHub",          mechanism: "oauth",         worksWith: "GitHub",             scopes: ["read", "draft", "write", "sensitive"] },
-  "jira":            { label: "Jira",            mechanism: "oauth",         worksWith: "Jira",               scopes: ["read", "draft", "write", "sensitive"] },
-  "odoo":            { label: "Odoo",            mechanism: "api-key-local", worksWith: "Odoo",               scopes: ["read", "draft", "write", "sensitive"] },
-  "zendesk":         { label: "Zendesk",         mechanism: "oauth",         worksWith: "Zendesk",            scopes: ["read", "draft", "write", "communicate", "sensitive"] },
-  "twilio":          { label: "Twilio",          mechanism: "api-key-local", worksWith: "Twilio",             scopes: ["read", "communicate"] },
-  "generic-mcp":     { label: "Generic MCP",     mechanism: "mcp",           worksWith: "any MCP server",      scopes: [...SCOPES] },
-  "generic-openapi": { label: "Generic OpenAPI", mechanism: "openapi",       worksWith: "any OpenAPI/REST",    scopes: [...SCOPES] },
-  "generic-rag":     { label: "Generic RAG/file",mechanism: "file-rag",      worksWith: "documents & files",   scopes: ["read"] },
-  "generic-chat":    { label: "Chat knowledge",  mechanism: "chat",          worksWith: "a chat source",       scopes: ["read", "draft", "communicate"] },
+  // — Developer / project management —
+  "github":  { label: "GitHub",  mechanism: "oauth",         category: "dev", openSource: false, worksWith: "GitHub",  scopes: RWS },
+  "gitea":   { label: "Gitea",   mechanism: "api-key-local", category: "dev", openSource: true,  altTo: ["github"], worksWith: "Gitea", scopes: RWS },
+  "jira":    { label: "Jira",    mechanism: "oauth",         category: "pm",  openSource: false, worksWith: "Jira",    scopes: RWS },
+  "plane":   { label: "Plane",   mechanism: "api-key-local", category: "pm",  openSource: true,  altTo: ["jira"], worksWith: "Plane", scopes: RWS },
+  // — Customer support —
+  "zendesk": { label: "Zendesk", mechanism: "oauth",         category: "support", openSource: false, worksWith: "Zendesk",  scopes: RWCS },
+  "chatwoot":{ label: "Chatwoot",mechanism: "api-key-local", category: "support", openSource: true,  altTo: ["zendesk"], worksWith: "Chatwoot", scopes: RWCS },
+  // — ERP / commerce / finance —
+  "odoo":    { label: "Odoo (Community)", mechanism: "api-key-local", category: "erp", openSource: true, worksWith: "Odoo", scopes: RWS },
+  "erpnext": { label: "ERPNext", mechanism: "api-key-local", category: "erp", openSource: true, altTo: ["sap", "odoo"], worksWith: "ERPNext", scopes: RWS },
+  "shopify": { label: "Shopify", mechanism: "oauth",         category: "commerce", openSource: false, worksWith: "Shopify", scopes: RWS },
+  "medusa":  { label: "Medusa",  mechanism: "api-key-local", category: "commerce", openSource: true, altTo: ["shopify"], worksWith: "Medusa", scopes: RWS },
+  "stripe":  { label: "Stripe",  mechanism: "api-key-local", category: "payments", openSource: false, worksWith: "Stripe", scopes: ["read", "sensitive"] },
+  "lago":    { label: "Lago",    mechanism: "api-key-local", category: "billing",  openSource: true, altTo: ["stripe-billing"], worksWith: "Lago", scopes: ["read", "write", "sensitive"] },
+  // — Messaging / social (posting typically needs image generation) —
+  "twilio":  { label: "Twilio",  mechanism: "api-key-local", category: "messaging", openSource: false, worksWith: "Twilio", scopes: ["read", "communicate"] },
+  "mastodon":{ label: "Mastodon",mechanism: "api-key-local", category: "social", openSource: true, altTo: ["x-twitter"], needsImageGen: true, worksWith: "Mastodon", scopes: ["read", "draft", "communicate"] },
+  "x-twitter":{label: "X (Twitter)", mechanism: "oauth",    category: "social", openSource: false, needsImageGen: true, worksWith: "X", scopes: ["read", "draft", "communicate"] },
+  "linkedin":{ label: "LinkedIn",mechanism: "oauth",         category: "social", openSource: false, needsImageGen: true, worksWith: "LinkedIn", scopes: ["read", "draft", "communicate"] },
+  // — Knowledge / files —
+  "nextcloud":{label: "Nextcloud",mechanism: "api-key-local",category: "files", openSource: true, altTo: ["google-drive", "sharepoint"], worksWith: "Nextcloud", scopes: ["read", "write"] },
+  // — Generic —
+  "generic-mcp":     { label: "Generic MCP",     mechanism: "mcp",     category: "generic", openSource: null, worksWith: "any MCP server",   scopes: [...SCOPES] },
+  "generic-openapi": { label: "Generic OpenAPI", mechanism: "openapi", category: "generic", openSource: null, worksWith: "any OpenAPI/REST", scopes: [...SCOPES] },
+  "generic-rag":     { label: "Generic RAG/file",mechanism: "file-rag",category: "generic", openSource: null, worksWith: "documents & files", scopes: ["read"] },
+  "generic-chat":    { label: "Chat knowledge",  mechanism: "chat",    category: "generic", openSource: null, worksWith: "a chat source",     scopes: ["read", "draft", "communicate"] },
 };
+
+/** OSS connectors grouped by what SaaS they can replace — for the "build it free" playbook. */
+export function ossAlternatives() {
+  return Object.entries(CONNECTOR_CATALOG)
+    .filter(([, c]) => c.openSource === true)
+    .map(([key, c]) => ({ connector: key, label: c.label, category: c.category, replaces: c.altTo || [], needsImageGen: !!c.needsImageGen }));
+}
 
 /** Map an action verb to the SCOPE it requires. Fail-safe: an unknown mutating verb is `write`, never read. */
 export function actionScope(action = "") {
@@ -115,6 +143,7 @@ export function resolvePermission(connector, req = {}) {
 export function connectorCatalog() {
   return Object.entries(CONNECTOR_CATALOG).map(([key, c]) => ({
     connector: key, label: c.label, mechanism: c.mechanism, worksWith: c.worksWith, scopes: c.scopes,
+    category: c.category, openSource: c.openSource, replaces: c.altTo || [], needsImageGen: !!c.needsImageGen,
     readOnlyDefault: true,
   }));
 }

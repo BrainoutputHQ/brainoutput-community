@@ -15,6 +15,8 @@ import { dirname, join } from "node:path";
 import { readFileSync } from "node:fs";
 import { request } from "node:http";
 import { Store } from "./store.mjs";
+import { ossCompanyPlaybook, validatePlaybook } from "./playbooks.mjs";
+import { describeLocation } from "./runtimes.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const [cmd, ...rest] = process.argv.slice(2);
@@ -54,7 +56,23 @@ switch (cmd) {
   case "onboard": run("bo-ce-onboard.mjs", rest); break;
   case "demo": run("bo-ce.mjs", rest); break;
   case "store": run("bo-ce-store.mjs", rest); break;
+  case "playbook": playbook(); break;
   default:
     console.log("BrainOutput Community Edition — runs on YOUR own models (free, local, subscription, or BYOK).\n");
-    console.log("usage: bo-community <doctor|setup|serve|onboard|demo|store>");
+    console.log("usage: bo-community <doctor|setup|serve|onboard|demo|store|playbook>");
+}
+
+function playbook() {
+  const pb = ossCompanyPlaybook();
+  const v = validatePlaybook(pb);
+  console.log(`Playbook: ${pb.company.name}\n${"=".repeat(52)}`);
+  console.log(pb.note + "\n");
+  console.log(`Open-source stack: ${pb.stack.join(" · ")}\n`);
+  for (const a of pb.agents) {
+    const conns = a.connectors.map((c) => `${c.label} (read-only)`).join(", ");
+    console.log(`▸ ${a.role} (${a.department})`);
+    console.log(`    runs: ${describeLocation(a.runtime)}`);
+    console.log(`    tools: ${conns}` + (Object.keys(a.approvalThresholds).length ? ` · approval: ${Object.keys(a.approvalThresholds).join(", ")}` : ""));
+  }
+  console.log(`\n${v.ok ? "✓" : "✗"} Every runtime free/local, every connector read-only, every agent dormant — $0 to start.`);
 }

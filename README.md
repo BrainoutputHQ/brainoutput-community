@@ -87,6 +87,18 @@ model · auth source · cost source · local‑vs‑cloud · capabilities · con
 health. A **locally‑running CLI** (Claude Code, Codex) is *not* a **fully‑local model** (Ollama) — the
 product says which for every agent. All user/free/local; never a BrainOutput credential.
 
+## Connectors & playbooks (`connectors.mjs` · `playbooks.mjs`)
+
+Connect business systems through explicit, scoped permissions — **read-only by default**; writes,
+communication and destructive/financial/permission actions each need a *separate* grant **and** human
+approval (`docs/CONNECTORS.md`). Targets include **GitHub · Jira · Zendesk · Shopify · Stripe ·
+Twilio** and their open-source alternatives **Gitea · Plane · Chatwoot · ERPNext · Odoo · Medusa ·
+Lago · Mastodon · Nextcloud** + generic **MCP/OpenAPI/RAG/chat**. Social connectors carry an
+`image-gen` capability.
+
+`node bo-community.mjs playbook` stands up a whole company on **open-source tools + free/local
+models — $0 from day one**, every connector read-only.
+
 ## Commands
 
 ```bash
@@ -96,6 +108,7 @@ node bo-community.mjs onboard             # Regular onboarding (free-model first
 node bo-community.mjs onboard --advanced  # Advanced: per-stage models, fallbacks, limits, permissions
 node bo-community.mjs onboard --example   # the mixed-runtime example (Claude Code · Codex · local · free)
 node bo-community.mjs demo       # run the sample workflows on your local models
+node bo-community.mjs playbook   # print the free open-source company playbook
 npm test                         # node --test *.test.mjs  (zero-dep)
 npm run smoke:community-clean    # end-to-end clean-install smoke in a temp dir
 ```
