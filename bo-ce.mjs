@@ -10,6 +10,7 @@ import { dirname, join } from "node:path";
 import { routeTask, makeCatalog, costReport, validateCompanyConfig } from "./ce-core.mjs";
 import { executePlan } from "./adapters.mjs";
 import { DEPARTMENT_TEMPLATES } from "./departments.mjs";
+import { efficiencyReport, efficiencyLine } from "./efficiency.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const cfgArgI = process.argv.indexOf("--config");
@@ -59,6 +60,7 @@ async function scenario(title, objective, req, inputs, execOpts = {}) {
     if (res?.brief) console.log(`      ↳ human brief: decision="${res.brief.decision}" · escalatedBecause=${res.brief.escalatedBecause}`);
   }
   console.log(`  cost sources: ${JSON.stringify(rep.byCostSource)} · runs on your own models`);
+  console.log(`  efficiency: ${efficiencyLine(efficiencyReport({ plan: r.plan, results, shape: r.shape }))}`);
   return { funded: rep.brainoutputFundedTokens };
 }
 
