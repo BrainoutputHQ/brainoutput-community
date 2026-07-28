@@ -87,6 +87,17 @@ model · auth source · cost source · local‑vs‑cloud · capabilities · con
 health. A **locally‑running CLI** (Claude Code, Codex) is *not* a **fully‑local model** (Ollama) — the
 product says which for every agent. All user/free/local; never a BrainOutput credential.
 
+## Work Twin (`worktwin.mjs`)
+
+A **Work Twin** is a dedicated agent for **one employee** and their authorized work context — distinct
+from a departmental agent. Three modes: **Mirror** (read/search/summarize, the default) · **Copilot**
+(prepares drafts, never sends) · **Delegate** (executes explicitly granted actions, with approvals).
+It connects to **IMAP/SMTP, local/imported mail (Maildir · mbox · JSON), Google Workspace and
+Microsoft 365**, and it never treats your mailbox as context: it indexes headers plus a snippet and
+retrieves only what a request needs, with sources. **No silent impersonation** — every draft is
+attributed and every action is audited (who · on whose behalf · which model · which permission · which
+approval · which sources). See **[docs/WORK_TWIN.md](docs/WORK_TWIN.md)**.
+
 ## Connectors & playbooks (`connectors.mjs` · `playbooks.mjs`)
 
 Connect business systems through explicit, scoped permissions — **read-only by default**; writes,

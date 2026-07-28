@@ -66,7 +66,9 @@ test("REGULAR mode: step 1 offers 5 runtimes; 8 steps total", () => {
   assert.equal(paths.length, 5);
   const keys = paths.map((p) => p.key);
   for (const k of ["free", "claude-code", "codex", "byok", "local"]) assert.ok(keys.includes(k));
-  assert.equal(regularOnboardingSteps().length, 8);
+  const steps = regularOnboardingSteps();
+  assert.equal(steps.length, 9);                                   // 8 company steps + the Work Twin step
+  assert.match(steps.at(-1), /Work Twin/);
 });
 
 test("ADVANCED mode exposes the separable per-agent knobs", () => {

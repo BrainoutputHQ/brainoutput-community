@@ -21,6 +21,11 @@ import { applyAdvancedAgentConfig } from "./onboarding.mjs";
 import { newConversation, addMessage, pin, resolveMention, rollSummary, compactContext, draftMissionSpec,
   editMissionSpec, approveMission, rejectMission, modeAllows, missionComposer, reviewMission, saveAsWorkflow } from "./chat.mjs";
 import { connectRagSource, indexDocuments, searchRag } from "./rag.mjs";
+import { createWorkTwin, setMode as twinSetMode, connectWorkSource, grantTwinScope, twinPermission,
+  indexMessages as twinIndex, retrieveForRequest, prioritySummary, unansweredThreads, extractCommitments,
+  meetingBrief, followUpSuggestions, draftReply, sendDraft, emailToMission, taskPacket, recordDelegation,
+  withAudit, auditRecord, WORK_TWIN_MODES, publicTwin } from "./worktwin.mjs";
+import { connectMailSource, workSourceOptions, smtpSend } from "./mail-sources.mjs";
 import { efficiencyReport } from "./efficiency.mjs";
 import { selectModel } from "./ce-core.mjs";
 
@@ -104,10 +109,156 @@ async function api(req, res, url) {
       return json(res, publicState());
     } catch (e) { return json(res, { error: e.message }, 400); }
   }
+  if (url.pathname === "/api/worktwin/options") return json(res, { options: workSourceOptions(), modes: WORK_TWIN_MODES });
+  if (url.pathname === "/api/worktwin/create") return twinCreate(res, b);
+  if (url.pathname === "/api/worktwin/connect") return twinConnect(res, b);
+  if (url.pathname === "/api/worktwin/mode") return twinMode(res, b);
+  if (url.pathname === "/api/worktwin/grant") return twinGrant(res, b);
+  if (url.pathname === "/api/worktwin/sync") return twinSync(res, b);
+  if (url.pathname === "/api/worktwin/action") return twinAction(res, b);
   if (url.pathname === "/api/chat/send") return chatSend(res, b);
   if (url.pathname === "/api/chat/mission") return chatMission(res, b);
   if (url.pathname === "/api/chat/launch") return chatLaunch(res, b);
   return json(res, { error: "unknown endpoint" }, 404);
+}
+
+// ── Work Twin ───────────────────────────────────────────────────────────────────────────────────
+const twins = () => store.runtime.workTwins || [];
+const getTwin = (id) => twins().find((t) => t.id === id) || twins()[0] || null;
+const saveTwin = (t) => { store.addWorkTwin(t); store.saveRuntime(); return t; };
+
+function twinCreate(res, b) {
+  if (!b.employee?.id) return json(res, { error: "an employee identity is required" }, 400);
+  const t = createWorkTwin({ employee: b.employee, name: b.name, modelPolicy: b.modelPolicy });
+  saveTwin(t);
+  return json(res, { twin: publicTwin(t), state: publicState() });
+}
+
+async function twinConnect(res, b) {
+  let t = getTwin(b.twinId);
+  if (!t) return json(res, { error: "no Work Twin yet — create one first" }, 404);
+  try {
+    // Probe the source so a connection is only stored if it actually works.
+    const src = connectMailSource({ ...b.source, account: b.source?.account || t.employee.id });
+    let sample = [];
+    try { sample = await src.listMessages({ limit: 5 }); } finally { await src.close?.(); }
+    const { kind, account, label, resources, password, ...cfg } = b.source;
+    t = connectWorkSource(t, { kind, account: account || t.employee.id, label,
+      resources: resources || ["INBOX"],
+      config: cfg,                 // host/port/user/tls/dir/mbox — how to reconnect
+      secret: password || null });  // stays local; stripped from every API response
+    saveTwin(t);
+    return json(res, { twin: publicTwin(t), verified: src.verified, sampled: sample.length, mode: t.mode });
+  } catch (e) { return json(res, { error: `could not connect: ${e.message}` }, 400); }
+}
+
+function twinMode(res, b) {
+  let t = getTwin(b.twinId);
+  if (!t) return json(res, { error: "no Work Twin" }, 404);
+  try { t = twinSetMode(t, b.mode); saveTwin(t); return json(res, { twin: publicTwin(t) }); }
+  catch (e) { return json(res, { error: e.message }, 400); }
+}
+
+function twinGrant(res, b) {
+  let t = getTwin(b.twinId);
+  if (!t) return json(res, { error: "no Work Twin" }, 404);
+  try { t = grantTwinScope(t, { scope: b.scope, action: b.action || null, resource: b.resource || null }); saveTwin(t);
+    return json(res, { twin: publicTwin(t) }); }
+  catch (e) { return json(res, { error: e.message }, 400); }
+}
+
+/** Pull a bounded page from each connected source and (re)build the deterministic index. */
+async function twinSync(res, b) {
+  let t = getTwin(b.twinId);
+  if (!t) return json(res, { error: "no Work Twin" }, 404);
+  let fetched = 0;
+  const errors = [];
+  t = { ...t, index: [] };
+  for (const acc of t.accounts) {
+    try {
+      const pwd = acc.secret || (acc.config?.passwordEnv ? process.env[acc.config.passwordEnv] : null);
+      const src = connectMailSource({ kind: acc.kind, account: acc.account, ...(acc.config || {}),
+        ...(pwd ? { password: pwd } : {}), ...(b.credentials?.[acc.id] || {}) });
+      const msgs = await src.listMessages({ limit: b.limit || 50 });
+      await src.close?.();
+      t = twinIndex(t, msgs.map((m) => ({ ...m, accountId: acc.id })));
+      fetched += msgs.length;
+    } catch (e) { errors.push(`${acc.id}: ${e.message}`); }
+  }
+  saveTwin(t);
+  return json(res, { indexed: (t.index || []).length, fetched, errors, twin: publicTwin(t) });
+}
+
+/** Work Twin capabilities. Every result carries its sources and the permission that allowed it. */
+async function twinAction(res, b) {
+  let t = getTwin(b.twinId);
+  if (!t) return json(res, { error: "no Work Twin" }, 404);
+  const model = chatModelFor({ agentId: null, department: null });
+  const now = Date.now();
+  const perm = twinPermission(t, { action: b.action, resource: b.ref || null, accountId: b.accountId || null });
+  // Fail-closed: no capability runs unless the twin's mode (and any required grant) permits it.
+  // `send-draft` resolves its own decision (it must return an audit record either way).
+  if (!perm.allowed && b.action !== "send-draft") return json(res, { error: perm.reason, permission: perm }, 403);
+  try {
+    switch (b.action) {
+      case "priority-summary": return json(res, { permission: perm, items: prioritySummary(t, { now, vip: b.vip || [] }) });
+      case "unanswered": return json(res, { permission: perm, threads: unansweredThreads(t, { now, olderThanHours: b.olderThanHours || 0 }) });
+      case "search-mail": return json(res, { permission: perm, hits: retrieveForRequest(t, b.query || "", { k: b.k || 8 }) });
+      case "commitments": return json(res, { permission: perm, items: extractCommitments(t, { refs: b.refs || null }) });
+      case "meeting-brief": return json(res, { permission: perm, briefs: meetingBrief(t, b.events || [], { window: 5 }) });
+      case "follow-ups": return json(res, { permission: perm, items: followUpSuggestions(t, { now, olderThanHours: b.olderThanHours ?? 48 }) });
+      case "draft-reply": {
+        if (!perm.allowed) return json(res, { error: perm.reason, permission: perm }, 403);
+        let body = b.body || null;
+        if (!body && model.connection && !model.needsConfiguration) {
+          const src = retrieveForRequest(t, b.query || b.ref || "", { k: 3 });
+          const prompt = `Write a short, professional reply. Use ONLY these facts:\n${src.map((x) => `- ${x.subject}: ${x.snippet}`).join("\n")}\n\nReply:`;
+          try { const r = await runNode({ node: "twin", slot: model.slot }, model, { prompt }, { maxTokens: 250, timeoutMs: 120000 }); body = r.output; } catch {}
+        }
+        const d = draftReply(t, { messageRef: b.ref, body, model: model.model || null, runtime: model.connection?.runtime || null, at: now });
+        if (!d.ok) return json(res, { error: d.reason, permission: d.permission }, 403);
+        t = withAudit(t, d.audit); saveTwin(t);
+        return json(res, { draft: d.draft, permission: d.permission, audit: d.audit });
+      }
+      case "send-draft": {
+        const decision = sendDraft(t, { draft: b.draft, approval: b.approval || null, accountId: b.accountId || null,
+          model: model.model || null, runtime: model.connection?.runtime || null, at: now });
+        t = withAudit(t, decision.audit); saveTwin(t);
+        if (!decision.ok) return json(res, { error: decision.reason, permission: decision.permission, audit: decision.audit }, 403);
+        // Authorized: perform the real send only when SMTP is configured for this account.
+        if (b.smtp) { try { await smtpSend(b.smtp)({ from: t.employee.email, to: b.draft.to, subject: b.draft.subject, body: b.draft.body }); } 
+          catch (e) { return json(res, { error: `send failed: ${e.message}`, audit: decision.audit }, 502); } }
+        return json(res, { sent: !!b.smtp, authorized: true, permission: decision.permission, audit: decision.audit });
+      }
+      case "email-to-mission": {
+        const m = emailToMission(t, { messageRef: b.ref, department: b.department, objective: b.objective,
+          constraints: b.constraints || [], criteria: b.criteria || [], policies: store.def.policies || {} });
+        store.addMission(m); store.saveRuntime();
+        return json(res, { mission: m, composer: missionComposer(m) });
+      }
+      case "delegate": {
+        const sources = retrieveForRequest(t, b.query || b.objective || "", { k: 4 });
+        const packet = taskPacket(t, { department: b.department, objective: b.objective,
+          facts: b.facts || sources.map((x) => `${x.subject}: ${x.snippet}`), sources, constraints: b.constraints || [],
+          permissions: ["read"] });
+        const r = routeTask({ department: b.department, task: { summary: packet.objective, tags: b.tags || [] } }, ctx());
+        if (!r.ok) return json(res, { error: r.reason }, 400);
+        let results = [];
+        try {
+          const prompt = `${packet.objective}\n\nFacts:\n${packet.facts.map((f) => `- ${f}`).join("\n")}\n\nConstraints: ${packet.constraints.join("; ") || "none"}`;
+          results = await executePlan(r.plan, { _all: { prompt } }, { maxTokens: 400, timeoutMs: b.timeoutMs || 120000, boundPolicies: r.boundPolicies });
+        } catch (e) { return json(res, { error: `delegation failed: ${e.message}`, packet }, 500); }
+        const eff = efficiencyReport({ plan: r.plan, results, shape: r.shape });
+        t = recordDelegation(t, { packet, result: results.map((x) => x.output || x.artifact).filter(Boolean).join(" | ").slice(0, 400), at: now });
+        t = withAudit(t, auditRecord(t, { action: "delegate", permission: "read", approval: "not-required",
+          model: model.model || null, accountId: null, sources: packet.sources, result: "delegated", at: now }));
+        saveTwin(t);
+        return json(res, { packet, department: r.department, agent: r.agent, efficiency: eff,
+          result: results.map((x) => x.output).filter(Boolean).join("\n").slice(0, 2000) });
+      }
+      default: return json(res, { error: `unknown Work Twin action '${b.action}'` }, 400);
+    }
+  } catch (e) { return json(res, { error: e.message }, 400); }
 }
 
 // ── Command Center ──────────────────────────────────────────────────────────────────────────────
@@ -141,9 +292,41 @@ function chatModelFor({ department = null, agentId = null } = {}) {
 function getConversation(id) { return (store.runtime.conversations || []).find((c) => c.id === id) || null; }
 function saveConversation(c) { store.addConversation({ ...c, updatedAt: Date.now() }); store.saveRuntime(); return c; }
 
+/**
+ * Work Twin chat: map a natural request to a Work Twin capability. Deterministic intent matching so it
+ * works with no model configured; the model only writes prose (e.g. a draft body). Every reply carries
+ * its SOURCES and the permission that allowed it.
+ */
+function twinIntent(text = "") {
+  const t = String(text).toLowerCase();
+  // Explicit hand-offs first: "ask the X department…" and "create a mission…" are unambiguous
+  // instructions and must not be swallowed by a keyword that also appears in the sentence.
+  if (/(create|make|turn).{0,20}(mission)/.test(t) || /mission from (this|that)/.test(t)) return "email-to-mission";
+  if (/(ask|have|get) the .{0,24}(department|team)/.test(t) || /\bdelegate\b/.test(t)) return "delegate";
+  if (/(unanswer|no reply|not replied|awaiting|waiting on me|owe)/.test(t)) return "unanswered";
+  if (/(prepare|meeting|agenda|tomorrow'?s)/.test(t)) return "meeting-brief";
+  if (/(follow.?up)/.test(t)) return "follow-ups";
+  if (/(commit|deadline|promis|\bdue\b)/.test(t)) return "commitments";
+  if (/(draft|reply to|respond)/.test(t)) return "draft-reply";
+  if (/(summar|priorit|important|unread|what.s new)/.test(t)) return "priority-summary";
+  return "search-mail";
+}
+
+/** Resolve a spoken department name to one the company actually has ("legal" → "legal-compliance"). */
+function resolveDepartment(spoken, departments = []) {
+  if (!spoken) return null;
+  const want = String(spoken).toLowerCase().replace(/\s+/g, "-");
+  return departments.find((d) => d.toLowerCase() === want)
+    || departments.find((d) => d.toLowerCase().startsWith(want) || want.startsWith(d.toLowerCase()))
+    || departments.find((d) => d.toLowerCase().includes(want) || want.includes(d.toLowerCase()))
+    || null;
+}
+const DEPT_RE = /(technical|customer[- ]service|finance|legal|hr|human[- ]resources|marketing|sales|operations|data)/i;
+
 async function chatSend(res, b) {
   let conv = b.conversationId ? getConversation(b.conversationId) : null;
-  if (!conv) conv = newConversation({ scope: b.scope || "company", department: b.department || null, agentId: b.agentId || null });
+  if (!conv) conv = newConversation({ scope: b.scope || "company", department: b.department || null, agentId: b.agentId || null,
+    twinId: (b.scope === "work-twin" ? (b.twinId || (store.runtime.workTwins || [])[0]?.id || null) : null) });
   const mode = b.mode || "ask";
   // An @mention retargets to that agent for this conversation.
   const mentioned = resolveMention(b.text || "", store.def.agents || []);
@@ -153,7 +336,91 @@ async function chatSend(res, b) {
   const model = chatModelFor(conv);
   let reply = null, mission = null, rag = [];
 
-  if (mode === "ask") {
+  if (conv.scope === "work-twin" || b.scope === "work-twin") {
+    const t = getTwin(conv.twinId || b.twinId);
+    if (!t) {
+      reply = "No Work Twin yet — open the Work Twin tab to connect your work first.";
+    } else {
+      conv = { ...conv, scope: "work-twin", twinId: t.id };
+      const intent = twinIntent(b.text || "");
+      const perm = twinPermission(t, { action: intent });
+      if (!perm.allowed) {
+        reply = `${perm.reason}`;
+      } else {
+        const now = Date.now();
+        const src = retrieveForRequest(t, b.text || "", { k: 4 });
+        rag = src.map((x) => ({ citation: x.citation }));
+        if (intent === "unanswered") {
+          const th = unansweredThreads(t, { now, olderThanHours: 0 });
+          reply = th.length ? `Unanswered (${th.length}):\n` + th.slice(0, 6).map((x) => `• ${x.subject} — ${x.from}${x.waitingHours != null ? ` (${x.waitingHours}h)` : ""}`).join("\n")
+            : "Nothing is waiting on you.";
+        } else if (intent === "priority-summary") {
+          const it = prioritySummary(t, { now });
+          reply = it.length ? `Unread, most important first:\n` + it.slice(0, 6).map((x) => `• ${x.subject} — ${x.from}${x.reasons.length ? ` [${x.reasons.join(", ")}]` : ""}`).join("\n")
+            : "No unread mail in the folders you authorized.";
+        } else if (intent === "commitments") {
+          const it = extractCommitments(t);
+          reply = it.length ? `Commitments and requests:\n` + it.slice(0, 8).map((x) => `• (${x.kind}) ${x.text}${x.deadline ? ` — due ${x.deadline}` : ""}  [${x.citation}]`).join("\n")
+            : "No commitments or deadlines found.";
+        } else if (intent === "follow-ups") {
+          const it = followUpSuggestions(t, { now, olderThanHours: 24 });
+          reply = it.length ? `Suggested follow-ups:\n` + it.slice(0, 8).map((x) => `• ${x.kind}: ${x.subject || x.text}${x.waitingHours ? ` (${x.waitingHours}h)` : ""}`).join("\n")
+            : "Nothing to follow up on.";
+        } else if (intent === "meeting-brief") {
+          const briefs = meetingBrief(t, b.events || [], { window: 4 });
+          reply = briefs.length
+            ? briefs.map((x) => `${x.event.title}: ${x.relatedMessages.length} related message(s), ${x.commitments.length} commitment(s), ${x.openRequests.length} open request(s)`).join("\n")
+            : "No calendar events were provided — connect a calendar or pass events to prepare a brief.";
+        } else if (intent === "draft-reply") {
+          const ref = b.ref || src[0]?.ref;
+          if (!ref) reply = "I could not find which message to reply to — name the sender or subject.";
+          else {
+            let body = null;
+            if (model.connection && !model.needsConfiguration) {
+              const p = `Write a brief professional reply using ONLY these facts:\n${src.map((x) => `- ${x.subject}: ${x.snippet}`).join("\n")}\n\nReply:`;
+              try { const rr = await runNode({ node: "twin", slot: model.slot }, model, { prompt: p }, { maxTokens: 250, timeoutMs: 120000 }); body = rr.output; } catch {}
+            }
+            const d = draftReply(t, { messageRef: ref, body, model: model.model || null, runtime: model.connection?.runtime || null, at: now });
+            if (!d.ok) reply = d.reason;
+            else {
+              saveTwin(withAudit(t, d.audit));
+              reply = `Draft prepared (NOT sent) to ${d.draft.to}\nSubject: ${d.draft.subject}\n\n${d.draft.body}\n\n${d.draft.attribution.disclosure}\nSending needs delegate mode + a communicate grant + your approval.`;
+            }
+          }
+        } else if (intent === "email-to-mission") {
+          const ref = b.ref || src[0]?.ref;
+          if (!ref) reply = "Tell me which email — name the sender or subject.";
+          else {
+            const spoken = (b.text.match(DEPT_RE) || [])[1] || b.department;
+            const dept = resolveDepartment(spoken, store.def.departments || []);
+            if (spoken && !dept) {
+              // Never silently substitute a different department — say so.
+              reply = `Your company has no "${spoken}" department. Available: ${(store.def.departments || []).join(", ")}. Tell me which one should own this.`;
+            } else {
+              const target = dept || (store.def.departments || [])[0];
+              const m = emailToMission(t, { messageRef: ref, department: target, policies: store.def.policies || {} });
+              store.addMission(m); mission = m;
+              conv = { ...conv, missionId: m.id };
+              reply = `Created a mission for ${m.department} from that email. Review and approve it below.`;
+            }
+          }
+        } else if (intent === "delegate") {
+          const dept = resolveDepartment((b.text.match(DEPT_RE) || [])[1] || b.department, store.def.departments || []);
+          if (!dept) reply = `Which department should take this? Available: ${(store.def.departments || []).join(", ")}`;
+          else {
+            const packet = taskPacket(t, { department: dept, objective: b.text,
+              facts: src.map((x) => `${x.subject}: ${x.snippet}`), sources: src, permissions: ["read"] });
+            saveTwin(recordDelegation(t, { packet, result: null, at: now }));
+            reply = `Prepared a compact task packet for ${packet.department} (${packet.facts.length} fact(s), ${packet.sources.length} source(s)). Your mailbox and this chat were not forwarded. Use the Work Twin tab or Plan mode to launch it.`;
+          }
+        } else {
+          reply = src.length ? `Found ${src.length}:\n` + src.map((x) => `• ${x.subject} — ${x.from}\n  ${x.snippet.slice(0, 120)}`).join("\n")
+            : "Nothing matched in the folders you authorized.";
+        }
+        reply += `\n\n(permission: ${perm.scope} in ${t.mode} mode${perm.requiresApproval ? " · approval required" : ""})`;
+      }
+    }
+  } else if (mode === "ask") {
     // READ-ONLY: retrieve from company knowledge, then answer with the conversation model if available.
     rag = searchRag([knowledgeSource()], b.text || "", { agent: { id: conv.agentId, department: conv.department }, topK: 3 });
     const ctx = compactContext(conv, { query: b.text || "", k: 3 });
@@ -272,6 +539,7 @@ function publicState() {
     agentViews: store.def.agents.map((a) => renderAgentView(a, store.def.modelAssignments, store.def.modelConnections)),
     tasks: store.runtime.tasks, executions: store.runtime.executions, approvals: store.runtime.approvals,
     conversations: store.runtime.conversations || [], missions: store.runtime.missions || [],
+    workTwins: (store.runtime.workTwins || []).map(publicTwin),
     brainoutputFundedTokens: funded };
 }
 
@@ -345,11 +613,11 @@ label{display:block;margin:8px 0 4px;color:var(--mut);font-size:12px}.row{displa
 <header><h1>🏢 BrainOutput Community</h1><span class=mut id=coname></span><span class=zero id=zero>Your models · your keys</span></header>
 <nav id=nav></nav><main id=view></main>
 <script>
-const S={state:null,tab:'chat',chat:{scope:'company',dept:'',agent:'',mode:'ask',convId:null,mission:null,busy:false}};
+const S={state:null,tab:'chat',twin:{busy:'',out:null},chat:{scope:'company',dept:'',agent:'',mode:'ask',convId:null,mission:null,busy:false}};
 const el=(h)=>{const d=document.createElement('div');d.innerHTML=h;return d.firstElementChild};
 async function api(p,body){const r=await fetch(p,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{});return r.json()}
 async function refresh(){S.state=await api('/api/state');render()}
-const TABS=[['chat','💬 Chat'],['dashboard','Dashboard'],['connections','1 · Connections'],['company','2 · Company'],['org','3 · Organization'],['assign','4 · Assignments'],['task','6 · New Objective'],['exec','7 · Executions'],['advanced','⚙ Advanced']];
+const TABS=[['chat','💬 Chat'],['twin','👤 Work Twin'],['dashboard','Dashboard'],['connections','1 · Connections'],['company','2 · Company'],['org','3 · Organization'],['assign','4 · Assignments'],['task','6 · New Objective'],['exec','7 · Executions'],['advanced','⚙ Advanced']];
 function nav(){const n=document.getElementById('nav');n.innerHTML='';const adv=(S.state&&S.state.settings&&S.state.settings.mode)==='advanced';
  TABS.forEach(([k,l])=>{if(k==='advanced'&&!adv)return;const b=el('<button>'+l+'</button>');if(k===S.tab)b.className='on';b.onclick=()=>{S.tab=k;render()};n.appendChild(b)});
  const sw=el('<button title="Regular: one model per agent. Advanced: per-stage models, budgets, privacy, limits.">'+(adv?'⚙ Advanced mode':'Regular mode')+'</button>');
@@ -362,6 +630,48 @@ const VIEWS={
  dashboard:(s)=>el('<div><div class=card><h2>Company dashboard</h2><div class=row><div><b>'+(s.company?.name||'(no company yet)')+'</b><div class=mut>Runs on <span class=ok>your own models</span></div></div><div class=mut>Departments: '+(s.departments||[]).join(', ')+'<br>Agents: '+((s.agents||[]).length)+' (dormant by default)</div></div></div>'+
   '<div class=card><h2>Agents</h2><table><tr><th>Agent</th><th>Dept/Role</th><th>Models (slot → provider)</th><th>Status</th></tr>'+(s.agentViews||[]).map(a=>'<tr><td>'+a.id+'</td><td>'+a.department+'/'+a.role+'</td><td>'+Object.entries(a.models).map(([k,m])=>'<div><span class=mut>'+k+':</span> '+m+'</div>').join('')+'</td><td><span class="pill dormant">'+a.activation+'</span></td></tr>').join('')+'</table></div>'+
   '<div class=card><h2>Recent executions</h2>'+((s.executions||[]).slice(-5).reverse().map(e=>'<div class=node style="display:block;margin-bottom:6px">'+e.department+' · '+e.shape+' · '+e.graph.map(g=>g.model?(g.provider+'/'+g.model):g.needsConfiguration?'UNCONFIGURED':g.costSource).join(' → ')+' · <span class=mut>'+(e.summary?e.summary.tokens+' tok':'')+'</span></div>').join('')||'<span class=mut>none yet</span>')+'</div></div>'),
+ twin:(s)=>{const T=(s.workTwins||[])[0]||null;const O=S.twin;
+  if(!T){const d=el('<div class=card><h2>Connect your work and create your Work Twin</h2>'
+    +'<div class=mut>A Work Twin is your own agent: it reads only the work you authorize, prepares drafts, and never sends anything without your approval. It starts in <b>Mirror</b> mode — read-only.</div>'
+    +'<div class=row style="margin-top:10px"><div><label>Your name</label><input id=nm placeholder="Alice Martin"></div>'
+    +'<div><label>Your work email</label><input id=em placeholder="alice@company.com"></div></div>'
+    +'<div id=opts style="margin-top:12px"></div><div id=msg class=mut style="margin-top:8px"></div></div>');
+    api('/api/worktwin/options').then(r=>{document.getElementById('opts').innerHTML=r.options.map(o=>
+      '<div class=node style="display:block;margin:6px 0;padding:10px"><b>'+o.label+'</b> <span class=mut>· '+o.detail+'</span>'
+      +(o.verified?'':' <span class=warn style="font-size:11px">needs your OAuth credentials</span>')
+      +' <button class=act style="margin-left:8px" data-src="'+o.key+'">Choose</button></div>').join('');
+      document.querySelectorAll('[data-src]').forEach(b=>b.onclick=()=>createTwin(b.dataset.src))});
+    return d}
+  const acc=T.accounts||[];const modeBtn=(m)=>'<button class=act data-mode="'+m+'" style="opacity:'+(T.mode===m?1:.6)+'">'+m+'</button> ';
+  const d=el('<div><div class=card><h2>👤 '+T.name+'</h2>'
+   +'<div class=mut>Represents <b>'+T.employee.name+'</b> ('+(T.employee.email||'no email')+') · index: '+(T.indexSize||0)+' messages · '+T.activation+'</div>'
+   +'<div style="margin-top:10px"><label>Permission mode</label><div>'+modeBtn('mirror')+modeBtn('copilot')+modeBtn('delegate')+'</div>'
+   +'<div class=mut style="font-size:12px;margin-top:6px">Mirror: read, search, summarize — no changes. Copilot: also prepares drafts, never sends. Delegate: may execute explicitly granted actions, with approvals.</div></div>'
+   +'<div style="margin-top:10px" class=mut>Accounts: '+(acc.length?acc.map(a=>a.kind+' ('+a.account+') · '+a.scope+' · '+(a.resources||[]).join(', ')).join(' | '):'none yet')+'</div>'
+   +'<div style="margin-top:10px"><button class=act id=sync>Sync mail (bounded page)</button> '
+   +'<button class=act data-do="priority-summary">Priority summary</button> '
+   +'<button class=act data-do="unanswered">Unanswered</button> '
+   +'<button class=act data-do="commitments">Commitments &amp; deadlines</button> '
+   +'<button class=act data-do="follow-ups">Follow-ups</button></div>'
+   +'<div class=mut id=busy style="margin-top:6px">'+(O.busy||'')+'</div></div>'
+   +(O.out?'<div class=card><h2>'+O.out.title+'</h2><div id=out></div></div>':'')
+   +'<div class=card><h2>Audit — who did what, on whose behalf</h2>'
+    +((T.audit||[]).length?'<table><tr><th>Action</th><th>Represented</th><th>Model</th><th>Permission</th><th>Approval</th><th>Sources</th></tr>'
+      +T.audit.slice(-8).reverse().map(a=>'<tr><td>'+a.action+'</td><td>'+a.representedEmployee.name+'</td><td class=mut>'+(a.model||'-')+'</td><td>'+a.permission+'</td><td class='+(a.approval==='approved'?'ok':'mut')+'>'+a.approval+'</td><td class=mut>'+(a.sources||[]).length+'</td></tr>').join('')+'</table>'
+      :'<span class=mut>No actions yet.</span>')+'</div></div>');
+  d.querySelectorAll('[data-mode]').forEach(b=>b.onclick=async()=>{const r=await api('/api/worktwin/mode',{twinId:T.id,mode:b.dataset.mode});if(r.error)alert(r.error);await refresh();render()});
+  d.querySelector('#sync').onclick=async()=>{S.twin.busy='syncing…';render();const r=await api('/api/worktwin/sync',{twinId:T.id,limit:50});
+    S.twin.busy=r.error?('error: '+r.error):('indexed '+r.indexed+' messages'+(r.errors&&r.errors.length?' · '+r.errors.join('; '):''));await refresh();render()};
+  d.querySelectorAll('[data-do]').forEach(b=>b.onclick=async()=>{const act=b.dataset.do;S.twin.busy='working…';render();
+    const r=await api('/api/worktwin/action',{twinId:T.id,action:act,olderThanHours:act==='unanswered'?0:48});
+    S.twin.busy='';
+    if(r.error){S.twin.out={title:'Not permitted',rows:[[r.error]]};render();return}
+    const rows=(r.items||r.threads||r.hits||[]).map(x=>[
+      x.subject||x.text||x.kind||'-', x.from||x.deadline||'', (x.reasons||[]).join(', ')||(x.waitingHours!=null?x.waitingHours+'h waiting':''), x.citation||x.ref||'']);
+    S.twin.out={title:act.replace(/-/g,' ')+' · '+rows.length+' item(s) · permission: '+(r.permission?r.permission.scope+' ('+r.permission.mode+')':'-'),rows};render()});
+  if(O.out){const o=d.querySelector('#out');if(o)o.innerHTML='<table><tr><th>Item</th><th>Who/When</th><th>Why</th><th>Source</th></tr>'
+    +O.out.rows.map(r=>'<tr>'+r.map(c=>'<td>'+String(c==null?'':c).replace(/[&<]/g,ch=>ch==='&'?'&amp;':'&lt;').slice(0,160)+'</td>').join('')+'</tr>').join('')+'</table>'}
+  return d},
  advanced:(s)=>{const agents=s.agents||[];const conns=s.connections||[];
   const A=S.adv||(S.adv={agentId:(agents[0]||{}).id||''});
   const a=agents.find(x=>x.id===A.agentId)||agents[0];
@@ -407,7 +717,7 @@ const VIEWS={
   const d=el('<div><div class=card><h2>Command Center</h2>'
    +'<div class=mut>Talk to your company, a department, or one agent. Ask is read-only · Plan drafts an editable mission · Execute launches only after you approve · Review checks the result.</div>'
    +'<div class=row style="margin-top:10px">'
-     +'<div><label>Scope</label><select id=sc>'+['company','department','agent'].map(x=>'<option '+(C.scope===x?'selected':'')+'>'+x+'</option>').join('')+'</select></div>'
+     +'<div><label>Scope</label><select id=sc>'+['work-twin','company','department','agent'].map(x=>'<option '+(C.scope===x?'selected':'')+'>'+x+'</option>').join('')+'</select></div>'
      +'<div><label>Department</label><select id=dp><option value="">—</option>'+depts.map(x=>'<option '+(C.dept===x?'selected':'')+'>'+x+'</option>').join('')+'</select></div>'
      +'<div><label>Agent</label><select id=ag><option value="">—</option>'+agents.map(a=>'<option value="'+a.id+'" '+(C.agent===a.id?'selected':'')+'>'+a.id+'</option>').join('')+'</select></div>'
      +'<div><label>Mode</label><select id=md>'+['ask','plan','execute','review'].map(x=>'<option '+(C.mode===x?'selected':'')+'>'+x+'</option>').join('')+'</select></div>'
@@ -473,6 +783,19 @@ function missionCard(m){const g=(m.graph&&m.graph.nodes||[]).join(' → ');
    +'<button class=act data-mid="'+m.id+'" data-act="launch">Approve &amp; launch</button> '
    +'<button class=act data-mid="'+m.id+'" data-act="save-workflow">Save as workflow</button> '
    +'<button class=act data-mid="'+m.id+'" data-act="cancel">Cancel</button></div></div>'}
+window.createTwin=async(kind)=>{
+ const nm=document.getElementById('nm').value.trim(),em=document.getElementById('em').value.trim();
+ if(!em){alert('Enter your work email — it identifies who the Work Twin represents.');return}
+ const c=await api('/api/worktwin/create',{employee:{id:em.split('@')[0],name:nm||em,email:em}});
+ if(c.error){alert(c.error);return}
+ if(kind!=='skip'){
+   const src={kind,account:em};
+   if(kind==='imap'){const host=prompt('IMAP host:port (e.g. mail.example.com:993)');if(host){const[h,p]=host.split(':');src.host=h;src.port=Number(p||993);src.user=em;src.password=prompt('IMAP password')||'';src.tls=(Number(p)||993)!==143}}
+   if(kind==='local-mail'){const d=prompt('Path to a Maildir directory or an mbox file');if(d)/mbox$/i.test(d)?src.mbox=d:src.dir=d}
+   const r=await api('/api/worktwin/connect',{twinId:c.twin.id,source:src});
+   if(r.error)alert(r.error);else if(r.verified===false)alert('Connected. This source needs your OAuth credentials before it can read anything.');
+ }
+ await refresh();render()};
 window.missionAct=async(id,action)=>{
  if(action==='edit'){const o=document.getElementById('mo'),dp=document.getElementById('mdp');
    const r=await api('/api/chat/mission',{missionId:id,action:'edit',patch:{objective:o.value,department:dp.value}});

@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import readline from "node:readline/promises";
 import { request } from "node:http";
-import { detectConnections, generateOrg, recommendAssignments, applyOverrides, confirmZeroFunded, buildCompanyConfig, renderAgentView, ROLE_TEMPLATES, onboardingModelPaths, payerLabel, regularOnboardingSteps, advancedOnboardingFields, onboardingExample } from "./onboarding.mjs";
+import { workTwinOnboarding, detectConnections, generateOrg, recommendAssignments, applyOverrides, confirmZeroFunded, buildCompanyConfig, renderAgentView, ROLE_TEMPLATES, onboardingModelPaths, payerLabel, regularOnboardingSteps, advancedOnboardingFields, onboardingExample } from "./onboarding.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const arg = (k) => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : null; };
@@ -142,5 +142,14 @@ function printExample() {
     line(`    tools: ${v.tools.join(", ") || "-"} · permissions: ${v.permissions.join(", ") || "-"}`);
     if (Object.keys(v.approvals).length) line(`    human approval required for: ${Object.keys(v.approvals).join(", ")}`);
   }
+  // Step 11 — the Work Twin (optional, read-only by default)
+  const wt = workTwinOnboarding();
+  line(`\n${"=".repeat(52)}\n${wt.title}`);
+  line(wt.explain);
+  for (const o of wt.options) line(`   • ${o.label}${o.needs ? ` — needs ${o.needs}` : ""}`);
+  line(`\n   Permissions (default mode: ${wt.defaultMode})`);
+  for (const p of wt.permissionScreen) line(`     - ${p}`);
+  line(`   Create it in the dashboard: bo-community serve → Work Twin tab.`);
+
   line(`\n✓ Onboarding complete. Agents are dormant; execution context is created only when work exists.`);
 })();

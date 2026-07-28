@@ -178,7 +178,32 @@ export function regularOnboardingSteps() {
     "6. Connect tools (read-only by default)",
     "7. Review cost sources and permissions",
     "8. Launch — agents dormant by default",
+    "9. Connect your work and create your Work Twin (optional — starts in Mirror, read-only)",
   ];
+}
+
+/**
+ * The Work Twin onboarding step. Every option lands in MIRROR mode (read-only) — the twin can read
+ * and summarize, but cannot draft, send or change anything until you say so.
+ */
+export function workTwinOnboarding() {
+  return {
+    title: "Connect your work and create your Work Twin",
+    explain: "A Work Twin is your own agent. It sees only the folders you authorize, prepares drafts you review, and never sends anything without your approval.",
+    options: [
+      { key: "google-workspace", label: "Continue with Google", needs: "your Google OAuth credentials" },
+      { key: "microsoft-365", label: "Continue with Microsoft", needs: "your Microsoft OAuth credentials" },
+      { key: "imap", label: "Connect another email server", needs: "host, user and password (IMAP/SMTP)" },
+      { key: "local-mail", label: "Use local / imported email", needs: "a Maildir folder or an mbox file" },
+      { key: "skip", label: "Skip for now", needs: null },
+    ],
+    defaultMode: "mirror",
+    permissionScreen: [
+      "Read and search the folders you choose — yes",
+      "Prepare drafts you review — only in Copilot mode",
+      "Send, delete or change anything — only in Delegate mode, with an explicit grant and your approval",
+    ],
+  };
 }
 
 /** ADVANCED MODE — the extra per-agent knobs unlocked beyond the single default model. */

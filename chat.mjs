@@ -10,20 +10,21 @@
 // No simulated agent-to-agent chatter, no management relay, no idle heartbeats. Pure logic; zero-dep.
 import { planGraph, selectPolicies } from "./ce-core.mjs";
 
-export const CHAT_SCOPES = ["company", "department", "agent"];
+export const CHAT_SCOPES = ["work-twin", "company", "department", "agent"];
 export const CHAT_MODES = ["ask", "plan", "execute", "review"];
 
 const tokenize = (s) => (String(s).toLowerCase().match(/[a-z0-9]+/g) || []).filter((w) => w.length > 2);
 
 // ── Conversation ────────────────────────────────────────────────────────────────────────────────
 
-export function newConversation({ id, scope = "company", department = null, agentId = null, title = null } = {}) {
+export function newConversation({ id, scope = "company", department = null, agentId = null, twinId = null, title = null } = {}) {
   if (!CHAT_SCOPES.includes(scope)) throw new Error(`unknown chat scope '${scope}'`);
   if (scope === "department" && !department) throw new Error("department chat needs a department");
   if (scope === "agent" && !agentId) throw new Error("agent chat needs an agentId");
+  if (scope === "work-twin" && !twinId) throw new Error("Work Twin chat needs a twinId");
   return {
     id: id || `conv-${Date.now().toString(36)}`,
-    scope, department, agentId, title,
+    scope, department, agentId, twinId, title,
     messages: [],        // full transcript — LOCAL ONLY, never forwarded wholesale
     pinned: [],          // decisions + constraints that must never fall out of context
     summary: null,       // rolling task-scoped summary

@@ -234,3 +234,17 @@ test("audit records are complete enough to answer 'who did what on whose behalf'
     assert.ok(k in rec, `audit missing ${k}`);
   assert.equal(draftAttribution(t).sent, false);
 });
+
+test("action names are canonical: a grant for what the user SEES matches what is checked", async () => {
+  const { canonicalAction } = await import("./worktwin.mjs");
+  assert.equal(canonicalAction("send-draft"), "send-email");
+  assert.equal(canonicalAction("send-reply"), "send-email");
+  let t = setMode(twinWith("copilot"), "delegate");
+  t = grantTwinScope(t, { scope: "communicate", action: "send-draft" });   // granted by API name
+  const p = twinPermission(t, { action: "send-email" });                    // checked by internal name
+  assert.equal(p.allowed, true);
+  assert.equal(p.requiresApproval, true);
+  // and the reverse direction
+  let t2 = grantTwinScope(setMode(twinWith("copilot"), "delegate"), { scope: "communicate", action: "send-email" });
+  assert.equal(twinPermission(t2, { action: "send-draft" }).allowed, true);
+});

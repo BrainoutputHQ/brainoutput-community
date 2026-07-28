@@ -67,13 +67,20 @@ export function createWorkTwin({ id, employee, name = null, modelPolicy = null }
   };
 }
 
+/** A twin safe to send over the wire: no secrets, no index bodies. */
+export function publicTwin(twin) {
+  return { ...twin, index: undefined, indexSize: (twin.index || []).length,
+    accounts: (twin.accounts || []).map(({ secret, config, ...a }) => ({ ...a,
+      config: config ? { ...config, password: undefined } : undefined, hasSecret: !!secret })) };
+}
+
 export function setMode(twin, mode) {
   if (!WORK_TWIN_MODES.includes(mode)) throw new Error(`unknown Work Twin mode '${mode}'`);
   return { ...twin, mode };
 }
 
 /** Connect a work source. ALWAYS lands in mirror-safe state: read-only, no elevated grants. */
-export function connectWorkSource(twin, { kind, account, label = null, resources = [], connector = null } = {}) {
+export function connectWorkSource(twin, { kind, account, label = null, resources = [], connector = null, config = {}, secret = null } = {}) {
   if (!WORK_SOURCE_KINDS.includes(kind)) throw new Error(`unknown work source '${kind}'`);
   if (!account) throw new Error("work source: an account identifier is required");
   const acc = {
@@ -81,6 +88,10 @@ export function connectWorkSource(twin, { kind, account, label = null, resources
     resources: [...resources],       // permitted folders/labels/mailboxes/channels
     scope: "read",                   // new connections default to READ-ONLY (Mirror)
     connector,                       // optional connectors.mjs connector for elevated actions
+    // How to reconnect later. NEVER holds a credential value: a password lives in `secret` (kept
+    // local and stripped from every API response) or, preferably, in `config.passwordEnv`.
+    config: { ...config },
+    secret: secret || null,
     connectedAt: null,
   };
   return { ...twin, accounts: [...twin.accounts, acc], resources: [...twin.resources, ...resources] };
@@ -90,18 +101,32 @@ export function connectWorkSource(twin, { kind, account, label = null, resources
 export function grantTwinScope(twin, { scope, action = null, resource = null, approval = null }) {
   if (!["draft", "write", "communicate", "sensitive"].includes(scope))
     throw new Error(`cannot grant '${scope}' — elevated scopes only`);
-  const g = { scope, action, resource, approval: scope === "sensitive" ? "human" : approval || "human" };
+  const g = { scope, action: action ? canonicalAction(action) : null, resource,
+    approval: scope === "sensitive" ? "human" : approval || "human" };
   return { ...twin, grants: [...twin.grants, g] };
 }
 
 // ── Permission resolution ───────────────────────────────────────────────────────────────────────
 
+// Read-only capability names the Work Twin exposes. Anything not listed and not obviously read is
+// treated as WRITE — fail-safe: an unknown verb never silently counts as reading.
+const READ_ACTIONS = new Set([
+  "priority-summary", "unanswered", "search-mail", "commitments", "meeting-brief", "follow-ups",
+  "explain", "inspect", "email-to-mission", "delegate",
+]);
+// Different surfaces name the same act differently ("send-draft" in the API, "send-email" inside).
+// Canonicalize so a grant the user creates for what they SEE always matches what is checked.
+const CANONICAL_ACTION = { "send-draft": "send-email", "send-reply": "send-email", "send": "send-email",
+  "reply-send": "send-email", "forward": "send-email" };
+export const canonicalAction = (a) => CANONICAL_ACTION[String(a || "").toLowerCase()] || String(a || "");
+
 const SCOPE_OF_ACTION = (action = "") => {
-  const a = String(action).toLowerCase();
-  if (/(delete|purge|archive-all|revoke|grant|permission|payment|refund|transfer|wire)/.test(a)) return "sensitive";
-  if (/^(send|reply-send|forward|email|message|notify|invite|schedule-send)/.test(a)) return "communicate";
-  if (/^(draft|prepare|compose|propose|summar|brief)/.test(a)) return "draft";
-  if (/^(read|search|list|open|fetch|inspect|explain)/.test(a)) return "read";
+  const a = canonicalAction(action).toLowerCase();
+  if (/(delete|purge|archive-all|revoke|grant-permission|permission-change|payment|refund|transfer|wire)/.test(a)) return "sensitive";
+  if (/^(send|reply-send|forward|email-send|notify|invite|schedule-send)/.test(a)) return "communicate";
+  if (READ_ACTIONS.has(a)) return "read";
+  if (/^(read|search|list|open|fetch|inspect|explain|summar)/.test(a)) return "read";
+  if (/^(draft|prepare|compose|propose|brief)/.test(a)) return "draft";
   return "write";
 };
 
@@ -127,8 +152,9 @@ export function twinPermission(twin, { action, resource = null, accountId = null
   }
 
   // write / communicate: mode allows it, but an explicit grant is still required.
+  const act = canonicalAction(action);
   const grant = (twin.grants || []).find((g) => g.scope === scope &&
-    (!g.action || g.action === action) && (!g.resource || g.resource === resource));
+    (!g.action || canonicalAction(g.action) === act) && (!g.resource || g.resource === resource));
   if (!grant)
     return { ...base, allowed: false, requiresApproval: false,
       reason: `no explicit grant for '${scope}' — delegate mode still requires a scoped grant` };
@@ -145,10 +171,11 @@ export function twinPermission(twin, { action, resource = null, accountId = null
 
 function approvalRequired(twin, action) {
   const p = twin.approvalPolicy || {};
-  const scope = SCOPE_OF_ACTION(action);
+  const act = canonicalAction(action);
+  const scope = SCOPE_OF_ACTION(act);
   if (scope === "sensitive") return true;
   if (scope === "communicate") return (p.send || "human") === "human";
-  return p[action] === "human" || false;
+  return p[act] === "human" || false;
 }
 
 // ── Identity & audit — no silent impersonation ──────────────────────────────────────────────────
