@@ -43,8 +43,15 @@ node bo-community.mjs setup      # loads a starter company (agents dormant)
 node bo-community.mjs serve      # dashboard → http://127.0.0.1:4177
 ```
 
-First run with no company launches onboarding automatically. Verify the whole clean‑install path in a
-throwaway temp dir (touches nothing of yours):
+A fresh install opens the four setup steps in order. **Nothing above needs a model** — and if you have
+none yet, two walkthroughs still run today:
+
+```bash
+node bo-community.mjs twin-demo   # the whole Work Twin story on imported mail — no model, no account
+node bo-community.mjs write-demo  # how an approved write happens: grant → approval → execute
+```
+
+Verify the whole clean‑install path in a throwaway temp dir (touches nothing of yours):
 
 ```bash
 npm run smoke:community-clean    # ✓ 12/12 checks · runs on your own models

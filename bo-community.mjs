@@ -49,7 +49,19 @@ async function doctor() {
     } else if (wanted.length) console.log(`✓ Every model the example expects is installed`);
   } catch {}
   console.log(`\nNeeds NONE of: a BrainOutput account, BrainOutput credits, Claude, Kimi, the hosted agent fleet.`);
-  console.log(localModels.length || byok.length ? "\nReady. Next: bo-community setup && bo-community serve" : "\nConnect at least one model source (local/free/BYOK), then: bo-community setup");
+  if (localModels.length || byok.length) {
+    console.log(`\nReady. Next:`);
+    console.log(`  bo-community setup && bo-community serve   # your company + the dashboard`);
+    console.log(`  bo-community demo                          # three workflows on your own models`);
+  } else {
+    console.log(`\nNo model connected yet — that is fine, two things already work:`);
+    console.log(`  bo-community twin-demo    # the whole Work Twin walkthrough, no model required`);
+    console.log(`  bo-community write-demo   # how an approved write actually happens`);
+    console.log(`\nWhen you want real inference, pick ONE:`);
+    console.log(`  • local  : install ollama, then  ollama pull qwen3-30b-a3b`);
+    console.log(`  • free   : bo-community serve → Connect a model → "Use free models"`);
+    console.log(`  • your own key: export USER_OWN_ANTHROPIC_KEY=…  (or OPENAI/OPENROUTER)`);
+  }
 }
 
 async function setup() {
@@ -70,7 +82,10 @@ async function setup() {
   console.log(`Loaded starter company "${s.def.company.name}" → ${s.dir}`);
   console.log(`  departments: ${s.def.departments.join(", ")}`);
   console.log(`  agents: ${s.def.agents.length} (dormant) · connections: ${s.def.modelConnections.length} · runs on your own models`);
-  console.log(`\nNext:\n  bo-community serve      # web dashboard → http://127.0.0.1:4177\n  bo-community demo       # run the 3 sample workflows headless`);
+  console.log(`\nNext:`);
+  console.log(`  bo-community serve       # dashboard → http://127.0.0.1:4177  (setup, then chat)`);
+  console.log(`  bo-community demo        # three sample workflows on your own models`);
+  console.log(`  bo-community twin-demo   # the Work Twin walkthrough — needs no model at all`);
 }
 
 switch (cmd) {
