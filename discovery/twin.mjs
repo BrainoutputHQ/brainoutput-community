@@ -136,9 +136,20 @@ export function correlate(assets, observation) {
 }
 
 /** Merge a batch of observations into the twin, re-correlating assets. Returns a NEW twin. */
-export function ingest(twin, observations = [], { now = Date.now() } = {}) {
+export function ingest(twin, observations = [], { now = Date.now(), selfHost = "this-host" } = {}) {
   let assets = twin.assets;
-  for (const obs of observations) assets = correlate(assets, obs).assets;
+  for (const obs of observations) {
+    const ids = identifiersOf(obs);
+    // An observation carrying NO identifier is a fact about the machine we are running on — cpu,
+    // memory, a mounted disk. Correlating it as its own asset would turn one laptop into forty
+    // "assets" and make the inventory meaningless. Attribute it to the local host instead.
+    if (!ids.mac && !ids.serial && !ids.certFingerprint && !ids.hostname && !(ids.ip || []).length) {
+      const local = { ...obs, value: { ...(typeof obs.value === "object" && obs.value ? obs.value : { value: obs.value }), hostname: selfHost } };
+      assets = correlate(assets, local).assets;
+      continue;
+    }
+    assets = correlate(assets, obs).assets;
+  }
   const log = [...twin.observations, ...observations];
   return { ...twin, assets,
     observations: log.length > OBSERVATION_LIMIT ? log.slice(log.length - OBSERVATION_LIMIT) : log,

@@ -9,6 +9,11 @@
 //   bo-community onboard   interactive/CLI first-run onboarding
 //   bo-community demo      run the three sample workflows headless
 //   bo-community store …   migrate/export/import/show the local store
+//   bo-community discover  approve a scope, then inventory this host + an approved network
+//   bo-community inventory show what is known, and how fresh the evidence is
+//   bo-community diagnose  deterministic checks, then an optional model EXPLANATION
+//   bo-community opportunities  AI opportunities, with assumptions always visible
+//   bo-community twin      the Infrastructure Twin: assets and dependencies
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";

@@ -15,11 +15,11 @@ import { join } from "node:path";
 const DEFAULT_DIR = process.env.BO_CE_DATA || join(process.env.HOME || ".", ".local", "share", "bo-community");
 
 const EMPTY_DEF = { company: { name: "", brainoutputFundedInference: "forbidden" }, departments: [], agents: [], modelConnections: [], modelAssignments: {}, policies: {}, settings: { mode: "regular" } };
-const EMPTY_RUNTIME = { projects: [], tasks: [], executions: [], artifacts: [], approvals: [], conversations: [], missions: [], workTwins: [], secrets: {} };
+const EMPTY_RUNTIME = { projects: [], tasks: [], executions: [], artifacts: [], approvals: [], conversations: [], missions: [], workTwins: [], infraTwins: [], secrets: {} };
 
 // Runtime history bounds: runtime.json must not grow without limit. Oldest records are dropped
 // first; ACTIVE records (running/pending tasks, pending approvals) are never dropped.
-export const HISTORY_LIMITS = { projects: 100, tasks: 200, executions: 200, artifacts: 500, approvals: 200, conversations: 100, missions: 200, workTwins: 50 };
+export const HISTORY_LIMITS = { projects: 100, tasks: 200, executions: 200, artifacts: 500, approvals: 200, conversations: 100, missions: 200, workTwins: 50, infraTwins: 50 };
 const ACTIVE_STATUS = new Set(["running", "pending"]);
 
 // Fields that must NEVER be written into a connection (defense in depth — apiKeyEnv is a NAME, not a key).

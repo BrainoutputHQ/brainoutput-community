@@ -20,6 +20,15 @@ export const INTENSITY = {
   standard: { concurrency: 16, perHostDelayMs: 40,  timeoutMs: 1200, maxHosts: 1024, portsPerHost: 16 },
 };
 
+/**
+ * The order probes are attempted in, most diagnostically useful first.
+ *
+ * This exists because `portsPerHost` truncates the list, and truncating APPROVED_PORTS by its
+ * numeric key order drops 631 and 9100 off the end — the two printer ports this slice is built to
+ * check. A cap that silently removes the most valuable probe is worse than no cap.
+ */
+export const PORT_PRIORITY = [631, 9100, 515, 80, 443, 22, 161, 53, 445, 139, 5060, 3389];
+
 /** Ports we are ever willing to probe, and why. Anything not here is not probed, full stop. */
 export const APPROVED_PORTS = {
   22:   "ssh",      53:   "dns",     80:   "http",    443:  "https",
