@@ -3,7 +3,7 @@
 // Tests for the Community persistence store. Uses a temp data dir. run: node --test
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store, HISTORY_LIMITS } from "./store.mjs";
@@ -133,4 +133,41 @@ test("default HISTORY_LIMITS bound every runtime collection", () => {
       assert.ok(HISTORY_LIMITS[coll] > 0, `${coll} has a positive limit`);
     }
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("named secret vault: sealed at rest, names-only to agents, never in the exportable definition", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "bo-secrets-"));
+  const s = new Store(dir);
+  const TOKEN = "EAAGm0PX4ZCpsBA" + "z".repeat(40);
+  s.putSecret("instagram:acme", TOKEN);
+  s.saveDefinition();
+
+  // an agent/UI may enumerate NAMES only
+  assert.deepEqual(s.secretNames(), ["instagram:acme"]);
+  assert.equal(JSON.stringify(s.secretNames()).includes(TOKEN), false);
+  assert.equal(s.hasSecret("instagram:acme"), true);
+
+  // nothing plaintext anywhere on disk — this is the property that matters
+  for (const f of readdirSync(dir))
+    assert.equal(readFileSync(join(dir, f), "utf8").includes(TOKEN), false, `${f} leaked the token`);
+
+  // the EXPORTABLE definition must never carry it: exporting a company must not export credentials
+  assert.equal(readFileSync(join(dir, "definition.json"), "utf8").includes(TOKEN), false);
+
+  // only the resolver returns the value, and only on an explicit call
+  return s.secretResolver()("instagram:acme").then(async (v) => {
+    assert.equal(v, TOKEN);
+    assert.equal(await s.secretResolver()("nope"), null);
+    assert.equal(s.deleteSecret("instagram:acme"), true);
+    assert.equal(await s.secretResolver()("instagram:acme"), null);
+    assert.equal(s.deleteSecret("instagram:acme"), false);
+  });
+});
+
+test("the vault refuses malformed names and empty values", () => {
+  const s = new Store(mkdtempSync(join(tmpdir(), "bo-secrets2-")));
+  assert.throws(() => s.putSecret("has space", "x"), /no whitespace/);
+  assert.throws(() => s.putSecret("", "x"), /whitespace|name/);
+  assert.throws(() => s.putSecret("ok", ""), /non-empty string/);
+  assert.throws(() => s.putSecret("ok", 12345), /non-empty string/);
 });

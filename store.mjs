@@ -15,7 +15,7 @@ import { join } from "node:path";
 const DEFAULT_DIR = process.env.BO_CE_DATA || join(process.env.HOME || ".", ".local", "share", "bo-community");
 
 const EMPTY_DEF = { company: { name: "", brainoutputFundedInference: "forbidden" }, departments: [], agents: [], modelConnections: [], modelAssignments: {}, policies: {}, settings: { mode: "regular" } };
-const EMPTY_RUNTIME = { projects: [], tasks: [], executions: [], artifacts: [], approvals: [], conversations: [], missions: [], workTwins: [] };
+const EMPTY_RUNTIME = { projects: [], tasks: [], executions: [], artifacts: [], approvals: [], conversations: [], missions: [], workTwins: [], secrets: {} };
 
 // Runtime history bounds: runtime.json must not grow without limit. Oldest records are dropped
 // first; ACTIVE records (running/pending tasks, pending approvals) are never dropped.
@@ -92,6 +92,43 @@ export class Store {
     d.setAuthTag(Buffer.from(rec.tag, "base64"));
     return Buffer.concat([d.update(Buffer.from(rec.ct, "base64")), d.final()]).toString("utf8");
   }
+  // ── named secret vault ───────────────────────────────────────────────────────────────────────
+  // Publishing connectors (Instagram, and anything else that signs a real API call) need a
+  // credential the customer owns. It is sealed at rest with the same AES-256-GCM key as work-source
+  // secrets, kept in runtime.json — NEVER in the exportable definition — and read only by
+  // deterministic connector code. Agents receive `secretNames()`, never a value.
+  putSecret(name, plain) {
+    if (!name || /\s/.test(String(name))) throw new Error("a secret name needs no whitespace");
+    if (typeof plain !== "string" || !plain) throw new Error("a secret needs a non-empty string value");
+    (this.runtime.secrets ||= {})[String(name)] = this.sealSecret(plain);
+    this.saveRuntime();
+    return { name: String(name), stored: true };
+  }
+
+  /** Names only. This is what a UI lists and what an agent may see — never the values. */
+  secretNames() { return Object.keys(this.runtime.secrets || {}).sort(); }
+
+  hasSecret(name) { return !!(this.runtime.secrets || {})[name]; }
+
+  deleteSecret(name) {
+    if (!(this.runtime.secrets || {})[name]) return false;
+    delete this.runtime.secrets[name];
+    this.saveRuntime();
+    return true;
+  }
+
+  /**
+   * A resolver for deterministic connectors ONLY. Deliberately a function rather than an exposed
+   * map, so a caller cannot enumerate values, and so every read is an explicit call at execution
+   * time rather than a structure that could be serialized into an agent's context by accident.
+   */
+  secretResolver() {
+    return async (name) => {
+      const rec = (this.runtime.secrets || {})[name];
+      return rec ? this.openSecret(rec) : null;
+    };
+  }
+
   // ── portable backup / restore ────────────────────────────────────────────────────────────────
   // A whole-store bundle: the company AND the runtime (work twins, conversations, missions, audit)
   // AND the key that decrypts stored credentials. The definition-only export loses everything a
