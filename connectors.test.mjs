@@ -93,3 +93,20 @@ test("connectorCatalog lists the targets, all read-only by default", () => {
   assert.ok(cat.length >= 9);
   for (const c of cat) assert.equal(c.readOnlyDefault, true);
 });
+
+test("every social connector declares what it needs before it can post", async () => {
+  const { CONNECTOR_CATALOG } = await import("./connectors.mjs");
+  const social = Object.entries(CONNECTOR_CATALOG).filter(([, v]) => v.category === "social");
+  assert.ok(social.length >= 7, "the platforms customers actually ask for must be in the catalog");
+  for (const [key, v] of social) {
+    // Publishing to a social account is never a quiet action: it is a communicate scope, and every
+    // closed platform must carry the real-world gate (app review, audit, paid tier) so onboarding
+    // can tell a customer the truth instead of failing at the first post.
+    assert.ok(v.scopes.includes("communicate"), `${key} must treat posting as communicate`);
+    assert.equal(v.needsImageGen, true, `${key} posts need an image capability`);
+    if (!v.openSource) assert.ok(v.approval && v.approval.length > 10, `${key} must state its approval gate`);
+  }
+  // Mastodon is the open alternative and must stay gate-free, or the "open-source path" claim breaks.
+  assert.equal(CONNECTOR_CATALOG["mastodon"].openSource, true);
+  assert.equal(CONNECTOR_CATALOG["mastodon"].approval, undefined);
+});

@@ -43,8 +43,12 @@ export const CONNECTOR_CATALOG = {
   // — Messaging / social (posting typically needs image generation) —
   "twilio":  { label: "Twilio",  mechanism: "api-key-local", category: "messaging", openSource: false, worksWith: "Twilio", scopes: ["read", "communicate"] },
   "mastodon":{ label: "Mastodon",mechanism: "api-key-local", category: "social", openSource: true, altTo: ["x-twitter"], needsImageGen: true, worksWith: "Mastodon", scopes: ["read", "draft", "communicate"] },
-  "x-twitter":{label: "X (Twitter)", mechanism: "oauth",    category: "social", openSource: false, needsImageGen: true, worksWith: "X", scopes: ["read", "draft", "communicate"] },
-  "linkedin":{ label: "LinkedIn",mechanism: "oauth",         category: "social", openSource: false, needsImageGen: true, worksWith: "LinkedIn", scopes: ["read", "draft", "communicate"] },
+  "x-twitter":{label: "X (Twitter)", mechanism: "oauth",    category: "social", openSource: false, needsImageGen: true, worksWith: "X", scopes: ["read", "draft", "communicate"], approval: "X API v2 — posting and most reads are on PAID tiers" },
+  "linkedin":{ label: "LinkedIn",mechanism: "oauth",         category: "social", openSource: false, needsImageGen: true, worksWith: "LinkedIn", scopes: ["read", "draft", "communicate"], approval: "LinkedIn app + Marketing Developer Platform review before posting" },
+  "facebook":{ label: "Facebook", mechanism: "oauth",        category: "social", openSource: false, needsImageGen: true, worksWith: "Facebook", scopes: ["read", "draft", "communicate"], approval: "Meta app review; Page posting needs pages_manage_posts" },
+  "instagram":{label: "Instagram",mechanism: "oauth",        category: "social", openSource: false, needsImageGen: true, worksWith: "Instagram", scopes: ["read", "draft", "communicate"], approval: "Meta app review; publishing requires an Instagram BUSINESS account" },
+  "tiktok":{   label: "TikTok",   mechanism: "oauth",        category: "social", openSource: false, needsImageGen: true, worksWith: "TikTok", scopes: ["read", "draft", "communicate"], approval: "TikTok Content Posting API audit before unaudited drafts can go public" },
+  "youtube":{  label: "YouTube",  mechanism: "oauth",        category: "social", openSource: false, needsImageGen: true, worksWith: "YouTube", scopes: ["read", "draft", "communicate"], approval: "Google OAuth verification for the YouTube Data API scopes" },
   // — Banking / crypto (value-moving actions are ALWAYS sensitive + human-approved) —
   "plaid":   { label: "Plaid",    mechanism: "api-key-local", category: "banking", openSource: false, worksWith: "Plaid", scopes: ["read"] },
   "coinbase":{ label: "Coinbase", mechanism: "api-key-local", category: "crypto",  openSource: false, worksWith: "Coinbase", scopes: ["read", "sensitive"] },
