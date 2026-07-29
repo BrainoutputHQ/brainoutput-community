@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  instagramPublisher, linkedinPublisher, instagramConnectionOptions, agentVisibleConnection,
+  instagramPublisher, linkedinPublisher, facebookPagePublisher, instagramConnectionOptions, agentVisibleConnection,
   secretRef, isSecretRef, redact, looksSecret,
   IG_CONNECTION_MODES, IG_DAILY_POST_LIMIT,
 } from "./social-publishing.mjs";
@@ -15,7 +15,7 @@ import {
 const TOKEN = "EAAGm0PX4ZCpsBA" + "x".repeat(40);
 const APP_SECRET = "a3f5c9e1b7d24680a3f5c9e1b7d24680";
 
-const store = new Map([["instagram:acme", TOKEN], ["meta-app-secret", APP_SECRET], ["linkedin:acme", TOKEN]]);
+const store = new Map([["instagram:acme", TOKEN], ["meta-app-secret", APP_SECRET], ["linkedin:acme", TOKEN], ["facebook:page:acme", TOKEN]]);
 const resolveSecret = async (name) => store.get(name) || null;
 
 /** A publisher whose HTTP layer records every request, so we can inspect what was sent. */
@@ -278,4 +278,82 @@ test("Instagram uses the image-gen slot when given a prompt, and says which path
   await assert.rejects(
     () => mk(null).publishImage({ caption: "words only", authorization: APPROVED, attestation: OWNS }),
     /Instagram posts need an image/);
+});
+
+// ── Facebook Pages ─────────────────────────────────────────────────────────────────────────────
+function fbSpy(opts = {}) {
+  const calls = [];
+  const requestImpl = async ({ path, method, form }) => {
+    calls.push({ path, method, form });
+    if (opts.fail) throw new Error(opts.fail);
+    if (path.endsWith("/photos")) return { id: "PHOTO_1", post_id: "PAGE_1_POST_1" };
+    return { id: "PAGE_1_POST_2" };
+  };
+  const pub = facebookPagePublisher({ pageId: "1234", pageTokenRef: secretRef("facebook:page:acme"), resolveSecret, requestImpl, imageCapability: opts.imageCapability });
+  return { pub, calls };
+}
+
+test("Facebook text post sends the documented params", async () => {
+  const { pub, calls } = fbSpy();
+  const r = await pub.publishText({ message: "Launch day", authorization: APPROVED, attestation: OWNS });
+  assert.match(calls[0].path, /\/1234\/feed$/);
+  assert.equal(calls[0].form.message, "Launch day");
+  assert.equal(calls[0].form.published, "true");
+  assert.equal(r.postId, "PAGE_1_POST_2");
+});
+
+test("Facebook photo post returns post_id as THE post, not the photo id", async () => {
+  const { pub, calls } = fbSpy();
+  const r = await pub.publishPhoto({ imageUrl: "https://cdn.example.com/a.jpg", caption: "Launch day", authorization: APPROVED, attestation: OWNS });
+  assert.match(calls[0].path, /\/1234\/photos$/);
+  assert.equal(calls[0].form.url, "https://cdn.example.com/a.jpg");   // documented param is `url`
+  assert.equal(calls[0].form.caption, "Launch day");
+  // the whole point: post_id identifies the page post; id is only the photo
+  assert.equal(r.postId, "PAGE_1_POST_1");
+  assert.equal(r.photoId, "PHOTO_1");
+});
+
+test("Facebook photo can come from the image-gen slot, and is loud when unconfigured", async () => {
+  const gen = fbSpy({ imageCapability: async ({ prompt }) => `https://cdn.example.com/${encodeURIComponent(prompt)}.jpg` });
+  const r = await gen.pub.publishPhoto({ imagePrompt: "launch banner", authorization: APPROVED, attestation: OWNS });
+  assert.equal(r.imageSource, "generated");
+  assert.match(gen.calls[0].form.url, /launch%20banner/);
+
+  const none = fbSpy();
+  await assert.rejects(() => none.pub.publishPhoto({ imagePrompt: "x", authorization: APPROVED, attestation: OWNS }),
+    (e) => { assert.equal(e.needsConfiguration, "image-gen"); return true; });
+  await assert.rejects(() => none.pub.publishPhoto({ authorization: APPROVED, attestation: OWNS }), /needs an image/);
+});
+
+test("Facebook inherits every gate and the credential boundary", async () => {
+  const { pub, calls } = fbSpy();
+  await assert.rejects(() => pub.publishText({ message: "hi", attestation: OWNS }), /approved authorization/);
+  await assert.rejects(() => pub.publishText({ message: "hi", authorization: APPROVED }), /own or manage/);
+  await assert.rejects(() => pub.publishText({ message: `k ${TOKEN}`, authorization: APPROVED, attestation: OWNS }), /looks like a credential/);
+  await assert.rejects(() => pub.publishText({ message: "  ", authorization: APPROVED, attestation: OWNS }), /needs a message/);
+  assert.equal(calls.length, 0);
+  assert.throws(() => facebookPagePublisher({ pageId: "1", pageTokenRef: TOKEN, resolveSecret }), /secretRef, never a literal token/);
+  assert.throws(() => facebookPagePublisher({ pageTokenRef: secretRef("x"), resolveSecret }), /needs the Page id/);
+
+  const leaky = fbSpy({ fail: `boom access_token=${TOKEN}` });
+  await assert.rejects(() => leaky.pub.publishText({ message: "hi", authorization: APPROVED, attestation: OWNS }),
+    (e) => { assert.ok(!e.message.includes(TOKEN)); return true; });
+});
+
+test("a missing Page token says it must be a PAGE token, not a user token", async () => {
+  const pub = facebookPagePublisher({ pageId: "1", pageTokenRef: secretRef("facebook:page:nobody"), resolveSecret, requestImpl: async () => ({}) });
+  await assert.rejects(() => pub.publishText({ message: "hi", authorization: APPROVED, attestation: OWNS }),
+    /PAGE access token, not your user token/);
+});
+
+test("no token, no secret and no ref ever reaches an agent-visible surface for any platform", async () => {
+  const { agentVisibleConnection } = await import("./social-publishing.mjs");
+  const surfaces = [
+    fbSpy().pub, linkedinSpy().pub, spyPublisher().pub,
+  ].map((p) => JSON.stringify({ view: agentVisibleConnection(p), keys: Object.keys(p), flat: p }));
+  for (const s of surfaces) {
+    assert.ok(!s.includes(TOKEN), "a token reached an agent-visible surface");
+    assert.ok(!s.includes(APP_SECRET));
+    assert.ok(!/resolveSecret/.test(s));
+  }
 });

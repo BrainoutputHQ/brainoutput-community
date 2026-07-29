@@ -46,7 +46,8 @@ export const CONNECTOR_CATALOG = {
   "x-twitter":{label: "X (Twitter)", mechanism: "oauth",    category: "social", openSource: false, needsImageGen: true, worksWith: "X", scopes: ["read", "draft", "communicate"], approval: "X API v2 — posting and most reads are on PAID tiers" },
   "linkedin":{ label: "LinkedIn",mechanism: "oauth",         category: "social", openSource: false, needsImageGen: true, worksWith: "LinkedIn", scopes: ["read", "draft", "communicate"], approval: "LinkedIn app + Marketing Developer Platform review before posting",
     connectionModes: ["own-linkedin-app"], deterministicPublish: true, agentSeesCredential: false },
-  "facebook":{ label: "Facebook", mechanism: "oauth",        category: "social", openSource: false, needsImageGen: true, worksWith: "Facebook", scopes: ["read", "draft", "communicate"], approval: "Meta app review; Page posting needs pages_manage_posts" },
+  "facebook":{ label: "Facebook", mechanism: "oauth",        category: "social", openSource: false, needsImageGen: true, worksWith: "Facebook", scopes: ["read", "draft", "communicate"], approval: "Meta app review; Page posting needs pages_manage_posts + pages_manage_engagement, and a PAGE access token (not a user token)",
+    connectionModes: ["own-meta-app"], deterministicPublish: true, agentSeesCredential: false },
   "instagram":{label: "Instagram",mechanism: "oauth",        category: "social", openSource: false, needsImageGen: true, worksWith: "Instagram", scopes: ["read", "draft", "communicate"], approval: "Meta app review; publishing requires an Instagram BUSINESS account",
     // Founder decision 2026-07-29: BYOK now, hosted later. The credential lives in the CUSTOMER's
     // sealed store and a deterministic connector signs the call — an agent only ever drafts.

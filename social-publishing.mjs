@@ -378,3 +378,63 @@ export function linkedinPublisher({ as = "member", authorId, tokenRef, resolveSe
   };
 }
 
+// ── Facebook Pages ──────────────────────────────────────────────────────────────────────────────
+// developers.facebook.com/docs/pages-api/posts (retrieved 2026-07-29). Same Graph host as
+// Instagram, same credential boundary, same gates.
+//
+// Two things here bite people, so they are encoded rather than left to the caller:
+//   1. It needs a PAGE access token, not the user token you get from login. A user token fails with
+//      a permissions error that reads like a scope problem and is not one.
+//   2. The photo endpoint returns BOTH `id` and `post_id`. `id` is the PHOTO; `post_id` identifies
+//      the page post. Storing `id` and calling it the post is the easy, wrong choice.
+
+export const FB_PAGE_SCOPES = ["pages_manage_posts", "pages_manage_engagement"];
+
+/** Tasks the authorizing user must hold on the Page, per the docs. Surfaced for onboarding copy. */
+export const FB_PAGE_TASKS = ["CREATE_CONTENT", "MANAGE", "MODERATE"];
+
+export function facebookPagePublisher({ pageId, pageTokenRef, resolveSecret, requestImpl = null, imageCapability = null } = {}) {
+  if (!pageId) throw new Error("facebookPagePublisher needs the Page id");
+  if (!isSecretRef(pageTokenRef)) throw new Error("facebookPagePublisher needs a secretRef, never a literal token");
+  if (typeof resolveSecret !== "function") throw new Error("facebookPagePublisher needs resolveSecret() to read the customer's own store");
+
+  const token = async () => {
+    const t = await resolveSecret(pageTokenRef.name);
+    if (!t) throw new Error(`no credential named '${pageTokenRef.name}' in your secret store — connect this Facebook Page first (a PAGE access token, not your user token)`);
+    return t;
+  };
+
+  return {
+    connector: "facebook",
+    mode: "own-meta-app",
+    verified: false,
+    accountId: `facebook:page:${pageId}`,
+    scopes: FB_PAGE_SCOPES,
+    requiredPageTasks: FB_PAGE_TASKS,
+
+    /** Text post. POST /{page-id}/feed with message + published. */
+    async publishText({ message, authorization = null, attestation = null } = {}) {
+      assertPublishable({ platform: "Facebook", authorization, attestation, texts: [message] });
+      if (!message || !String(message).trim()) throw new Error("a Facebook post needs a message");
+      const r = await graph({ path: `/${encodeURIComponent(pageId)}/feed`, method: "POST",
+        form: { message: String(message), published: "true", access_token: await token() }, requestImpl });
+      return redact({ postId: r?.id || null, kind: "text" });
+    },
+
+    /**
+     * Photo post. POST /{page-id}/photos with url (the only documented-required param); the caption
+     * is optional. Facebook fetches the image itself, so the URL must be publicly reachable.
+     */
+    async publishPhoto({ imageUrl = null, imagePrompt = null, caption = "", authorization = null, attestation = null } = {}) {
+      assertPublishable({ platform: "Facebook", authorization, attestation, texts: [caption, imageUrl, imagePrompt] });
+      const img = await resolveImage({ imageUrl, imagePrompt, imageCapability });
+      if (!img.url) throw new Error("a Facebook photo post needs an image: supply imageUrl, or imagePrompt with an image-gen capability configured");
+      const r = await graph({ path: `/${encodeURIComponent(pageId)}/photos`, method: "POST",
+        form: { url: img.url, ...(caption ? { caption: String(caption) } : {}), access_token: await token() }, requestImpl });
+      // post_id identifies the PAGE POST; id is only the photo. Both are returned so a caller that
+      // genuinely wants the photo can have it, but postId is the one that means "the post".
+      return redact({ postId: r?.post_id || null, photoId: r?.id || null, kind: "photo", imageSource: img.source });
+    },
+  };
+}
+
