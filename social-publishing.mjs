@@ -102,6 +102,53 @@ export function redact(value) {
 /** True if a string plausibly contains a live credential — used to refuse tainted input. */
 export const looksSecret = (s) => typeof s === "string" && SECRET_PATTERNS.some((p) => { p.lastIndex = 0; return p.test(s); });
 
+
+// ── shared publishing core ──────────────────────────────────────────────────────────────────────
+// Every platform inherits the SAME refusals. Adding a network must not be a chance to forget one,
+// so the gates live here and each publisher calls this before it touches a wire.
+
+/**
+ * The gates that must pass before anything is posted anywhere.
+ *   approval    — a human said yes to THIS draft (communicate scope is never silent)
+ *   attestation — the customer owns or manages the account. BYOK makes the credential theirs; it
+ *                 does not make posting to someone else's account acceptable.
+ *   taint       — a draft carrying anything credential-shaped is refused before any HTTP call, so a
+ *                 confused agent cannot launder a token through a caption.
+ */
+export function assertPublishable({ platform, authorization, attestation, texts = [] }) {
+  if (!authorization?.approved) throw new Error(`publishing to ${platform} needs an approved authorization (communicate scope + human approval)`);
+  if (!attestation?.ownsAccount) throw new Error(`publishing to ${platform} needs the customer's attestation that they own or manage this account`);
+  for (const t of texts) if (looksSecret(t)) throw new Error(`refusing to publish to ${platform}: the draft contains something that looks like a credential`);
+  return true;
+}
+
+/**
+ * Resolve the image a post needs.
+ *
+ * This is where the `image-gen` capability slot finally earns its place: a social draft usually
+ * needs a picture, and the agent writing the copy is not the thing that should be making it.
+ *   • an explicit https URL wins — the customer supplied it, nothing to generate;
+ *   • a prompt goes to the configured image capability;
+ *   • an UNCONFIGURED capability is not an error to swallow. It reports the free/local options,
+ *     exactly like every other slot in this codebase, and never silently reaches for a paid one.
+ */
+export async function resolveImage({ imageUrl = null, imagePrompt = null, imageCapability = null } = {}) {
+  if (imageUrl) {
+    if (!/^https:\/\//.test(String(imageUrl))) throw new Error("an image url must be public https — the platform fetches it itself");
+    return { url: imageUrl, source: "supplied" };
+  }
+  if (!imagePrompt) return { url: null, source: "none" };
+  if (typeof imageCapability !== "function") {
+    const e = new Error("this post needs an image but no image-gen capability is configured");
+    e.needsConfiguration = "image-gen";
+    e.options = ["Run a local image model (e.g. SDXL via ComfyUI)", "Connect your own image provider (BYOK)", "Supply the image URL yourself", "Post without an image"];
+    throw e;
+  }
+  const url = await imageCapability({ prompt: imagePrompt });
+  if (!url || !/^https:\/\//.test(String(url))) throw new Error("the image capability did not return a public https URL");
+  return { url, source: "generated" };
+}
+
 function graph({ path, method = "GET", form = null, requestImpl = null }) {
   // An injected transport is still a transport: its failures pass through the same filter. Without
   // this, a deployment's own HTTP layer could throw "…access_token=EAA…" and it would propagate
@@ -141,7 +188,7 @@ function graph({ path, method = "GET", form = null, requestImpl = null }) {
  * not by an agent. In a real deployment it is the sealed store's opener; the module never keeps a
  * reference to what it returns beyond the calls below.
  */
-export function instagramPublisher({ mode = "own-meta-app", igUserId, tokenRef, resolveSecret, requestImpl = null } = {}) {
+export function instagramPublisher({ mode = "own-meta-app", igUserId, tokenRef, resolveSecret, requestImpl = null, imageCapability = null } = {}) {
   const modeSpec = IG_CONNECTION_MODES[mode];
   if (!modeSpec) throw new Error(`unknown Instagram connection mode '${mode}'`);
   if (!modeSpec.available) throw new Error(`${modeSpec.label} is not available: ${modeSpec.blockedBy}`);
@@ -181,12 +228,13 @@ export function instagramPublisher({ mode = "own-meta-app", igUserId, tokenRef, 
      * attested they own or manage the account. Publishing to an account you do not control is the
      * abuse case Meta's policies exist for, and BYOK does not make it our customer's problem alone.
      */
-    async publishImage({ imageUrl, caption = "", authorization = null, attestation = null } = {}) {
-      if (!authorization?.approved) throw new Error("publishing needs an approved authorization (communicate scope + human approval)");
-      if (!attestation?.ownsAccount) throw new Error("publishing needs the customer's attestation that they own or manage this account");
-      if (!/^https:\/\//.test(String(imageUrl || ""))) throw new Error("Instagram fetches the image itself, so image_url must be a public https URL");
-      // A confused agent must not be able to launder a credential through the caption.
-      if (looksSecret(caption) || looksSecret(imageUrl)) throw new Error("refusing to publish: the draft contains something that looks like a credential");
+    async publishImage({ imageUrl = null, imagePrompt = null, caption = "", authorization = null, attestation = null } = {}) {
+      assertPublishable({ platform: "Instagram", authorization, attestation, texts: [caption, imageUrl, imagePrompt] });
+      // An Instagram post is an image post — there is no text-only form. So this is where the
+      // image-gen slot is load-bearing: give a prompt and a configured capability, or a URL.
+      const img = await resolveImage({ imageUrl, imagePrompt, imageCapability });
+      if (!img.url) throw new Error("Instagram posts need an image: supply imageUrl, or imagePrompt with an image-gen capability configured");
+      imageUrl = img.url;
 
       const q = await this.quota();
       if (q.remaining <= 0) throw new Error(`Instagram's ${q.cap}-post rolling 24h limit is used up (${q.used}/${q.cap}) — try later`);
@@ -201,7 +249,7 @@ export function instagramPublisher({ mode = "own-meta-app", igUserId, tokenRef, 
 
       // redact() on the way out even though these fields are ids — the rule is that NOTHING leaves
       // this module unfiltered, so a future field cannot quietly become a leak.
-      return redact({ containerId: created.id, mediaId: published?.id || null, quotaRemaining: q.remaining - 1 });
+      return redact({ containerId: created.id, mediaId: published?.id || null, quotaRemaining: q.remaining - 1, imageSource: img.source });
     },
   };
 }
@@ -225,3 +273,108 @@ export function agentVisibleConnection(pub) {
     note: "You draft. A deterministic connector publishes, using a credential you never see.",
   });
 }
+
+// ── LinkedIn ────────────────────────────────────────────────────────────────────────────────────
+// POST https://api.linkedin.com/rest/posts  (learn.microsoft.com/linkedin/marketing/community-
+// management/shares/posts-api, retrieved 2026-07-29). Same credential boundary as Instagram: the
+// agent holds a secretRef, this module resolves it, nothing sensitive comes back.
+
+export const LINKEDIN_HOST = "api.linkedin.com";
+
+/**
+ * LinkedIn requires a Linkedin-Version header in YYYYMM form, and it SUNSETS old versions — the
+ * docs carry a deprecation warning for exactly that. Pinning it in code with no way to change it
+ * would guarantee a silent breakage months from now, so it is configurable and defaulted here.
+ */
+export const LINKEDIN_DEFAULT_VERSION = "202607";
+
+export const LINKEDIN_SCOPES = {
+  member: ["w_member_social"],
+  organization: ["w_organization_social"],
+};
+
+/** urn:li:person:{id} for a member, urn:li:organization:{id} for a company page. */
+export function linkedinAuthorUrn({ as = "member", id }) {
+  if (!id) throw new Error("a LinkedIn author needs an id");
+  if (!["member", "organization"].includes(as)) throw new Error(`unknown LinkedIn author type '${as}'`);
+  return as === "member" ? `urn:li:person:${id}` : `urn:li:organization:${id}`;
+}
+
+function linkedinRequest({ path, method = "POST", body, token, version, requestImpl }) {
+  if (requestImpl) return Promise.resolve(requestImpl({ path, method, body }))
+    .catch((e) => { throw new Error(redact(e?.message || String(e))); });
+  return new Promise((resolve, reject) => {
+    const payload = body ? JSON.stringify(body) : null;
+    const req = httpsRequest({ host: LINKEDIN_HOST, path, method, headers: {
+      authorization: `Bearer ${token}`,
+      "x-restli-protocol-version": "2.0.0",
+      "linkedin-version": version,
+      ...(payload ? { "content-type": "application/json", "content-length": Buffer.byteLength(payload) } : {}),
+    } }, (res) => {
+      let d = "";
+      res.on("data", (c) => (d += c));
+      res.on("end", () => {
+        if (res.statusCode >= 400) {
+          let j = null; try { j = JSON.parse(d); } catch { /* raw */ }
+          return reject(new Error(redact(`LinkedIn publish failed (${res.statusCode}) ${j?.code || ""} ${j?.message || d.slice(0, 200)}`.trim())));
+        }
+        // The post id arrives in a RESPONSE HEADER, not the body. Reading the body for it — the
+        // obvious guess — yields null on a perfectly successful 201.
+        resolve({ status: res.statusCode, id: res.headers["x-restli-id"] || null });
+      });
+    });
+    req.on("error", (e) => reject(new Error(redact(e.message))));
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
+
+export function linkedinPublisher({ as = "member", authorId, tokenRef, resolveSecret, version = LINKEDIN_DEFAULT_VERSION, requestImpl = null, imageCapability = null } = {}) {
+  if (!isSecretRef(tokenRef)) throw new Error("linkedinPublisher needs a secretRef, never a literal token");
+  if (typeof resolveSecret !== "function") throw new Error("linkedinPublisher needs resolveSecret() to read the customer's own store");
+  if (!/^\d{6}$/.test(String(version))) throw new Error("LinkedIn-Version must be YYYYMM, e.g. 202607");
+  const author = linkedinAuthorUrn({ as, id: authorId });
+
+  const token = async () => {
+    const t = await resolveSecret(tokenRef.name);
+    if (!t) throw new Error(`no credential named '${tokenRef.name}' in your secret store — connect LinkedIn first`);
+    return t;
+  };
+
+  return {
+    connector: "linkedin",
+    mode: "own-linkedin-app",
+    verified: false,
+    accountId: author,
+    scopes: LINKEDIN_SCOPES[as === "member" ? "member" : "organization"],
+
+    /**
+     * A text post, optionally with an already-uploaded image URN.
+     *
+     * NOT IMPLEMENTED: uploading the image binary. That is LinkedIn's separate Images API
+     * (initializeUpload -> PUT the bytes -> urn:li:image:{id}); until it exists, an image post
+     * requires a URN the customer already has, and asking for a raw URL is refused rather than
+     * quietly dropping the picture from their post.
+     */
+    async publishPost({ commentary, imageUrn = null, imageUrl = null, imagePrompt = null, visibility = "PUBLIC", authorization = null, attestation = null } = {}) {
+      assertPublishable({ platform: "LinkedIn", authorization, attestation, texts: [commentary, imageUrn] });
+      if (!commentary || !String(commentary).trim()) throw new Error("a LinkedIn post needs commentary");
+      if (imageUrl || imagePrompt)
+        throw new Error("LinkedIn needs an uploaded image URN, not a URL: its Images API upload is not implemented yet, so supply imageUrn or post text only");
+      if (imageUrn && !/^urn:li:image:/.test(imageUrn)) throw new Error("imageUrn must look like urn:li:image:{id}");
+
+      const body = {
+        author,
+        commentary: String(commentary),
+        visibility,
+        distribution: { feedDistribution: "MAIN_FEED", targetEntities: [], thirdPartyDistributionChannels: [] },
+        lifecycleState: "PUBLISHED",
+        isReshareDisabledByAuthor: false,
+        ...(imageUrn ? { content: { media: { id: imageUrn } } } : {}),
+      };
+      const r = await linkedinRequest({ path: "/rest/posts", method: "POST", body, token: await token(), version, requestImpl });
+      return redact({ postId: r.id, status: r.status, author });
+    },
+  };
+}
+

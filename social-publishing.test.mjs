@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  instagramPublisher, instagramConnectionOptions, agentVisibleConnection,
+  instagramPublisher, linkedinPublisher, instagramConnectionOptions, agentVisibleConnection,
   secretRef, isSecretRef, redact, looksSecret,
   IG_CONNECTION_MODES, IG_DAILY_POST_LIMIT,
 } from "./social-publishing.mjs";
@@ -15,7 +15,7 @@ import {
 const TOKEN = "EAAGm0PX4ZCpsBA" + "x".repeat(40);
 const APP_SECRET = "a3f5c9e1b7d24680a3f5c9e1b7d24680";
 
-const store = new Map([["instagram:acme", TOKEN], ["meta-app-secret", APP_SECRET]]);
+const store = new Map([["instagram:acme", TOKEN], ["meta-app-secret", APP_SECRET], ["linkedin:acme", TOKEN]]);
 const resolveSecret = async (name) => store.get(name) || null;
 
 /** A publisher whose HTTP layer records every request, so we can inspect what was sent. */
@@ -114,8 +114,12 @@ test("the documented two-step flow is what actually goes on the wire", async () 
 
 test("a non-https image url is refused — Instagram fetches it itself", async () => {
   const { pub } = spyPublisher();
-  for (const bad of ["http://x/a.jpg", "/local/a.jpg", "", null])
-    await assert.rejects(() => pub.publishImage({ imageUrl: bad, authorization: APPROVED, attestation: OWNS }), /public https URL/);
+  // Two distinct failures, and they deserve distinct messages: a url we cannot use…
+  for (const bad of ["http://x/a.jpg", "/local/a.jpg"])
+    await assert.rejects(() => pub.publishImage({ imageUrl: bad, authorization: APPROVED, attestation: OWNS }), /public https/);
+  // …versus no image at all, which on Instagram is not a post.
+  for (const missing of ["", null, undefined])
+    await assert.rejects(() => pub.publishImage({ imageUrl: missing, authorization: APPROVED, attestation: OWNS }), /Instagram posts need an image/);
 });
 
 test("the rolling 24h limit is checked BEFORE posting, not discovered as a 429", async () => {
@@ -157,4 +161,121 @@ test("the agent's view says plainly that it drafts and does NOT publish", () => 
   assert.equal(v.mode, "own-meta-app");
   assert.equal(Object.isFrozen(v), true);
   assert.ok(!("tokenRef" in v) && !("resolveSecret" in v));
+});
+
+// ── shared core ────────────────────────────────────────────────────────────────────────────────
+test("assertPublishable applies the same refusals to every platform", async () => {
+  const { assertPublishable } = await import("./social-publishing.mjs");
+  assert.equal(assertPublishable({ platform: "X", authorization: APPROVED, attestation: OWNS, texts: ["hello"] }), true);
+  assert.throws(() => assertPublishable({ platform: "X", attestation: OWNS }), /approved authorization/);
+  assert.throws(() => assertPublishable({ platform: "X", authorization: APPROVED }), /own or manage/);
+  assert.throws(() => assertPublishable({ platform: "X", authorization: APPROVED, attestation: OWNS, texts: [`k ${TOKEN}`] }), /looks like a credential/);
+});
+
+test("resolveImage: supplied url wins, prompt needs a capability, unconfigured is loud and never paid", async () => {
+  const { resolveImage } = await import("./social-publishing.mjs");
+  assert.deepEqual(await resolveImage({ imageUrl: "https://cdn.example.com/a.jpg" }), { url: "https://cdn.example.com/a.jpg", source: "supplied" });
+  assert.deepEqual(await resolveImage({}), { url: null, source: "none" });
+  await assert.rejects(() => resolveImage({ imageUrl: "http://insecure/a.jpg" }), /public https/);
+
+  const gen = await resolveImage({ imagePrompt: "a launch banner", imageCapability: async () => "https://cdn.example.com/gen.jpg" });
+  assert.deepEqual(gen, { url: "https://cdn.example.com/gen.jpg", source: "generated" });
+
+  // an unconfigured slot reports options — and none of them is a paid BrainOutput fallback
+  await assert.rejects(() => resolveImage({ imagePrompt: "x" }), (e) => {
+    assert.equal(e.needsConfiguration, "image-gen");
+    assert.ok(e.options.length >= 3);
+    for (const o of e.options) assert.doesNotMatch(o, /paid|brainoutput/i);
+    return true;
+  });
+  await assert.rejects(() => resolveImage({ imagePrompt: "x", imageCapability: async () => "not-a-url" }), /public https URL/);
+});
+
+// ── LinkedIn ───────────────────────────────────────────────────────────────────────────────────
+function linkedinSpy(opts = {}) {
+  const calls = [];
+  const requestImpl = async ({ path, method, body }) => {
+    calls.push({ path, method, body });
+    if (opts.fail) throw new Error(opts.fail);
+    return { status: 201, id: "urn:li:share:6844785523593134080" };
+  };
+  const pub = linkedinPublisher({ as: opts.as || "member", authorId: "5abc", tokenRef: secretRef("linkedin:acme"), resolveSecret, requestImpl });
+  return { pub, calls };
+}
+
+test("LinkedIn sends exactly the documented body", async () => {
+  const { pub, calls } = linkedinSpy();
+  const r = await pub.publishPost({ commentary: "Launch day", authorization: APPROVED, attestation: OWNS });
+  assert.equal(calls[0].path, "/rest/posts");
+  const b = calls[0].body;
+  assert.equal(b.author, "urn:li:person:5abc");
+  assert.equal(b.commentary, "Launch day");
+  assert.equal(b.visibility, "PUBLIC");
+  assert.equal(b.lifecycleState, "PUBLISHED");
+  assert.deepEqual(b.distribution, { feedDistribution: "MAIN_FEED", targetEntities: [], thirdPartyDistributionChannels: [] });
+  assert.equal(b.isReshareDisabledByAuthor, false);
+  // the id comes from the x-restli-id RESPONSE HEADER, not the body — reading the body returns null
+  assert.equal(r.postId, "urn:li:share:6844785523593134080");
+});
+
+test("LinkedIn author urn and scopes follow member vs organization", async () => {
+  const { linkedinAuthorUrn, LINKEDIN_SCOPES } = await import("./social-publishing.mjs");
+  assert.equal(linkedinAuthorUrn({ as: "member", id: "5abc" }), "urn:li:person:5abc");
+  assert.equal(linkedinAuthorUrn({ as: "organization", id: "2414183" }), "urn:li:organization:2414183");
+  assert.throws(() => linkedinAuthorUrn({ as: "robot", id: "1" }), /unknown LinkedIn author type/);
+  assert.throws(() => linkedinAuthorUrn({ as: "member" }), /needs an id/);
+  assert.deepEqual(linkedinSpy({ as: "organization" }).pub.scopes, LINKEDIN_SCOPES.organization);
+  assert.deepEqual(linkedinSpy().pub.scopes, LINKEDIN_SCOPES.member);
+});
+
+test("LinkedIn refuses a raw image url rather than silently dropping the picture", async () => {
+  const { pub, calls } = linkedinSpy();
+  await assert.rejects(
+    () => pub.publishPost({ commentary: "hi", imageUrl: "https://cdn.example.com/a.jpg", authorization: APPROVED, attestation: OWNS }),
+    /Images API upload is not implemented/);
+  await assert.rejects(
+    () => pub.publishPost({ commentary: "hi", imageUrn: "urn:li:video:123", authorization: APPROVED, attestation: OWNS }),
+    /urn:li:image/);
+  assert.equal(calls.length, 0);
+  const ok = linkedinSpy();
+  await ok.pub.publishPost({ commentary: "hi", imageUrn: "urn:li:image:C49klciosC89", authorization: APPROVED, attestation: OWNS });
+  assert.deepEqual(ok.calls[0].body.content, { media: { id: "urn:li:image:C49klciosC89" } });
+});
+
+test("LinkedIn inherits the credential boundary and the version guard", async () => {
+  assert.throws(() => linkedinPublisher({ authorId: "1", tokenRef: TOKEN, resolveSecret }), /secretRef, never a literal token/);
+  assert.throws(() => linkedinPublisher({ authorId: "1", tokenRef: secretRef("x"), resolveSecret, version: "2026-07" }), /YYYYMM/);
+  const { pub } = linkedinSpy();
+  await assert.rejects(() => pub.publishPost({ commentary: "hi", attestation: OWNS }), /approved authorization/);
+  const leaky = linkedinSpy({ fail: `boom access_token=${TOKEN}` });
+  await assert.rejects(
+    () => leaky.pub.publishPost({ commentary: "hi", authorization: APPROVED, attestation: OWNS }),
+    (e) => { assert.ok(!e.message.includes(TOKEN)); return true; });
+});
+
+test("Instagram uses the image-gen slot when given a prompt, and says which path was taken", async () => {
+  const calls = [];
+  const mk = (imageCapability) => instagramPublisher({
+    igUserId: "178414", tokenRef: secretRef("instagram:acme"), resolveSecret, imageCapability,
+    requestImpl: async ({ path, form }) => {
+      calls.push({ path, form });
+      if (path.includes("content_publishing_limit")) return { data: [{ quota_usage: 0, config: { quota_total: 100 } }] };
+      if (path.endsWith("/media")) return { id: "C1" };
+      return { id: "M1" };
+    },
+  });
+  const gen = await mk(async ({ prompt }) => `https://cdn.example.com/${encodeURIComponent(prompt)}.jpg`)
+    .publishImage({ imagePrompt: "launch banner", caption: "Launch day", authorization: APPROVED, attestation: OWNS });
+  assert.equal(gen.imageSource, "generated");
+  assert.match(calls.find((c) => c.path.endsWith("/media")).form.image_url, /launch%20banner/);
+
+  // no capability configured -> loud, with free/local options, never a paid fallback
+  await assert.rejects(
+    () => mk(null).publishImage({ imagePrompt: "x", authorization: APPROVED, attestation: OWNS }),
+    (e) => { assert.equal(e.needsConfiguration, "image-gen"); return true; });
+
+  // and a post with neither url nor prompt is refused, because Instagram has no text-only form
+  await assert.rejects(
+    () => mk(null).publishImage({ caption: "words only", authorization: APPROVED, attestation: OWNS }),
+    /Instagram posts need an image/);
 });

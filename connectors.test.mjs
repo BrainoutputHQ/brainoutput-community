@@ -110,3 +110,17 @@ test("every social connector declares what it needs before it can post", async (
   assert.equal(CONNECTOR_CATALOG["mastodon"].openSource, true);
   assert.equal(CONNECTOR_CATALOG["mastodon"].approval, undefined);
 });
+
+test("a connector that publishes must never let an agent hold the credential", async () => {
+  const { CONNECTOR_CATALOG } = await import("./connectors.mjs");
+  const publishers = Object.entries(CONNECTOR_CATALOG).filter(([, v]) => v.deterministicPublish);
+  assert.ok(publishers.length >= 2, "instagram and linkedin at minimum");
+  for (const [key, v] of publishers) {
+    // The whole point of the deterministic path: the LLM drafts, code posts, and the credential
+    // never crosses into a model's context. A future connector that sets deterministicPublish
+    // without this flag would be quietly reintroducing the risk.
+    assert.equal(v.agentSeesCredential, false, `${key} must not expose the credential to an agent`);
+    assert.ok(v.scopes.includes("communicate"), `${key} must gate posting behind communicate`);
+    assert.ok(Array.isArray(v.connectionModes) && v.connectionModes.length, `${key} must declare its connection modes`);
+  }
+});
