@@ -37,7 +37,7 @@ own, free, or local — you always see who pays for each model, and your keys ne
 ## Quick start
 
 ```bash
-git clone https://github.com/brainoutputhq/brainoutput-community.git
+git clone https://github.com/BrainoutputHQ/brainoutput-community.git
 cd brainoutput-community
 node bo-community.mjs setup      # loads a starter company (agents dormant)
 node bo-community.mjs serve      # dashboard → http://127.0.0.1:4177
