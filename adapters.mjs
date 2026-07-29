@@ -25,9 +25,19 @@ export async function chatCompletion({ endpoint, model, apiKey, prompt, maxToken
         const apiErr = j.error?.message || j.error || j.detail;
         if (res.statusCode >= 400 || apiErr)
           return reject(new Error(`model '${model}' failed (${res.statusCode}): ${typeof apiErr === "string" ? apiErr : JSON.stringify(apiErr || j).slice(0, 160)}`));
-        const content = j.choices?.[0]?.message?.content;
-        if (content == null)
-          return reject(new Error(`model '${model}' returned no content — response: ${JSON.stringify(j).slice(0, 160)}`));
+        const msg = j.choices?.[0]?.message ?? {};
+        const content = msg.content;
+        // Reasoning models (Step, o-series, DeepSeek-R1…) spend the token budget on
+        // `reasoning_content` FIRST and return content:"" when it runs out. An empty string is not
+        // null, so the old check let that through as a successful empty answer — the same failure
+        // this file already refuses for a missing model. Found against a real GB10.
+        if (content == null || String(content).trim() === "") {
+          const reasoned = String(msg.reasoning_content ?? "").trim().length;
+          const why = reasoned
+            ? `it spent the whole ${maxTokens}-token budget on reasoning (${reasoned} chars) and had none left for an answer — raise maxTokens`
+            : `response: ${JSON.stringify(j).slice(0, 160)}`;
+          return reject(new Error(`model '${model}' returned no content — ${why}`));
+        }
         const usage = j.usage || {};
         resolve({ content, tokens: usage.total_tokens ?? ((usage.prompt_tokens || 0) + (usage.completion_tokens || 0)), raw: j });
       });
