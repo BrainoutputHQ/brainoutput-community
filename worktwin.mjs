@@ -39,7 +39,7 @@ export function modeScopes(mode) { return [...(MODE_SCOPES[mode] || [])]; }
 export const WORK_SOURCE_KINDS = [
   "google-workspace", "microsoft-365", "imap", "local-mail",
   "calendar", "caldav", "drive", "onedrive", "sharepoint", "google-drive", "nextcloud", "local-drive",
-  "workplace-chat", "slack", "discord", "mattermost", "connector", "rag",
+  "workplace-chat", "microsoft-teams", "slack", "discord", "mattermost", "connector", "rag",
   // Financial accounts: readable by the twin; anything that moves value goes through
   // finance-connectors.authorizeFinanceAction (explicit grant + human approval, every time).
   "plaid", "coinbase", "binance",

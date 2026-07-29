@@ -36,6 +36,7 @@ export const CONNECTOR_CATALOG = {
   "stripe":  { label: "Stripe",  mechanism: "api-key-local", category: "payments", openSource: false, worksWith: "Stripe", scopes: ["read", "sensitive"] },
   "lago":    { label: "Lago",    mechanism: "api-key-local", category: "billing",  openSource: true, altTo: ["stripe-billing"], worksWith: "Lago", scopes: ["read", "write", "sensitive"] },
   // — Workplace chat —
+  "microsoft-teams": { label: "Microsoft Teams", mechanism: "oauth", category: "chat", openSource: false, worksWith: "Microsoft Teams", scopes: ["read", "draft", "write", "communicate", "sensitive"] },
   "slack":   { label: "Slack",    mechanism: "oauth",         category: "chat", openSource: false, worksWith: "Slack", scopes: ["read", "draft", "write", "communicate", "sensitive"] },
   "discord": { label: "Discord",  mechanism: "api-key-local", category: "chat", openSource: false, worksWith: "Discord", scopes: ["read", "draft", "write", "communicate", "sensitive"] },
   "mattermost": { label: "Mattermost", mechanism: "api-key-local", category: "chat", openSource: true, altTo: ["slack"], worksWith: "Mattermost", scopes: ["read", "draft", "write", "communicate", "sensitive"] },
