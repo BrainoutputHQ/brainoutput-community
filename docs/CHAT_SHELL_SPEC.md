@@ -43,6 +43,15 @@ are cards inside the thread, not destinations elsewhere.
 - **Metadata line** — under every reply: model, provider, cost source, permission
   used, sources cited.
 
+## Onboarding is the first conversation
+
+No wizard. First run opens a thread: the Brain greets, reports what it found
+(installed runtimes, local models, keys), asks what you do, and every setup step is
+an inline card — connect a model [confirm] · pick departments [card] · name your
+first project [card]. A single progress card tracks completion and can be dismissed.
+Onboarding doubles as the product demo: you are using the product before you have
+finished setting it up.
+
 ## Behavior
 
 - Ask → answer with citations (read-only). Plan → draft plan card, never writes.

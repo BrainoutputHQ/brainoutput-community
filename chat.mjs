@@ -17,14 +17,14 @@ const tokenize = (s) => (String(s).toLowerCase().match(/[a-z0-9]+/g) || []).filt
 
 // ── Conversation ────────────────────────────────────────────────────────────────────────────────
 
-export function newConversation({ id, scope = "company", department = null, agentId = null, twinId = null, title = null } = {}) {
+export function newConversation({ id, scope = "company", department = null, agentId = null, twinId = null, title = null, projectId = null } = {}) {
   if (!CHAT_SCOPES.includes(scope)) throw new Error(`unknown chat scope '${scope}'`);
   if (scope === "department" && !department) throw new Error("department chat needs a department");
   if (scope === "agent" && !agentId) throw new Error("agent chat needs an agentId");
   if (scope === "work-twin" && !twinId) throw new Error("Work Twin chat needs a twinId");
   return {
     id: id || `conv-${Date.now().toString(36)}`,
-    scope, department, agentId, twinId, title,
+    scope, department, agentId, twinId, title, projectId,
     messages: [],        // full transcript — LOCAL ONLY, never forwarded wholesale
     pinned: [],          // decisions + constraints that must never fall out of context
     summary: null,       // rolling task-scoped summary

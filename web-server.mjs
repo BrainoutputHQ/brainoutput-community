@@ -31,6 +31,9 @@ import { connectDriveSource, driveProviderOptions } from "./drive-sources.mjs";
 import { indexFiles, searchFiles } from "./worktwin.mjs";
 import { efficiencyReport } from "./efficiency.mjs";
 import { selectModel } from "./ce-core.mjs";
+import { CATALOG, LOCALES } from "./i18n.mjs";
+import { SHELL_PAGE } from "./shell.mjs";
+import { newProject, listProjects, promoteConversation } from "./projects.mjs";
 
 const PORT = Number(process.env.BO_CE_WEB_PORT || 4177);
 // Hosting (the 7-day trial) means this dashboard is reachable beyond this machine — and it holds the
@@ -186,8 +189,30 @@ async function api(req, res, url) {
   if (url.pathname.startsWith("/api/execution/")) { const e = store.runtime.executions.find((x) => x.id === url.pathname.split("/").pop()); return e ? json(res, e) : json(res, { error: "not found" }, 404); }
   if (url.pathname === "/api/approval") return decideApproval(res, b);
   if (url.pathname === "/api/settings") {
-    store.setSettings({ mode: b.mode === "advanced" ? "advanced" : "regular" }).saveDefinition();
+    const patch = { mode: b.mode === "advanced" ? "advanced" : b.mode === "regular" ? b.mode : undefined };
+    if (b.locale !== undefined) {
+      if (!LOCALES.includes(b.locale)) return json(res, { error: `unknown locale '${b.locale}' — launch locales: ${LOCALES.join(", ")}` }, 400);
+      patch.locale = b.locale;
+    }
+    const next = { ...(store.def.settings || {}) };
+    if (patch.mode) next.mode = patch.mode;
+    if (patch.locale) next.locale = patch.locale;
+    store.setSettings(next).saveDefinition();
     return json(res, publicState());
+  }
+  if (url.pathname === "/api/project") {
+    try {
+      const p = newProject({ name: b.name, at: Date.now() });
+      store.addProject(p); store.saveRuntime();
+      return json(res, { ...publicState(), project: p });
+    } catch (e) { return json(res, { error: e.message }, 400); }
+  }
+  if (url.pathname === "/api/conversation/promote") {
+    try {
+      const r = promoteConversation(store.runtime, { conversationId: b.conversationId, projectId: b.projectId || null, newProjectName: b.newProjectName || null, at: Date.now() });
+      store.addProject(r.project); store.addConversation(r.conversation); store.saveRuntime();
+      return json(res, { ...publicState(), project: r.project, conversation: r.conversation });
+    } catch (e) { return json(res, { error: e.message }, 400); }
   }
   if (url.pathname === "/api/agent-advanced") {
     const agents = store.def.agents || [];
@@ -481,8 +506,11 @@ async function chatSend(res, b) {
 
   let conv = b.conversationId ? getConversation(b.conversationId) : null;
   if (!conv) conv = newConversation({ scope: b.scope || "company", department: b.department || null, agentId: b.agentId || null,
-    twinId: (b.scope === "work-twin" ? (b.twinId || (store.runtime.workTwins || [])[0]?.id || null) : null) });
+    twinId: (b.scope === "work-twin" ? (b.twinId || (store.runtime.workTwins || [])[0]?.id || null) : null),
+    projectId: b.projectId || null });
   const mode = b.mode || "ask";
+  // A thread opened from a project in the shell carries that project with it.
+  if (b.projectId !== undefined && b.projectId !== conv.projectId) conv = { ...conv, projectId: b.projectId || null };
   // An @mention retargets to that agent for this conversation.
   // Let the dropdowns keep working after message 1. They were only read when the conversation was
   // created, so changing Scope/Department/Agent mid-conversation silently did nothing.
@@ -611,6 +639,7 @@ async function chatSend(res, b) {
       tools: agent?.tools || [], permissions: agent?.permissions || [], approvals: agent?.approvalThresholds || {},
       policies: store.def.policies || {}, complexity: b.complex ? "high" : null, risk: b.risk || null,
     });
+    if (conv.projectId) mission = { ...mission, projectId: conv.projectId };
     store.addMission(mission);
     conv = { ...conv, missionId: mission.id };
     reply = `Drafted a mission for ${mission.department}. Review it below — edit anything, then approve to launch.`;
@@ -763,6 +792,7 @@ function publicState() {
     agentViews: store.def.agents.map((a) => renderAgentView(a, store.def.modelAssignments, store.def.modelConnections)),
     tasks: store.runtime.tasks, executions: store.runtime.executions, approvals: store.runtime.approvals,
     conversations: store.runtime.conversations || [], missions: store.runtime.missions || [],
+    projects: listProjects(store.runtime),
     workTwins: (store.runtime.workTwins || []).map(publicTwin),
     brainoutputFundedTokens: funded };
 }
@@ -830,9 +860,15 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(refusal.code, { "Content-Type": "text/plain" }); res.end(refusal.error); return;
   }
   // The page carries the per-process CSRF token; a cross-origin attacker can never read it.
+  // `/` is the chat-native shell (Directive 6 — the product face); `/dashboard` keeps the
+  // multi-tab advanced surface. The shell speaks the user's locale (settings or ?lang=).
+  const locale = LOCALES.includes(url.searchParams.get("lang")) ? url.searchParams.get("lang")
+    : LOCALES.includes(store.def.settings?.locale) ? store.def.settings.locale : "en";
+  const page = url.pathname === "/dashboard" ? PAGE
+    : SHELL_PAGE.replace("__BO_I18N__", JSON.stringify(CATALOG[locale])).replaceAll("__BO_LOCALE__", locale);
   res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "no-referrer", "Content-Security-Policy": "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:" });
-  res.end(PAGE.replace("__BO_CSRF__", CSRF_TOKEN));
+  res.end(page.replace("__BO_CSRF__", CSRF_TOKEN));
 });
 server.listen(PORT, HOST, () => {
   // Validate the loaded company BEFORE serving. validateCompanyConfig already existed and was
