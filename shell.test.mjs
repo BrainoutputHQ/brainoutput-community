@@ -85,3 +85,11 @@ test("locale: settings switches the served shell to French; unknown locale refus
   const en = await (await fetch(`${BASE}/?lang=de`)).text();   // ?lang= overrides without persisting
   assert.match(en, /Neues Projekt/);
 });
+
+test("the embedded browser script parses (template-literal escaping can never blank the page)", async () => {
+  const { SHELL_PAGE } = await import("./shell.mjs");
+  const vm = await import("node:vm");
+  const page = SHELL_PAGE.replace("__BO_I18N__", "{}").replaceAll("__BO_LOCALE__", "en").replace("__BO_CSRF__", "x");
+  const js = page.split("<script>")[1].split("</scr" + "ipt>")[0];
+  new vm.Script(js);   // throws on a syntax error — e.g. an unescaped newline inside a string
+});

@@ -168,6 +168,23 @@ function approvalCard(a){
  d.querySelector('#ar').onclick=async()=>{await api('/api/approval',{id:a.id,decision:'rejected'});await refresh()};
  return d;
 }
+/** A finished run is a card in the thread too: graph, who ran each stage, tokens, artifacts, files, logs. */
+function runCard(ex){
+ const eff=ex.efficiency||{};
+ const rows=(ex.graph||[]).map(g=>esc(g.node)+(g.model?' <span class=mut>['+esc(g.provider)+'/'+esc(g.model)+']</span>':'')).join(' → ');
+ const artifacts=(eff.artifacts||[]);
+ const files=(ex.codeFiles||[]);
+ const logs=(ex.logs||[]).slice(0,30);
+ const d=el('<div class="cardx"><h3>'+esc(t('run.title'))+' · '+esc(ex.department||'')+' · <span class=ok>'+esc(ex.status||'')+'</span></h3>'
+  +'<div class=mut style="font-size:12px">'+rows+'</div>'
+  +'<div class=mut style="font-size:12px;margin-top:4px">'+(eff.tokensTotal!=null?esc(eff.tokensTotal)+' '+esc(t('run.tokens')):'')
+   +(eff.stagesSkipped&&eff.stagesSkipped.length?' · '+esc(t('run.skipped'))+': '+esc(eff.stagesSkipped.join(', ')):'')+'</div>'
+  +(artifacts.length?'<div style="margin-top:8px"><b style="font-size:12px">'+esc(t('run.artifacts'))+'</b><div class=mut style="font-size:12px">'+artifacts.map(esc).join('<br>')+'</div></div>':'')
+  +(files.length?'<div style="margin-top:8px"><b style="font-size:12px">'+esc(t('run.files'))+'</b>'+files.map(f=>'<details style="margin-top:4px"><summary style="cursor:pointer;font-size:12px">'+esc(f.name)+'</summary><pre style="background:#0b0d11;border:1px solid var(--line);border-radius:6px;padding:8px;font-size:11px;overflow:auto;white-space:pre-wrap">'+esc(f.content)+'</pre></details>').join('')+'</div>':'')
+  +(logs.length?'<details style="margin-top:8px"><summary style="cursor:pointer;font-size:12px">'+esc(t('run.logs'))+'</summary><pre style="background:#0b0d11;border:1px solid var(--line);border-radius:6px;padding:8px;font-size:11px;overflow:auto;white-space:pre-wrap">'+logs.map(esc).join('\\n')+'</pre></details>':'')
+  +'</div>');
+ return d;
+}
 
 // ── thread ───────────────────────────────────────────────────────────────────
 function thread(){
@@ -183,6 +200,8 @@ function thread(){
  const mission=(s.missions||[]).find(m=>m.id===conv.missionId);
  if(mission&&['draft','approved','failed'].includes(mission.status))box.appendChild(missionCard(mission));
  (s.approvals||[]).filter(a=>a.status==='pending'&&(mission&&a.missionId===mission.id)).forEach(a=>box.appendChild(approvalCard(a)));
+ if(mission){const ex=(s.executions||[]).filter(e=>e.missionId===mission.id).slice(-1)[0];
+  if(ex)box.appendChild(runCard(ex))}
  const th=document.getElementById('thread');th.scrollTop=th.scrollHeight;
 }
 
