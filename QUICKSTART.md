@@ -26,14 +26,21 @@ node bo-community.mjs doctor
 
 ## 3. Run it
 ```bash
-node bo-community.mjs serve      # web dashboard → http://127.0.0.1:4177
+node bo-community.mjs serve      # the shell → http://127.0.0.1:4177
 # or a guided first run that auto-detects your models:
 node bo-community.mjs onboard
 ```
-In the dashboard: connect models → describe your company + pick departments → review the generated
-org → edit model assignments → submit an objective → watch it execute → see the result, model,
-provider, **cost source**, tokens, artifacts, and any approvals. The header always shows
-**Runs on your own models.**
+The first screen **is** the setup — a conversation that detects your models, asks what your
+company does, and builds your team (no wizard). From then on the shell is home: projects in
+the sidebar, ad-hoc threads you promote into projects with one click, missions/approvals as
+cards in the thread. en/fr/de in the footer; the advanced multi-tab dashboard stays at
+`/dashboard`. The header always shows **Runs on your own models.**
+
+From a terminal, ad-hoc questions work too — and land in the shell as threads:
+```bash
+node bo-community.mjs ask "why can't I reach the printer?"
+node bo-community.mjs ask --project office-infra "what vlan is the printer on?"
+```
 
 ## 4. Three sample workflows
 
