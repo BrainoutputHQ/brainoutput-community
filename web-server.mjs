@@ -34,6 +34,7 @@ import { selectModel } from "./ce-core.mjs";
 import { CATALOG, LOCALES } from "./i18n.mjs";
 import { SHELL_PAGE } from "./shell.mjs";
 import { newProject, listProjects, promoteConversation } from "./projects.mjs";
+import { newTask, newSubtask, setTaskStatus, reportMissionToTask } from "./tasks.mjs";
 
 const PORT = Number(process.env.BO_CE_WEB_PORT || 4177);
 // Hosting (the 7-day trial) means this dashboard is reachable beyond this machine — and it holds the
@@ -212,6 +213,21 @@ async function api(req, res, url) {
       const r = promoteConversation(store.runtime, { conversationId: b.conversationId, projectId: b.projectId || null, newProjectName: b.newProjectName || null, at: Date.now() });
       store.addProject(r.project); store.addConversation(r.conversation); store.saveRuntime();
       return json(res, { ...publicState(), project: r.project, conversation: r.conversation });
+    } catch (e) { return json(res, { error: e.message }, 400); }
+  }
+  if (url.pathname === "/api/task/new") {
+    try {
+      const t = b.parentId ? newSubtask(store.runtime, b.parentId, { title: b.title, assignee: b.assignee || null, at: Date.now() })
+        : newTask({ title: b.title, projectId: b.projectId || null, assignee: b.assignee || null, at: Date.now() });
+      store.addTask(t); store.saveRuntime();
+      return json(res, { ...publicState(), task: t });
+    } catch (e) { return json(res, { error: e.message }, 400); }
+  }
+  if (url.pathname === "/api/task/status") {
+    try {
+      const t = setTaskStatus(store.runtime, b.id, b.status, { at: Date.now() });
+      store.addTask(t); store.saveRuntime();
+      return json(res, { ...publicState(), task: t });
     } catch (e) { return json(res, { error: e.message }, 400); }
   }
   if (url.pathname === "/api/agent-advanced") {
@@ -728,6 +744,13 @@ async function chatLaunch(res, b) {
   const r = routeTask({ department: m.department, task: { ...m.task, summary: m.objective } }, ctx());
   if (!r.ok) return json(res, { error: r.reason }, 400);
   store.addMission({ ...m, status: "running" });
+  // A project mission leaves a task on the spine: work reports back where the user looks.
+  let spineTask = (store.runtime.tasks || []).find((t) => t.missionId === m.id) || null;
+  if (!spineTask && m.projectId) {
+    spineTask = { ...newTask({ projectId: m.projectId, title: String(m.objective || "").slice(0, 90),
+      assignee: r.agent, status: "in-progress", at: Date.now() }), missionId: m.id };
+    store.addTask(spineTask);
+  }
   // The executor receives the compact mission context — never the transcript.
   const conv = getConversation(m.conversationId);
   const cc = conv ? compactContext(conv, { query: m.objective, k: 3 }) : { pinned: [], relevant: [] };
@@ -739,6 +762,7 @@ async function chatLaunch(res, b) {
     // conversation, and put the mission back to APPROVED so the user can retry or edit and re-approve.
     const failed = { ...m, status: "approved", lastError: String(e.message || e) };
     store.addMission(failed);
+    if (spineTask) store.addTask(reportMissionToTask(store.runtime, spineTask.id, { missionId: m.id, ok: false, summary: String(e.message || e).slice(0, 200), at: Date.now() }));
     const cf = getConversation(m.conversationId);
     if (cf) saveConversation(addMessage(cf, { role: "assistant", mode: "execute", at: Date.now(),
       text: `Mission did not run: ${e.message}. Nothing was changed. Check the model connection (Connections tab) and launch again.` }));
@@ -770,6 +794,8 @@ async function chatLaunch(res, b) {
   const done = { ...m, status: pending ? "awaiting-approval" : "done", artifacts: eff.artifacts,
                  pendingApprovals: gates.length };
   store.addMission(done);
+  if (spineTask && !pending) store.addTask(reportMissionToTask(store.runtime, spineTask.id, { missionId: m.id, ok: true,
+    summary: results.map((x) => x.output).filter(Boolean).join(" | ").slice(0, 200) || "done", artifacts: eff.artifacts, at: Date.now() }));
 
   const review = reviewMission(done, results);
   let c2 = conv ? addMessage(conv, { role: "assistant", mode: "execute", at: Date.now(),

@@ -93,3 +93,45 @@ test("the embedded browser script parses (template-literal escaping can never bl
   const js = page.split("<script>")[1].split("</scr" + "ipt>")[0];
   new vm.Script(js);   // throws on a syntax error — e.g. an unescaped newline inside a string
 });
+
+test("task spine API: manual tasks, subtasks, status flips — and missions report INTO tasks", async () => {
+  const p = await post("/api/project", { name: "pdf-saas-2" });
+  const pid = p.body.project.id;
+
+  const t1 = await post("/api/task/new", { title: "Build the converter", projectId: pid });
+  assert.equal(t1.status, 200);
+  const sub = await post("/api/task/new", { title: "PDF → text", parentId: t1.body.task.id });
+  assert.equal(sub.status, 200);
+  assert.equal(sub.body.task.projectId, pid);          // subtask inherits the project
+
+  const flip = await post("/api/task/status", { id: sub.body.task.id, status: "done" });
+  assert.equal(flip.body.task.status, "done");
+  const bad = await post("/api/task/status", { id: "ghost", status: "done" });
+  assert.equal(bad.status, 400);
+
+  // A mission launched from a project thread leaves a task on the spine that receives the result.
+  await post("/api/onboard", { companyName: "Acme", companyDoes: "tests", departments: ["technical"] });
+  const send = await post("/api/chat/send", { scope: "department", department: "technical", mode: "plan",
+    text: "add a slugify function", projectId: pid });
+  assert.equal(send.status, 200, JSON.stringify(send.body));
+  const mission = send.body.mission;
+  assert.equal(mission.projectId, pid);
+
+  await post("/api/chat/mission", { missionId: mission.id, action: "approve" });
+  // Bounded timeout: this machine may have live local models; either way the spine must get
+  // the report — done on success, blocked on failure. Never silent, never stuck.
+  const launch = await post("/api/chat/launch", { missionId: mission.id, timeoutMs: 20000 });
+
+  const state = (await (await fetch(`${BASE}/api/state`)).json());
+  const spine = state.tasks.filter((t) => t.projectId === pid);
+  const reported = spine.find((t) => t.missionId === mission.id);
+  assert.ok(reported, "a spine task carries the mission");
+  if (launch.status === 200) {
+    assert.equal(reported.status, "done");
+    assert.equal(reported.result.ok, true);
+  } else {
+    assert.equal(launch.status, 500);
+    assert.equal(reported.status, "blocked");
+    assert.equal(reported.result.ok, false);
+  }
+});

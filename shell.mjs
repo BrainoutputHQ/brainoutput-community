@@ -103,7 +103,7 @@ function sidebar(){
  (s.projects||[]).forEach(p=>{
   const n=convs.filter(c=>c.projectId===p.id).length;
   const b=el('<button class="pitem'+(S.projectId===p.id?' on':'')+'">'+esc(p.name)+'<span class=cnt>'+(n||'')+'</span></button>');
-  b.onclick=()=>{S.projectId=p.id;const cs=convs.filter(c=>c.projectId===p.id);S.convId=(cs.slice(-1)[0]||{}).id||null;render()};
+  b.onclick=()=>{S.projectId=p.id;S.convId=null;render()};
   proj.appendChild(b)});
  if(!(s.projects||[]).length)proj.appendChild(el('<div class=mut style="font-size:12px;padding:4px">'+esc(t('shell.emptyProjects'))+'</div>'));
  const ad=document.getElementById('adhoc');ad.innerHTML='';
@@ -186,11 +186,61 @@ function runCard(ex){
  return d;
 }
 
+// ── project view: the task spine + its threads ───────────────────────────────
+function taskRow(tk,subs){
+ const done=tk.status==='done';
+ const d=el('<div style="padding:6px 0;border-bottom:1px solid var(--line)">'
+  +'<label style="display:flex;gap:8px;align-items:center;color:var(--fg);font-size:13px;margin:0;cursor:pointer">'
+  +'<input type=checkbox style="width:auto" '+(done?'checked':'')+'> '
+  +'<span style="'+(done?'text-decoration:line-through;color:var(--mut)':'')+'">'+esc(tk.title)+'</span>'
+  +(tk.status==='blocked'?'<span class=warn style="font-size:11px">blocked</span>':'')
+  +(tk.assignee?'<span class=mut style="font-size:11px">· '+esc(tk.assignee)+'</span>':'')+'</label>'
+  +(tk.result?'<div class="'+(tk.result.ok?'ok':'warn')+'" style="font-size:11px;margin-left:24px">'+esc(tk.result.summary)+(tk.result.artifacts&&tk.result.artifacts.length?' · '+tk.result.artifacts.length+' artifact(s)':'')+'</div>':'')
+  +subs.map(srow).join('')+'</div>');
+ d.querySelector('input').onchange=async(e)=>{await api('/api/task/status',{id:tk.id,status:e.target.checked?'done':'todo'});await refresh()};
+ return d;
+}
+const srow=(s)=>'<div style="margin-left:24px;padding:3px 0;font-size:12px" class="'+(s.status==='done'?'mut':'')+'">'+(s.status==='done'?'✓ ':'○ ')+esc(s.title)+(s.result?' <span class=ok>— '+esc(s.result.summary)+'</span>':'')+'</div>';
+
+function projectView(proj){
+ const s=S.state||{};
+ const tasks=(s.tasks||[]).filter(x=>x.projectId===proj.id);
+ const tops=tasks.filter(x=>!x.parentId);
+ const flat=tops.flatMap(x=>[x,...tasks.filter(y=>y.parentId===x.id)]);
+ const doneN=flat.filter(x=>x.status==='done'&&!tasks.some(y=>y.parentId===x.id&&y.status!=='done')).length;
+ const pct=flat.length?Math.round(doneN/flat.length*100):0;
+ const threads=(s.conversations||[]).filter(c=>c.projectId===proj.id);
+ const d=el('<div class="cardx"><h3>'+esc(proj.name)+' · <span class=mut>'+doneN+'/'+flat.length+' '+esc(t('project.done'))+'</span></h3>'
+  +'<div style="background:#0b0d11;border-radius:6px;height:6px;overflow:hidden;margin-bottom:8px"><div style="background:var(--ok);height:100%;width:'+pct+'%"></div></div>'
+  +'<div class=mut style="font-size:12px;margin:6px 0 2px">'+esc(t('project.tasks'))+'</div>'
+  +'<div id=ptasks></div>'
+  +'<div style="display:flex;gap:8px;margin-top:8px"><input class=inp id=nt placeholder="'+esc(t('project.addTask'))+'" style="margin-top:0"><button class=ghost id=ntb>+</button></div>'
+  +(threads.length?'<div class=mut style="font-size:12px;margin:12px 0 4px">'+esc(t('project.threads'))+'</div>':'')
+  +'</div>');
+ const pt=d.querySelector('#ptasks');
+ tops.forEach(tk=>pt.appendChild(taskRow(tk,tasks.filter(y=>y.parentId===tk.id))));
+ if(!tops.length)pt.appendChild(el('<div class=mut style="font-size:12px;padding:4px 0">—</div>'));
+ const add=async()=>{const v=d.querySelector('#nt').value.trim();if(!v)return;
+  const r=await api('/api/task/new',{title:v,projectId:proj.id});if(r.error){alert(r.error);return}await refresh()};
+ d.querySelector('#ntb').onclick=add;
+ d.querySelector('#nt').onkeydown=(e)=>{if(e.key==='Enter')add()};
+ threads.slice().reverse().forEach(c=>{
+  const label=c.title||(c.messages[0]?String(c.messages[0].text).slice(0,50):c.id);
+  const b=el('<button class="pitem'+(S.convId===c.id?' on':'')+'">'+esc(label)+'</button>');
+  b.onclick=()=>{S.convId=c.id;render()};d.appendChild(b)});
+ return d;
+}
+
 // ── thread ───────────────────────────────────────────────────────────────────
 function thread(){
  const s=S.state||{};const box=document.getElementById('msgs');box.innerHTML='';
  const conv=(s.conversations||[]).find(c=>c.id===S.convId);
- if(!conv){box.appendChild(el('<div class=mut style="text-align:center;margin-top:60px">'+esc(t('shell.emptyThread'))+'</div>'));return}
+ if(!conv){
+  const proj=S.projectId?(s.projects||[]).find(p=>p.id===S.projectId):null;
+  if(proj){box.appendChild(projectView(proj));return}
+  box.appendChild(el('<div class=mut style="text-align:center;margin-top:60px">'+esc(t('shell.emptyThread'))+'</div>'));return}
+ const proj=conv.projectId?(s.projects||[]).find(p=>p.id===conv.projectId):null;
+ if(proj)box.appendChild(projectView(proj));
  conv.messages.forEach(m=>{
   const d=el('<div class="msg '+m.role+'"><div class=who>'+(m.role==='user'?esc(t('shell.you')):esc(t('shell.brain')))+'</div>'
    +'<div class=body>'+esc(m.text)+'</div>'
