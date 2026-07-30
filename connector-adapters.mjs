@@ -36,12 +36,29 @@ export async function connectorAction(connector, req = {}, opts = {}) {
   const base = { connector: connector.connector, action: req.action, scope };
   if (!decision.allowed) return { ...base, executed: false, requiresApproval: false, reason: decision.reason };
 
+  // Explicit opt-in for demos and tests. Must come FIRST or the refusal below makes it dead code.
+  // The result carries `sample: true` and `executed: false`, so it can never read as a real fetch.
+  if (scope === "read" && opts.allowSampleData) {
+    const sample = SAMPLE_READS[connector.connector];
+    if (!sample) throw new Error(`no sample read exists for '${connector.connector}'`);
+    return { ...base, executed: false, requiresApproval: false, readOnly: true, sample: true, data: sample(req) };
+  }
+
   if (scope === "read") {
-    const data = opts.fetchImpl && connector.endpoint
-      ? await opts.fetchImpl(connector, req)
-      : (SAMPLE_READS[connector.connector] || (() => ({ note: "no sample for this connector" })))(req);
+    // A read with no live client must REFUSE. It used to fall through to SAMPLE_READS and return
+    // a hardcoded literal as `executed: true` — fabricated data presented as a real read, which is
+    // the one thing this codebase refuses everywhere else (a missing model and an empty model
+    // answer both fail loudly). The fall-through was easy to hit because it is gated on
+    // `connector.endpoint`, a field `newConnector()` never sets: wiring fetchImpl exactly as
+    // documented still produced fake data.
+    if (!opts.fetchImpl)
+      throw new Error(`'${connector.connector}' has no live client: pass opts.fetchImpl to perform a real read. Refusing to return sample data as a result.`);
+    if (!connector.endpoint)
+      throw new Error(`'${connector.connector}' has no endpoint, so opts.fetchImpl cannot be routed. Set connector.endpoint (newConnector() does not set it).`);
+    const data = await opts.fetchImpl(connector, req);
     return { ...base, executed: true, requiresApproval: false, readOnly: true, data };
   }
+
   if (scope === "draft")
     return { ...base, executed: true, requiresApproval: false, draft: req.draft || "(prepared, not sent)" };
 
@@ -61,8 +78,14 @@ export async function executeApprovedAction(connector, req = {}, approval = null
   if (!decision.allowed) return { ...base, executed: false, reason: `not permitted: ${decision.reason}` };
   if (decision.requiresApproval && !(approval && approval.status === "approved"))
     return { ...base, executed: false, requiresApproval: true, reason: "blocked — human approval required and not granted" };
-  const result = opts.execImpl && connector.endpoint
-    ? await opts.execImpl(connector, req)
-    : { applied: true, action: req.action, resource: req.resource || req.channel || null, echo: req.payload ?? null };
+  // An unwired write must REFUSE. It used to return `{ applied: true }` — a write that never
+  // happened, reported as applied, alongside `executed: true`. That is the worst possible default
+  // for the one function in this file that touches the real world: a human approved a real action,
+  // and we told them it was done.
+  if (!opts.execImpl)
+    throw new Error(`refusing to report '${req.action}' on '${connector.connector}' as applied: no execImpl is wired, so nothing was written. Pass opts.execImpl to perform the real action.`);
+  if (!connector.endpoint)
+    throw new Error(`'${connector.connector}' has no endpoint, so opts.execImpl cannot be routed. Set connector.endpoint (newConnector() does not set it).`);
+  const result = await opts.execImpl(connector, req);
   return { ...base, executed: true, approvedBy: (approval && (approval.approvedBy || approval.id)) || "human", result };
 }

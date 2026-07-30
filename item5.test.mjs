@@ -30,12 +30,27 @@ test("image-gen is a capability slot (for social posting)", () => {
   assert.ok(CAPABILITY_SLOTS.includes("image-gen"));
 });
 
-test("read adapter: read executes with data; draft prepares but does not send", async () => {
+test("read adapter: a read with NO live client refuses instead of returning sample data", async () => {
   const gh = newConnector("gitea");
-  const r = await connectorAction(gh, { action: "list-issues" });
-  assert.equal(r.executed, true);
-  assert.equal(r.readOnly, true);
-  assert.ok(r.data.issues.length);
+  // This used to return a hardcoded issue list as `executed: true`. Fabricated data presented as a
+  // real read is the failure this codebase refuses everywhere else; it must refuse here too.
+  await assert.rejects(() => connectorAction(gh, { action: "list-issues" }), /no live client|Refusing to return sample data/);
+
+  // Sample data is still available, but only on explicit opt-in, and it says what it is.
+  const s = await connectorAction(gh, { action: "list-issues" }, { allowSampleData: true });
+  assert.equal(s.sample, true);
+  assert.equal(s.executed, false, "sample data must never claim it executed");
+  assert.ok(s.data.issues.length);
+
+  // A real read works when a client is actually wired.
+  const wired = { ...gh, endpoint: "https://gitea.example/api/v1" };
+  const live = await connectorAction(wired, { action: "list-issues" },
+    { fetchImpl: async () => ({ issues: [{ id: 1, title: "real" }] }) });
+  assert.equal(live.executed, true);
+  assert.equal(live.readOnly, true);
+  assert.equal(live.data.issues[0].title, "real");
+
+  // draft still prepares without sending
   const d = await connectorAction(gh, { action: "draft-reply", draft: "Thanks!" });
   assert.equal(d.executed, true);
   assert.equal(d.scope, "draft");

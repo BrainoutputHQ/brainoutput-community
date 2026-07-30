@@ -55,7 +55,9 @@ export const DETERMINISTIC_TOOLS = {
     const diff = +(sum(statement) - sum(ledger)).toFixed(2);
     return { matched: diff === 0, ledgerTotal: sum(ledger), statementTotal: sum(statement), difference: diff };
   },
-  "run-tests": (input) => ({ command: input?.command || "n/a", passed: true, note: "deterministic test runner stub" }),
+  // "run-tests" REMOVED: it returned a hardcoded `passed: true` and executed nothing, under a
+  // homepage line claiming tests "run as deterministic code". A tool that cannot fail is worse
+  // than no tool — it launders a guess into a green check. Reinstate only with a real runner.
   "noop": () => ({ ok: true }),
 };
 

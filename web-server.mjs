@@ -161,7 +161,7 @@ async function api(req, res, url) {
   }
   if (url.pathname === "/api/task") return runTask(res, b);
   if (url.pathname.startsWith("/api/execution/")) { const e = store.runtime.executions.find((x) => x.id === url.pathname.split("/").pop()); return e ? json(res, e) : json(res, { error: "not found" }, 404); }
-  if (url.pathname === "/api/approval") { const ap = store.runtime.approvals.find((x) => x.id === b.id); if (ap) { ap.status = b.decision || "approved"; store.saveRuntime(); } return json(res, publicState()); }
+  if (url.pathname === "/api/approval") return decideApproval(res, b);
   if (url.pathname === "/api/settings") {
     store.setSettings({ mode: b.mode === "advanced" ? "advanced" : "regular" }).saveDefinition();
     return json(res, publicState());
@@ -590,6 +590,45 @@ async function chatSend(res, b) {
     composer: mission ? missionComposer(mission) : null, model, citations: rag.map((r) => r.citation) });
 }
 
+/**
+ * Decide a pending approval.
+ *
+ * Previously one line: it looked the approval up, wrote whatever `decision` string arrived, and
+ * returned 200 even when the id did not exist. Three problems, all of them silent: an unknown id
+ * looked like success, `decision:"banana"` persisted as the status, and — worst — approving
+ * resumed nothing. There is no code path that re-runs a gated plan, so the gate was a label.
+ *
+ * It now refuses what it cannot honour, rather than accepting an approval and doing nothing with it.
+ */
+const APPROVAL_DECISIONS = ["approved", "rejected"];
+
+function decideApproval(res, b) {
+  if (!b.id) return json(res, { error: "an approval decision needs an id" }, 400);
+  const ap = (store.runtime.approvals || []).find((x) => x.id === b.id);
+  if (!ap) return json(res, { error: `no approval '${b.id}'` }, 404);
+  const decision = b.decision || "approved";
+  if (!APPROVAL_DECISIONS.includes(decision))
+    return json(res, { error: `unknown decision '${decision}' — expected one of ${APPROVAL_DECISIONS.join(", ")}` }, 400);
+  if (ap.status !== "pending")
+    return json(res, { error: `approval '${b.id}' is already ${ap.status}` }, 409);
+
+  ap.status = decision;
+  ap.decidedAt = Date.now();
+  ap.decidedBy = b.by || "human";
+  store.saveRuntime();
+
+  // Be explicit that approving does NOT yet resume the gated action. Returning a bare 200 let a
+  // user believe the approved action had been carried out.
+  return json(res, {
+    ...publicState(),
+    approval: ap,
+    resumed: false,
+    note: decision === "approved"
+      ? "Recorded. Resuming a gated action automatically is not implemented yet — the approved step still has to be run deliberately."
+      : "Recorded as rejected. Nothing was run.",
+  });
+}
+
 function chatMission(res, b) {
   const missions = store.runtime.missions || [];
   let m = missions.find((x) => x.id === b.missionId);
@@ -642,8 +681,24 @@ async function chatLaunch(res, b) {
   const exec = store.addExecution({ id: uid("exec"), missionId: m.id, conversationId: m.conversationId, department: r.department,
     agent: r.agent, shape: r.shape, graph: r.plan.map((n) => ({ node: n.node, model: n.model?.model || null, provider: n.model?.provider || null,
       costSource: n.model?.costSource || null, needsConfiguration: !!n.model?.needsConfiguration })),
-    results, costBySource: rep.byCostSource, efficiency: eff, status: "done", createdAt: Date.now() });
-  const done = { ...m, status: "done", artifacts: eff.artifacts };
+    results, costBySource: rep.byCostSource, efficiency: eff, status: "done", createdAt: Date.now(),
+    // `logs` is what the Run-history view joins. runTask writes it; this path did not, so opening
+    // Settings -> Run history after any chat-launched mission threw on `ex.logs.join` and rendered
+    // a blank page with no error.
+    logs: results.flatMap((x) => x.logs || (x.output ? [String(x.output)] : [])) });
+
+  // A plan can contain a human gate. runTask records one as a pending approval (see the loop in
+  // runTask); this path did not — so the mission was written "done", nothing pended anywhere, and
+  // the human the gate exists for was never asked. A gate that nobody sees is not a gate.
+  const gates = r.plan.filter((n) => n.gate);
+  for (const n of gates)
+    store.addApproval({ id: uid("appr"), missionId: m.id, executionId: exec.id, kind: "action",
+      status: "pending", node: n.node, what: n.gateReason || m.objective,
+      requestedBy: r.agent, requestedAt: Date.now() });
+
+  const pending = gates.length > 0 || results.some((x) => x.humanRequired || x.status === "pending-human-approval");
+  const done = { ...m, status: pending ? "awaiting-approval" : "done", artifacts: eff.artifacts,
+                 pendingApprovals: gates.length };
   store.addMission(done);
 
   const review = reviewMission(done, results);

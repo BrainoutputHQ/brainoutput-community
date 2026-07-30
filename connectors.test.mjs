@@ -124,3 +124,50 @@ test("a connector that publishes must never let an agent hold the credential", a
     assert.ok(Array.isArray(v.connectionModes) && v.connectionModes.length, `${key} must declare its connection modes`);
   }
 });
+
+// ── Tier 0: nothing may report success for work that did not happen ─────────────────────────────
+// This codebase already refuses a missing model and an empty model answer. The connector layer did
+// not, and it is the layer that touches the real world.
+
+test("an unwired READ refuses rather than returning sample data as a result", async () => {
+  const { connectorAction } = await import("./connector-adapters.mjs");
+  const { newConnector } = await import("./connectors.mjs");
+  const c = newConnector("github");
+  await assert.rejects(() => connectorAction(c, { action: "list-issues" }), /no live client/);
+  // and the gate that made this reachable: newConnector does not set `endpoint`, so passing
+  // fetchImpl alone used to fall through to sample data silently
+  assert.equal(c.endpoint, undefined, "newConnector still does not set endpoint — the refusal must not depend on it");
+  await assert.rejects(
+    () => connectorAction(c, { action: "list-issues" }, { fetchImpl: async () => ({ real: true }) }),
+    /has no endpoint/);
+});
+
+test("an unwired WRITE refuses rather than reporting itself applied", async () => {
+  const { executeApprovedAction } = await import("./connector-adapters.mjs");
+  const { newConnector, grantScope } = await import("./connectors.mjs");
+  const agent = { level: "agent", id: "eng" };
+  const c = grantScope(newConnector("gitea"), { scope: "write", principal: agent });
+  const req = { action: "close-issue", resource: "repo:acme/site#42", payload: { comment: "done" }, agent };
+  // Even WITH a valid human approval — that is the point. Someone said yes to a real action.
+  await assert.rejects(
+    () => executeApprovedAction(c, req, { status: "approved", approvedBy: "founder" }),
+    /refusing to report .* as applied|nothing was written/);
+});
+
+test("sample data is opt-in only, and never claims it executed", async () => {
+  const { connectorAction } = await import("./connector-adapters.mjs");
+  const { newConnector } = await import("./connectors.mjs");
+  const r = await connectorAction(newConnector("jira"), { action: "list-issues" }, { allowSampleData: true });
+  assert.equal(r.sample, true);
+  assert.equal(r.executed, false, "sample data must never be reported as an executed read");
+});
+
+test("the always-passing test runner is gone", async () => {
+  const { DETERMINISTIC_TOOLS } = await import("./adapters.mjs");
+  // It returned a hardcoded passed:true and ran nothing, under a homepage claim that tests run as
+  // deterministic code. A tool that cannot fail launders a guess into a green check.
+  assert.equal(DETERMINISTIC_TOOLS["run-tests"], undefined);
+  assert.ok(DETERMINISTIC_TOOLS["reconcile"], "reconcile is real and stays");
+  const r = DETERMINISTIC_TOOLS.reconcile({ ledger: [{ amount: 100 }], statement: [{ amount: 150 }] });
+  assert.equal(r.matched, false, "and it can actually fail");
+});

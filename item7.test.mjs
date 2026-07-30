@@ -29,10 +29,21 @@ test("execute is blocked without an approval, and runs only AFTER one", async ()
   assert.equal(blocked.executed, false);
   assert.match(blocked.reason, /approval required/);
 
-  const done = await executeApprovedAction(gitea, write, { status: "approved", approvedBy: "founder" });
+  // An approval alone is not enough: with nothing wired, the write must REFUSE rather than report
+  // itself applied. A human approved a real action — telling them it happened when it did not is
+  // the worst default this file could have.
+  await assert.rejects(
+    () => executeApprovedAction(gitea, write, { status: "approved", approvedBy: "founder" }),
+    /refusing to report .* as applied|nothing was written/);
+
+  // With a real executor wired, the approved write goes through and reports what the executor said.
+  const wired = { ...gitea, endpoint: "https://gitea.example/api/v1" };
+  const done = await executeApprovedAction(wired, write, { status: "approved", approvedBy: "founder" },
+    { execImpl: async () => ({ applied: true, id: 42 }) });
   assert.equal(done.executed, true);
   assert.equal(done.approvedBy, "founder");
   assert.equal(done.result.applied, true);
+  assert.equal(done.result.id, 42);
 });
 
 test("execute is refused if the grant is missing, even with an approval", async () => {
