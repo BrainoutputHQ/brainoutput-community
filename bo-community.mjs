@@ -14,6 +14,7 @@
 //   bo-community diagnose  deterministic checks, then an optional model EXPLANATION
 //   bo-community opportunities  AI opportunities, with assumptions always visible
 //   bo-community twin      the Infrastructure Twin: assets and dependencies
+//   bo-community ask       ad-hoc question from the CLI — saved as a shell thread
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -23,6 +24,12 @@ import { Store } from "./store.mjs";
 import { ossCompanyPlaybook, validatePlaybook } from "./playbooks.mjs";
 import { substituteInstalled } from "./onboarding.mjs";
 import { describeLocation } from "./runtimes.mjs";
+import { buildKnowledgeSource } from "./knowledge.mjs";
+import { searchRag } from "./rag.mjs";
+import { newConversation, addMessage } from "./chat.mjs";
+import { findProject } from "./projects.mjs";
+import { selectModel, makeCatalog } from "./ce-core.mjs";
+import { runNode } from "./adapters.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const [cmd, ...rest] = process.argv.slice(2);
@@ -107,9 +114,57 @@ switch (cmd) {
   // case, so `bo-community discover` printed the usage line and did nothing.
   case "discover": case "inventory": case "diagnose": case "opportunities": case "twin":
     run("discovery/run.mjs", [cmd, ...rest]); break;
+  case "ask": await ask(rest); break;
   default:
     console.log("BrainOutput Community Edition — runs on YOUR own models (free, local, subscription, or BYOK).\n");
-    console.log("usage: bo-community <doctor|setup|serve|onboard|demo|store|playbook|discover|inventory|diagnose|opportunities|twin|write-demo|twin-demo>");
+    console.log("usage: bo-community <doctor|setup|serve|onboard|demo|store|playbook|discover|inventory|diagnose|opportunities|twin|ask|write-demo|twin-demo>");
+}
+
+/**
+ * Ad-hoc ask from the CLI — the same read-only path as the web chat's Ask mode. The thread is
+ * saved (optionally under `--project <name>`) so it appears in the shell and nothing is lost.
+ *   bo-community ask "why can't I reach the printer?"
+ *   bo-community ask --project office-infra "what did we decide about the vlan?"
+ */
+async function ask(args) {
+  const pi = args.indexOf("--project");
+  const projectName = pi >= 0 ? args[pi + 1] : null;
+  const question = args.filter((a, i) => a !== "--project" && (pi < 0 || i !== pi + 1)).join(" ").trim();
+  if (!question) { console.error('usage: bo-community ask [--project <name>] "<question>"'); process.exit(2); }
+
+  const s = new Store();
+  let projectId = null;
+  if (projectName) {
+    const p = findProject(s.runtime, projectName);
+    if (!p) { console.error(`no project '${projectName}'. Projects: ${(s.runtime.projects || []).filter((x) => x.kind === "project").map((x) => x.name).join(", ") || "(none)"}`); process.exit(2); }
+    projectId = p.id;
+  }
+
+  const hits = searchRag([buildKnowledgeSource(s.def)], question, { topK: 3 });
+  let model = null;
+  try {
+    const a = (s.def.agents || [])[0];
+    const slot = a?.capabilities?.worker || a?.capabilities?.planner || "fast-cheap";
+    model = { agent: a?.id || null, ...selectModel(slot, { assignments: s.def.modelAssignments, connections: s.def.modelConnections, catalog: makeCatalog([]) }) };
+  } catch { /* no model configured — knowledge hits still answer */ }
+
+  let reply = null;
+  if (model?.connection) {
+    const prompt = `Answer the question using ONLY the context. Be brief.\n\nContext:\n${hits.map((r) => `- ${r.text} (${r.citation})`).join("\n") || "(no matching company knowledge)"}\n\nQuestion: ${question}`;
+    try { reply = (await runNode({ node: "chat", slot: model.slot }, model, { prompt }, { maxTokens: 300 })).output || null; } catch {}
+  }
+  if (!reply) reply = hits.length
+    ? `From your company knowledge:\n${hits.map((r) => `• ${r.text}  [${r.citation}]`).join("\n")}`
+    : "No matching company knowledge, and no conversation model is configured — connect a free/local/BYOK model.";
+
+  let conv = newConversation({ scope: "company", projectId });
+  conv = addMessage(conv, { role: "user", text: question, mode: "ask", at: Date.now() });
+  conv = addMessage(conv, { role: "assistant", text: reply, mode: "ask", at: Date.now(),
+    meta: { model: model?.model || null, provider: model?.provider || null, costSource: model?.costSource || null, citations: hits.map((r) => r.citation) } });
+  s.addConversation({ ...conv, updatedAt: Date.now() }); s.saveRuntime();
+
+  console.log(reply);
+  console.log(`\n(saved as ${projectId ? `project '${projectName}'` : "an ad-hoc"} thread — open it in the shell: bo-community serve)`);
 }
 
 function playbook() {

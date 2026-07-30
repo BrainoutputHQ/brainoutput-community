@@ -417,14 +417,9 @@ async function twinAction(res, b) {
 
 // ── Command Center ──────────────────────────────────────────────────────────────────────────────
 // Company knowledge as a READ-ONLY RAG source, built from the user's own company definition.
-function knowledgeSource() {
-  const docs = [
-    { id: "company", resource: "company", text: `Company ${store.def.company?.name || "(unnamed)"}. Departments: ${(store.def.departments || []).join(", ")}.` },
-    ...(store.def.agents || []).map((a) => ({ id: a.id, resource: `agent/${a.id}`,
-      text: `Agent ${a.id} is the ${a.role} in ${a.department}. Objectives: ${(a.objectives || []).join("; ")}. Tools: ${(a.tools || []).join(", ")}. Permissions: ${(a.permissions || []).join(", ")}. Approvals: ${Object.keys(a.approvalThresholds || {}).join(", ") || "none"}. Activation: ${a.activation}.` })),
-  ];
-  return indexDocuments(connectRagSource({ id: "company-knowledge", label: "Company knowledge", resources: ["company"] }), docs, { now: Date.now() });
-}
+// Shared with the CLI (`bo ask`) via knowledge.mjs — one source, same citations.
+import { buildKnowledgeSource } from "./knowledge.mjs";
+function knowledgeSource() { return buildKnowledgeSource(store.def); }
 
 /**
  * Resolve the model for a Work Twin STAGE (advanced policy first, else the company default).
