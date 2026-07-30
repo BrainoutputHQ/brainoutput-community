@@ -103,9 +103,13 @@ switch (cmd) {
   case "playbook": playbook(); break;
   case "write-demo": run("bo-ce-write.mjs", rest); break;
   case "twin-demo": run("bo-ce-twin.mjs", rest); break;
+  // Discovery & diagnostics. These were listed in the header comment above and had NO dispatch
+  // case, so `bo-community discover` printed the usage line and did nothing.
+  case "discover": case "inventory": case "diagnose": case "opportunities": case "twin":
+    run("discovery/run.mjs", [cmd, ...rest]); break;
   default:
     console.log("BrainOutput Community Edition — runs on YOUR own models (free, local, subscription, or BYOK).\n");
-    console.log("usage: bo-community <doctor|setup|serve|onboard|demo|store|playbook|write-demo|twin-demo>");
+    console.log("usage: bo-community <doctor|setup|serve|onboard|demo|store|playbook|discover|inventory|diagnose|opportunities|twin|write-demo|twin-demo>");
 }
 
 function playbook() {

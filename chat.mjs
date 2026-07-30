@@ -155,25 +155,46 @@ export function draftMissionSpec(conversation, {
 }
 
 /** Apply user edits to a draft. Only a DRAFT is editable; approving requires an objective. */
+/** Statuses an edit may start from. `approved` is included because a launch can fail and leave a
+ *  mission there — the launch path's own comment promises "edit and re-approve", and refusing it
+ *  made a failed mission permanently unusable with no way back to draft. Editing an approved
+ *  mission returns it to draft, so the approval is never silently reused for changed work. */
+const EDITABLE_STATUS = ["draft", "approved", "failed"];
+
 export function editMissionSpec(spec, patch = {}) {
-  if (spec.status !== "draft") throw new Error(`mission '${spec.id}' is ${spec.status} — only a draft can be edited`);
-  const editable = ["objective", "constraints", "decisions", "acceptanceCriteria", "department", "agents",
+  if (!EDITABLE_STATUS.includes(spec.status))
+    throw new Error(`mission '${spec.id}' is ${spec.status} — only ${EDITABLE_STATUS.join(", ")} can be edited`);
+  // An unknown key used to be dropped in silence with a 200, so `agent` (singular) looked applied
+  // and was not. Say so.
+  const known = ["objective", "constraints", "decisions", "acceptanceCriteria", "department", "agents",
     "requiredCapabilities", "modelAssignments", "tools", "dataSources", "permissions", "approvals"];
-  const next = { ...spec };
-  for (const key of editable) if (key in patch) next[key] = patch[key];
+  const unknown = Object.keys(patch).filter((k) => !known.includes(k));
+  if (unknown.length) throw new Error(`unknown field(s) in patch: ${unknown.join(", ")} — nothing was changed`);
+  const next = { ...spec, status: "draft", approvedBy: null, approvedAt: null };
+  for (const key of known) if (key in patch) next[key] = patch[key];
   return next;
 }
 
-export function validateMissionSpec(spec) {
+/**
+ * `agents` is the COMPANY roster, passed in so this stays pure. It is optional: when omitted the
+ * routability check is skipped rather than guessed at.
+ *
+ * Routability is checked HERE, at draft/approve time, because it used to be checked only at
+ * launch: a user could draft, review, edit and approve a mission and only then be told
+ * "no agent for department 'finance'" — after committing to it.
+ */
+export function validateMissionSpec(spec, { agents = null } = {}) {
   const errors = [];
   if (!spec.objective || !String(spec.objective).trim()) errors.push("objective is required");
   if (!spec.department) errors.push("a department must be selected");
   if (!MISSION_STATUS.includes(spec.status)) errors.push(`bad status '${spec.status}'`);
+  if (agents && spec.department && !agents.some((a) => a.department === spec.department))
+    errors.push(`no agent works in '${spec.department}' — add one to that department, or pick a department that has one`);
   return { ok: errors.length === 0, errors };
 }
 
-export function approveMission(spec, { approvedBy = "user" } = {}) {
-  const v = validateMissionSpec(spec);
+export function approveMission(spec, { approvedBy = "user", agents = null } = {}) {
+  const v = validateMissionSpec(spec, { agents });
   if (!v.ok) throw new Error(`cannot approve: ${v.errors.join("; ")}`);
   return { ...spec, status: "approved", approvedBy, approvedAt: null };
 }
@@ -230,7 +251,10 @@ export function missionComposer(spec, { plan = [], stagesSkipped = [] } = {}) {
     expectedOutputs: spec.expectedOutputs || spec.acceptanceCriteria,
     constraints: spec.constraints,
     stagesSkipped,
-    actions: ["edit", "approve-and-launch", "save-as-workflow", "cancel"],
+    // These are the action values /api/chat/mission actually accepts. It previously advertised
+    // "approve-and-launch" and "save-as-workflow", both of which 400 — a UI built from this list
+    // could not work.
+    actions: ["edit", "approve", "reject", "cancel", "save-workflow"],
     status: spec.status,
   };
 }

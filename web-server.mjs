@@ -12,7 +12,7 @@ import { request as httpReq } from "node:http";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Store } from "./store.mjs";
-import { routeTask, makeCatalog, costReport, executionSummary } from "./ce-core.mjs";
+import { routeTask, makeCatalog, costReport, executionSummary, validateCompanyConfig } from "./ce-core.mjs";
 import { executePlan, runNode } from "./adapters.mjs";
 import { runOpenCode } from "./opencode-adapter.mjs";
 import { DEPARTMENT_TEMPLATES } from "./departments.mjs";
@@ -149,11 +149,34 @@ async function api(req, res, url) {
     } catch (e) { return json(res, { error: e.message }, 400); }
   }
   if (url.pathname === "/api/onboard") {
-    const { connections } = detectConnections({ localModels: await detectLocal(), byokKeys: {} });
+    // MERGE, never replace. The guided setup order is "1 · Connect a model" then "2 · Your
+    // company", and this handler used to overwrite modelConnections and modelAssignments with
+    // whatever it re-detected — so step 2 silently destroyed step 1. Every capability slot then
+    // read UNCONFIGURED and chat answered "no conversation model is configured", which made the
+    // whole product look broken from the first minute.
+    const detected = detectConnections({ localModels: await detectLocal(), byokKeys: {} }).connections;
+    const existing = store.def.modelConnections || [];
+    const byId = new Map(existing.map((c) => [c.id, c]));
+    for (const c of detected) if (!byId.has(c.id)) byId.set(c.id, c);   // add what is new, keep what the user connected
+    const connections = [...byId.values()];
+
     const agents = generateOrg({ companyDoes: b.companyDoes, departments: b.departments || [] });
+    if (!agents.length)
+      return json(res, { error: `no agents could be generated for [${(b.departments || []).join(", ") || "no departments"}]. Pick at least one department we have role templates for, or the company will have nothing that can do work.` }, 400);
+
     const rec = recommendAssignments(agents, connections);
-    store.setCompany({ name: b.companyDoes || "My Company" }).setDepartments(b.departments || []).setAgents(agents).setConnections(connections).setAssignments(rec.assignments).save();
-    return json(res, { ...publicState(), recommendation: rec });
+    // Only fill slots the user has not already assigned — an explicit choice outranks a recommendation.
+    const assignments = { ...rec.assignments, ...(store.def.modelAssignments || {}) };
+
+    store.setCompany({
+      // `companyDoes` answers "what does your company do?" — it is a description, not a name.
+      // Storing it as the name rendered "· a small software product studio" in the header.
+      name: b.companyName || store.def.company?.name || "My Company",
+      does: b.companyDoes || store.def.company?.does || "",
+    }).setDepartments(b.departments || []).setAgents(agents)
+      .setConnections(connections).setAssignments(assignments).save();
+
+    return json(res, { ...publicState(), recommendation: rec, keptConnections: existing.length });
   }
   if (url.pathname === "/api/assign") {
     try { const a = applyOverrides(store.def.modelAssignments, { [b.slot]: b.connectionId || null }, store.def.modelConnections); store.setAssignments(a).saveDefinition(); return json(res, publicState()); }
@@ -443,11 +466,31 @@ function resolveDepartment(spoken, departments = []) {
 const DEPT_RE = /(technical|customer[- ]service|finance|legal|hr|human[- ]resources|marketing|sales|operations|data)/i;
 
 async function chatSend(res, b) {
+  // Guard the four cases newConversation throws on, BEFORE it throws. These reached the user as a
+  // raw 500 and a browser alert; "work-twin" is the FIRST option in the scope dropdown, so a new
+  // user hit it immediately, and the friendly message further down could never be reached.
+  const scope = b.scope || "company";
+  if (!b.conversationId) {
+    if (scope === "work-twin" && !(b.twinId || (store.runtime.workTwins || [])[0]?.id))
+      return json(res, { error: "No Work Twin yet — open the Work Twin tab to connect your work first." }, 400);
+    if (scope === "department" && !b.department)
+      return json(res, { error: "Pick a department first — a department chat needs to know which one." }, 400);
+    if (scope === "agent" && !b.agentId)
+      return json(res, { error: "Pick an agent first — an agent chat needs to know which one." }, 400);
+  }
+
   let conv = b.conversationId ? getConversation(b.conversationId) : null;
   if (!conv) conv = newConversation({ scope: b.scope || "company", department: b.department || null, agentId: b.agentId || null,
     twinId: (b.scope === "work-twin" ? (b.twinId || (store.runtime.workTwins || [])[0]?.id || null) : null) });
   const mode = b.mode || "ask";
   // An @mention retargets to that agent for this conversation.
+  // Let the dropdowns keep working after message 1. They were only read when the conversation was
+  // created, so changing Scope/Department/Agent mid-conversation silently did nothing.
+  if (b.conversationId && b.scope && b.scope !== conv.scope)
+    conv = { ...conv, scope: b.scope, department: b.department ?? conv.department, agentId: b.agentId ?? conv.agentId };
+  else if (b.conversationId && b.department && b.department !== conv.department)
+    conv = { ...conv, department: b.department };
+
   const mentioned = resolveMention(b.text || "", store.def.agents || []);
   if (mentioned) { conv = { ...conv, scope: "agent", agentId: mentioned.id, department: mentioned.department }; }
   conv = addMessage(conv, { role: "user", text: b.text || "", mode, at: Date.now() });
@@ -579,7 +622,10 @@ async function chatSend(res, b) {
       `Unmet criteria: ${rev.unmet.join("; ")}${rev.independentReviewJustified ? " — an independent reviewer is justified." : ""}`)
       : "No mission to review yet.";
   } else {
-    reply = "Switch to Execute mode and approve the mission below to launch it.";
+    // Was: "Switch to Execute mode…" — printed to a user who was already in Execute mode.
+    reply = mission
+      ? "This mission still needs your approval. Review it below and choose Approve, then Launch."
+      : "Nothing to execute yet — describe the work in Plan mode first and I will draft a mission you can approve.";
   }
 
   conv = addMessage(conv, { role: "assistant", text: reply, mode, at: Date.now(),
@@ -635,7 +681,7 @@ function chatMission(res, b) {
   if (!m) return json(res, { error: "mission not found" }, 404);
   try {
     if (b.action === "edit") m = editMissionSpec(m, b.patch || {});
-    else if (b.action === "approve") m = approveMission(m);
+    else if (b.action === "approve") m = approveMission(m, { agents: store.def.agents || [] });
     else if (b.action === "reject" || b.action === "cancel") m = rejectMission(m, { reason: b.reason || null });
     else if (b.action === "save-workflow") {
       const wf = saveAsWorkflow(m, { name: b.name });
@@ -789,6 +835,16 @@ const server = http.createServer(async (req, res) => {
   res.end(PAGE.replace("__BO_CSRF__", CSRF_TOKEN));
 });
 server.listen(PORT, HOST, () => {
+  // Validate the loaded company BEFORE serving. validateCompanyConfig already existed and was
+  // called only by the demo CLI, so a dashboard user met config problems mid-execution — as a 500
+  // out of routeTask — instead of at startup where they can act on them.
+  try {
+    const pre = validateCompanyConfig({ agents: store.def.agents || [], modelConnections: store.def.modelConnections || [],
+      modelAssignments: store.def.modelAssignments || {}, departments: store.def.departments || [], policies: store.def.policies || {} });
+    for (const w of pre.warnings || []) console.log(`  warning: ${w}`);
+    for (const e of pre.errors || []) console.log(`  CONFIG ERROR: ${e}`);
+    if (!pre.ok) console.log(`  ${pre.errors.length} config error(s) above — the dashboard will load, but work will fail until they are fixed.`);
+  } catch (e) { console.log(`  config check skipped: ${e.message}`); }
   console.log(`BrainOutput Community dashboard → http://${HOST_IS_LOOPBACK ? "127.0.0.1" : HOST}:${PORT}`);
   if (ACCESS_TOKEN) console.log(`  access token required${SECURE_COOKIE ? " · cookie marked Secure (behind TLS)" : ""}`);
 });
@@ -1020,10 +1076,10 @@ const VIEWS={
   api('/api/detect').then(r=>{document.getElementById('det').textContent=r.detected.length?('Detected '+r.detected.length+' local model(s).'):'No local model detected — start ollama or connect a model.'});
   d.querySelector('#ct').innerHTML='<tr><th>Connection</th><th>Provider / Model</th><th>Pays</th></tr>'+(s.connections||[]).map(c=>'<tr><td>'+c.id+'</td><td>'+c.provider+' / '+c.model+'</td><td class=ok>'+fmtCost(c.costSource)+'</td></tr>').join('');
   api('/api/runtimes').then(r=>{document.getElementById('rt').innerHTML=r.cards.map(runtimeCardHtml).join('')});return d},
- company:()=>{const d=el('<div class=card><h2>2 · Company & departments</h2><label>What does your company do?</label><input id=cd placeholder="e.g. a small software product studio"><label>Departments</label><div id=dep></div><button class=act style="margin-top:12px" id=go>Generate organization</button><div id=msg class=mut style="margin-top:8px"></div></div>');
+ company:()=>{const d=el('<div class=card><h2>2 · Company &amp; departments</h2><label>Company name</label><input id=cn placeholder="e.g. Meridian Group"><label style="margin-top:8px;display:block">What does your company do?</label><input id=cd placeholder="e.g. a small software product studio"><label>Departments</label><div id=dep></div><button class=act style="margin-top:12px" id=go>Generate organization</button><div id=msg class=mut style="margin-top:8px"></div></div>');
   const deps=['technical','customer-service','finance','sales','marketing','human-resources','legal-compliance','operations','data-research','executive'];
   d.querySelector('#dep').innerHTML=deps.map(x=>'<label style="display:inline-block;margin-right:12px;color:var(--fg)"><input type=checkbox value="'+x+'" '+(['technical','customer-service','finance'].includes(x)?'checked':'')+' style="width:auto"> '+x+'</label>').join('');
-  d.querySelector('#go').onclick=async()=>{const departments=[...d.querySelectorAll('#dep input:checked')].map(i=>i.value);d.querySelector('#msg').textContent='generating…';await api('/api/onboard',{companyDoes:d.querySelector('#cd').value,departments});await refresh();S.tab='org';render()};return d},
+  d.querySelector('#go').onclick=async()=>{const departments=[...d.querySelectorAll('#dep input:checked')].map(i=>i.value);const companyName=(d.querySelector('#cn')||{}).value||'';d.querySelector('#msg').textContent='generating…';await api('/api/onboard',{companyName,companyDoes:d.querySelector('#cd').value,departments});await refresh();S.tab='org';render()};return d},
  org:(s)=>el('<div class=card><h2>3 · Generated organization (dormant)</h2><table><tr><th>Agent</th><th>Department</th><th>Role</th><th>Capability slots</th></tr>'+(s.agents||[]).map(a=>'<tr><td>'+a.id+'</td><td>'+a.department+'</td><td>'+a.role+'</td><td class=mut>'+Object.entries(a.capabilities||{}).map(([r,sl])=>r+'→'+sl).join(', ')+'</td></tr>').join('')+'</table><div class=mut style="margin-top:8px">Roles persist; execution context is created only when work exists.</div></div>'),
  assign:(s)=>{const slots=[...new Set((s.agents||[]).flatMap(a=>Object.values(a.capabilities||{})))];const d=el('<div class=card><h2>4 · Model assignment editor</h2><div class=mut>Every slot maps to a user/free/local model. Change any of them.</div><table id=at></table></div>');
   d.querySelector('#at').innerHTML='<tr><th>Capability slot</th><th>Assigned model</th><th>Pays</th></tr>'+slots.map(sl=>{const cid=s.assignments[sl];const conn=(s.connections||[]).find(c=>c.id===cid);const opts=(s.connections||[]).map(c=>'<option value="'+c.id+'" '+(c.id===cid?'selected':'')+'>'+c.provider+'/'+c.model+'</option>').join('');return '<tr><td>'+sl+'</td><td><select data-slot="'+sl+'"><option value="">— unconfigured —</option>'+opts+'</select></td><td class=ok>'+(conn?fmtCost(conn.costSource):'<span class=warn>offer free/BYOK/local/stop</span>')+'</td></tr>'}).join('');

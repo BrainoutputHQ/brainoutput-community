@@ -97,7 +97,17 @@ test("mission lifecycle: edit only as draft, approve requires objective+departme
   assert.equal(validateMissionSpec(spec).ok, true);
   const approved = approveMission(spec);
   assert.equal(approved.status, "approved");
-  assert.throws(() => editMissionSpec(approved, { objective: "x" }), /only a draft can be edited/);
+  // An approved mission CAN be edited — a failed launch leaves a mission there, and refusing made
+  // it permanently unusable. Editing returns it to draft so the old approval is never reused for
+  // changed work.
+  const reopened = editMissionSpec(approved, { objective: "x" });
+  assert.equal(reopened.status, "draft");
+  assert.equal(reopened.approvedBy, null);
+  assert.equal(reopened.objective, "x");
+  // A rejected or completed mission still cannot be edited.
+  assert.throws(() => editMissionSpec({ ...approved, status: "rejected" }, { objective: "x" }), /only draft, approved, failed/);
+  // And an unknown patch key is now an error rather than a silent no-op.
+  assert.throws(() => editMissionSpec(spec, { agent: "a-analyst" }), /unknown field\(s\) in patch: agent/);
   assert.equal(rejectMission(spec, { reason: "wrong scope" }).status, "rejected");
   const bad = { ...spec, objective: "", status: "draft" };
   assert.throws(() => approveMission(bad), /objective is required/);
@@ -124,7 +134,9 @@ test("composer shows the pre-flight summary with provider/cost per stage — and
   });
   assert.equal(view.stages[0].provider, "ollama");
   assert.equal(view.stages[0].costSource, "local-compute");
-  assert.deepEqual(view.actions, ["edit", "approve-and-launch", "save-as-workflow", "cancel"]);
+  // The composer must advertise the action values /api/chat/mission ACCEPTS. It used to list
+  // "approve-and-launch" and "save-as-workflow", both of which the endpoint rejects with a 400.
+  assert.deepEqual(view.actions, ["edit", "approve", "reject", "cancel", "save-workflow"]);
   assert.deepEqual(view.stagesSkipped, ["planner", "reviewer"]);
   assert.equal(JSON.stringify(view).includes("BrainOutput-funded"), false); // internal policy, never shown
 });
