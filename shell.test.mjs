@@ -218,6 +218,27 @@ test("a model that only asks for clarification does NOT get a 'Mission complete'
   assert.equal(ex.status, "failed");
 });
 
+test("routines: add, toggle, run-now posts into its thread", async () => {
+  const add = await post("/api/routine/add", { kind: "daily-digest" });
+  assert.equal(add.status, 200, JSON.stringify(add.body).slice(0, 300));
+  const r = add.body.routine;
+  assert.equal(r.enabled, true);
+  const tog = await post("/api/routine/toggle", { id: r.id });
+  assert.equal(tog.body.routines.find((x) => x.id === r.id).enabled, false);
+  await post("/api/routine/toggle", { id: r.id });
+  await post("/api/routine/run-now", { id: r.id });
+  const conv = await until(async () => {
+    const st = await state();
+    const c = (st.conversations || []).find((x) => x.title === "Today");
+    return c?.messages?.length ? c : null;
+  });
+  assert.match(conv.messages.at(-1).text, /digest/i);
+  // next run advanced — a fired routine never double-fires
+  const st = await state();
+  const after = st.routines.find((x) => x.id === r.id);
+  assert.ok(after.nextRunAt > Date.now());
+});
+
 test("a build request in ASK mode auto-drafts a mission — the user never thinks about modes", async () => {
   const send = await post("/api/chat/send", { scope: "company", mode: "ask", text: "crée-moi un jeu snake en html" });
   assert.equal(send.status, 200, JSON.stringify(send.body));

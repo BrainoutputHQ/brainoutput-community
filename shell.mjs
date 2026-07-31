@@ -405,6 +405,25 @@ function workView(){
  }
  wrap.appendChild(sc);
 
+ // Routines: scheduled work (regulation watch, daily digest) — the company moves on its own.
+ const ro=el('<div class="cardx"><h3>'+esc(t('work.routines'))+'</h3></div>');
+ (s.routines||[]).forEach(r=>{
+  const row=el('<div style="display:flex;gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid var(--line);font-size:13px">'
+   +'<span>'+(r.enabled?'●':'○')+' '+esc(r.name)+'</span>'
+   +'<span class=mut style="font-size:12px">'+esc(t('work.nextRun'))+': '+(r.nextRunAt?new Date(r.nextRunAt).toLocaleString():'—')+'</span>'
+   +'<button class=ghost style="margin-left:auto;padding:3px 10px;font-size:12px" data-t>'+(r.enabled?'⏸':'▶')+'</button>'
+   +'<button class=ghost style="padding:3px 10px;font-size:12px" data-r>'+esc(t('work.runNow'))+'</button></div>');
+  row.querySelector('[data-t]').onclick=async()=>{await api('/api/routine/toggle',{id:r.id});await refresh()};
+  row.querySelector('[data-r]').onclick=async()=>{await api('/api/routine/run-now',{id:r.id});setTimeout(refresh,2500)};
+  ro.appendChild(row)});
+ const has=k=>(s.routines||[]).some(r=>r.kind===k);
+ const adds=el('<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">'
+  +(has('regulation-watch')?'':'<button class=ghost data-add="regulation-watch">+ '+esc(t('work.addRegulation'))+'</button>')
+  +(has('daily-digest')?'':'<button class=ghost data-add="daily-digest">+ '+esc(t('work.addDigest'))+'</button>')+'</div>');
+ adds.querySelectorAll('[data-add]').forEach(b=>b.onclick=async()=>{const r=await api('/api/routine/add',{kind:b.dataset.add});if(r.error){alert(r.error);return}await refresh()});
+ ro.appendChild(adds);
+ wrap.appendChild(ro);
+
  // One search over mail + documents.
  if(T){
   const se=el('<div class="cardx"><h3>'+esc(t('work.search'))+'</h3>'
@@ -425,6 +444,22 @@ function workView(){
  return wrap;
 }
 
+// ── tour: first use + on new versions — what the product IS (Alter, projects, work) ──────
+const TOUR_V=1;
+function tourSeen(){try{return Number(localStorage.getItem('bo_tour_v'))>=TOUR_V}catch{return true}}
+function tourCard(){
+ const step=S.tourStep||0;
+ const keys=['tour.1','tour.2','tour.3','tour.4','tour.5'];
+ const d=el('<div class="cardx" style="border-color:var(--acc)"><h3>'+esc(t('tour.title'))+' · '+(step+1)+'/'+keys.length+'</h3>'
+  +'<div style="font-size:14px;white-space:pre-wrap">'+esc(t(keys[step]))+'</div>'
+  +'<div style="margin-top:12px"><button class=act id="tn">'+(step<keys.length-1?esc(t('tour.next')):esc(t('tour.done')))+'</button> '
+  +'<button class=ghost id="ts">'+esc(t('tour.skip'))+'</button></div></div>');
+ const finish=()=>{try{localStorage.setItem('bo_tour_v',String(TOUR_V))}catch{} S.tourStep=null;render()};
+ d.querySelector('#tn').onclick=()=>{if(step<keys.length-1){S.tourStep=step+1;render()}else finish()};
+ d.querySelector('#ts').onclick=finish;
+ return d;
+}
+
 // ── thread ───────────────────────────────────────────────────────────────────
 function bubble(m){
  const arts=(m.meta&&m.meta.artifacts)||[];
@@ -439,6 +474,7 @@ function thread(){
  const s=S.state||{};const box=document.getElementById('msgs');box.innerHTML='';
  if(S.view==='models'){box.appendChild(modelsView());return}
  if(S.view==='work'){box.appendChild(workView());return}
+ if(!tourSeen())box.appendChild(tourCard());
  const conv=(s.conversations||[]).find(c=>c.id===S.convId);
  if(!conv){
   const proj=S.projectId?(s.projects||[]).find(p=>p.id===S.projectId):null;

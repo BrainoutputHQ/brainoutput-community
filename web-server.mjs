@@ -37,6 +37,7 @@ import { newProject, listProjects, promoteConversation } from "./projects.mjs";
 import { newTask, newSubtask, setTaskStatus, reportMissionToTask } from "./tasks.mjs";
 import { pickFreeModel, freeConnection, FREE_PRIVACY_NOTE } from "./free-models.mjs";
 import { t as i18nT } from "./i18n.mjs";
+import { newRoutine, isDue, markFired, parseFeed, unseenItems, ROUTINE_TEMPLATES } from "./routines.mjs";
 /** Server-side chat strings in the user's locale (settings.locale). */
 const tChat = (key) => i18nT(store.def.settings?.locale || "en", key);
 
@@ -266,6 +267,25 @@ async function api(req, res, url) {
     store.setConnections(connections).setAssignments(assignments).saveDefinition();
     return json(res, { ...publicState(), picked: { model: pick.model, provider: conn.provider, costSource: "free", toolSupport: pick.toolSupport },
       tried: pick.tried, upgradedSlots: fillSlots.filter((s) => existing[s]), privacyNote: FREE_PRIVACY_NOTE });
+  }
+  if (url.pathname === "/api/routine/add") {
+    try {
+      const r = newRoutine({ kind: b.kind, at: Date.now() });
+      store.addRoutine(r); store.saveRuntime();
+      return json(res, { ...publicState(), routine: r });
+    } catch (e) { return json(res, { error: e.message }, 400); }
+  }
+  if (url.pathname === "/api/routine/toggle") {
+    const r = (store.runtime.routines || []).find((x) => x.id === b.id);
+    if (!r) return json(res, { error: `no routine '${b.id}'` }, 404);
+    store.addRoutine({ ...r, enabled: !r.enabled }); store.saveRuntime();
+    return json(res, publicState());
+  }
+  if (url.pathname === "/api/routine/run-now") {
+    const r = (store.runtime.routines || []).find((x) => x.id === b.id);
+    if (!r) return json(res, { error: `no routine '${b.id}'` }, 404);
+    runRoutine({ ...r, nextRunAt: Date.now() - 1 }).catch((e) => console.error(`routine ${r.id}: ${e.message}`));
+    return json(res, { started: true });
   }
   if (url.pathname === "/api/upload") {
     // Attach a file to the chat: stored beside the runtime (0600), recorded as an artifact the
@@ -936,6 +956,109 @@ async function chatLaunch(res, b) {
   return json(res, { started: true, mission: { ...m, status: "running" }, execution: exec });
 }
 
+// ── Routines: a dumb clock firing DEFINED work (D6-7 — never agent heartbeats) ──────────────
+/** Find or create the ad-hoc thread a routine reports into. */
+function routineThread(title) {
+  let conv = (store.runtime.conversations || []).find((c) => c.title === title && !c.projectId);
+  if (!conv) {
+    conv = newConversation({ scope: "company", title });
+    saveConversation(conv);
+  }
+  return conv;
+}
+function routinePost(title, text, meta = {}) {
+  const conv = routineThread(title);
+  saveConversation(addMessage(conv, { role: "assistant", mode: "execute", at: Date.now(), text, meta }));
+}
+
+/** The daily digest, built deterministically from the twin's own data (no model needed). */
+function buildDailyDigest() {
+  const t = twins()[0];
+  if (!t) return { ok: false, note: "no Work Twin yet — connect your sources in Work" };
+  const now = Date.now();
+  const dayStart = new Date(); dayStart.setHours(0, 0, 0, 0);
+  const todayEvents = (t.events || []).filter((e) => {
+    const ts = Date.parse(e.start || e.date || "");
+    return ts >= dayStart.getTime() && ts < dayStart.getTime() + 86400000;
+  });
+  const unread = prioritySummary(t, { now }).slice(0, 5);
+  const waiting = unansweredThreads(t, { now, olderThanHours: 24 }).slice(0, 5);
+  const followUps = followUpSuggestions(t, { now, olderThanHours: 48 }).slice(0, 4);
+  const lines = [`☀ Daily digest — ${new Date().toDateString()}`];
+  lines.push(`\nMeetings today: ${todayEvents.length ? "" : "none"}`);
+  for (const e of todayEvents) lines.push(`  • ${e.title || e.summary || "(event)"}${e.start ? ` — ${String(e.start).slice(11, 16)}` : ""}`);
+  lines.push(`\nPriority mail: ${unread.length ? "" : "nothing unread"}`);
+  for (const m of unread) lines.push(`  • ${m.subject} — ${m.from}${m.reasons?.length ? ` [${m.reasons.join(", ")}]` : ""}`);
+  lines.push(`\nWaiting on you: ${waiting.length ? "" : "nobody"}`);
+  for (const m of waiting) lines.push(`  • ${m.subject} — ${m.from}${m.waitingHours != null ? ` (${m.waitingHours}h)` : ""}`);
+  if (followUps.length) { lines.push(`\nFollow-ups:`); for (const f of followUps) lines.push(`  • ${f.kind}: ${f.subject || f.text}`); }
+  if (!(t.accounts || []).length) lines.push(`\n💡 Connect your mail/calendar/drive in Work to make this digest real.`);
+  return { ok: true, text: lines.join("\n") };
+}
+
+async function fetchFeed(url) {
+  const r = await fetch(url, { signal: AbortSignal.timeout(12000), headers: { "User-Agent": "BrainOutput-CE/routines" } });
+  if (!r.ok) throw new Error(`feed ${url} → HTTP ${r.status}`);
+  return r.text();
+}
+
+async function runRoutine(routine) {
+  // Mark fired FIRST (persisted) so a crash never double-fires.
+  store.addRoutine(markFired(routine, { at: Date.now() }));
+  store.saveRuntime();
+  if (routine.kind === "daily-digest") {
+    const d = buildDailyDigest();
+    routinePost("Today", d.ok ? d.text : `Daily digest skipped: ${d.note}`);
+    return;
+  }
+  if (routine.kind === "regulation-watch") {
+    let items = [];
+    const errors = [];
+    for (const url of routine.config?.feeds || []) {
+      try { items.push(...parseFeed(await fetchFeed(url))); }
+      catch (e) { errors.push(e.message); }
+    }
+    const fresh = unseenItems(routine, items);
+    const seen = new Set(routine.config?.seen || []);
+    for (const i of fresh) seen.add(i.guid);
+    store.addRoutine({ ...store.runtime.routines.find((x) => x.id === routine.id), config: { ...(routine.config || {}), seen: [...seen].slice(-500) } });
+    store.saveRuntime();
+    if (!fresh.length) {
+      if (errors.length) routinePost("Regulation watch", `⚠ feed issue: ${errors.join("; ")}`);
+      return;   // nothing new → nothing posted (no noise)
+    }
+    const list = fresh.slice(0, 8).map((i) => `• ${i.title}${i.date ? ` (${i.date})` : ""} — ${i.link}`).join("\n");
+    const dept = routine.department || (store.def.departments || [])[0] || "legal-compliance";
+    const prompt = `${routine.objective}\n\nNew items:\n${list}`;
+    try {
+      const r = routeTask({ department: dept, task: { summary: "regulation watch", tags: ["regulation"] } }, ctx());
+      if (!r.ok) return routinePost("Regulation watch", `New items found but no agent can assess them: ${r.reason}\n\n${list}`);
+      const results = await executePlan(r.plan, { _all: { prompt } }, { maxTokens: 900, timeoutMs: 120000, boundPolicies: r.boundPolicies });
+      const text = results.map((x) => x.output).filter(Boolean).join("\n").slice(0, 2500);
+      routinePost("Regulation watch", `📜 ${fresh.length} new item(s):\n${list}\n\n${text || "(no assessment produced)"}`, { citations: fresh.map((i) => i.link).filter(Boolean).slice(0, 5) });
+    } catch (e) { routinePost("Regulation watch", `New items found but the assessment failed: ${e.message}\n\n${list}`); }
+    return;
+  }
+  // custom: objective → smallest graph → report
+  const dept = routine.department || (store.def.departments || [])[0];
+  const r = routeTask({ department: dept, task: { summary: routine.objective, tags: ["routine"] } }, ctx());
+  if (!r.ok) return routinePost(routine.name, `Routine could not run: ${r.reason}`);
+  try {
+    const results = await executePlan(r.plan, { _all: { prompt: routine.objective } }, { maxTokens: 900, timeoutMs: 120000, boundPolicies: r.boundPolicies });
+    routinePost(routine.name, results.map((x) => x.output).filter(Boolean).join("\n").slice(0, 2500) || "(no output)");
+  } catch (e) { routinePost(routine.name, `Routine failed: ${e.message}`); }
+}
+
+let routineTimer = null;
+function startScheduler() {
+  if (routineTimer) return;
+  routineTimer = setInterval(() => {
+    for (const r of (store.runtime.routines || []).filter((x) => isDue(x)))
+      runRoutine(r).catch((e) => console.error(`routine ${r.id}: ${e.message}`));
+  }, 60_000);
+  routineTimer.unref();
+}
+
 function publicState() {
   const funded = store.runtime.executions.reduce((s, e) => s + (e.brainoutputFundedTokens || 0), 0);
   return { recovered: store.recovered || null, company: store.def.company, settings: store.def.settings || { mode: "regular" }, departments: store.def.departments, agents: store.def.agents,
@@ -943,6 +1066,7 @@ function publicState() {
     agentViews: store.def.agents.map((a) => renderAgentView(a, store.def.modelAssignments, store.def.modelConnections)),
     tasks: store.runtime.tasks, executions: store.runtime.executions, approvals: store.runtime.approvals,
     artifacts: store.runtime.artifacts || [],
+    routines: store.runtime.routines || [],
     conversations: store.runtime.conversations || [], missions: store.runtime.missions || [],
     projects: listProjects(store.runtime),
     workTwins: (store.runtime.workTwins || []).map(publicTwin),
@@ -1035,6 +1159,7 @@ server.listen(PORT, HOST, () => {
   } catch (e) { console.log(`  config check skipped: ${e.message}`); }
   console.log(`BrainOutput Community dashboard → http://${HOST_IS_LOOPBACK ? "127.0.0.1" : HOST}:${PORT}`);
   if (ACCESS_TOKEN) console.log(`  access token required${SECURE_COOKIE ? " · cookie marked Secure (behind TLS)" : ""}`);
+  startScheduler();
 });
 
 const LOGIN_PAGE = `<!doctype html><html><head><meta charset=utf-8><title>BrainOutput — sign in</title>
