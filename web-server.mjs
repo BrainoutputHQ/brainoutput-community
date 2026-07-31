@@ -38,6 +38,7 @@ import { newTask, newSubtask, setTaskStatus, reportMissionToTask } from "./tasks
 import { pickFreeModel, freeConnection, FREE_PRIVACY_NOTE } from "./free-models.mjs";
 import { t as i18nT } from "./i18n.mjs";
 import { newRoutine, isDue, markFired, parseFeed, unseenItems, ROUTINE_TEMPLATES } from "./routines.mjs";
+import { buildPdf } from "./pdf.mjs";
 /** Server-side chat strings in the user's locale (settings.locale). */
 const tChat = (key) => i18nT(store.def.settings?.locale || "en", key);
 
@@ -150,6 +151,18 @@ function guardRequest(req, url) {
 async function api(req, res, url) {
   const refusal = guardRequest(req, url);
   if (refusal) return json(res, { error: refusal.error }, refusal.code);
+  if (url.pathname === "/api/artifact/download") {
+    // Serve a produced/uploaded file. Path stays inside the store, server-generated records only.
+    const art = (store.runtime.artifacts || []).find((a) => a.id === url.searchParams.get("id"));
+    if (!art || !art.path || art.path.includes("..")) return json(res, { error: "not found" }, 404);
+    try {
+      const buf = readFileSync(join(store.dir, art.path));
+      res.writeHead(200, { "Content-Type": art.mime || "application/octet-stream",
+        "Content-Disposition": `attachment; filename="${String(art.name || "file").replace(/"/g, "")}"`,
+        "Content-Length": buf.length });
+      return res.end(buf);
+    } catch { return json(res, { error: "file missing on disk" }, 410); }
+  }
   if (url.pathname === "/api/state") return json(res, publicState());
   if (url.pathname === "/api/detect") return json(res, { detected: await detectLocal() });
   if (url.pathname === "/api/runtimes") {
@@ -893,8 +906,16 @@ async function chatLaunch(res, b) {
     results: [], logs: [], status: "running", createdAt: Date.now() });
   store.saveRuntime();
 
-  const prompt = `${m.objective}\n\nConstraints: ${(m.constraints || []).join("; ") || "none"}\nAcceptance: ${(m.acceptanceCriteria || []).join("; ") || "none"}\n\nDo not ask for clarification. Make reasonable assumptions (state them in one line), then produce the COMPLETE deliverable — the full file or content itself, not a description or plan of it.`;
+  // The executor receives the compact mission context — never the transcript.
   const conv = getConversation(m.conversationId);
+  // File deliverables get a real-file protocol: the model outputs a spec, we render the file
+  // deterministically (pdf.mjs) — never "code that could make the file" as the deliverable.
+  const wantsFile = /pdf|document|brochure|catalog|flyer/i.test(m.objective || "");
+  const uploadNames = (store.runtime.artifacts || []).filter((a) => a.kind === "upload" && /\.jpe?g$/i.test(a.name)).map((a) => a.name);
+  const fileInstruction = wantsFile
+    ? `\n\nThe deliverable is a DOCUMENT. Output ONLY a fenced file spec, nothing else:\n\`\`\`file:spec.json\n{"title":"…","pages":[{"heading":"…","lines":["…","…"],"images":["uploaded-file-name.jpg"]}]}\n\`\`\`\nAvailable uploaded images you may embed: ${uploadNames.join(", ") || "(none — leave images out)"}.`
+    : "";
+  const prompt = `${m.objective}\n\nConstraints: ${(m.constraints || []).join("; ") || "none"}\nAcceptance: ${(m.acceptanceCriteria || []).join("; ") || "none"}\n\nDo not ask for clarification. Make reasonable assumptions (state them in one line), then produce the COMPLETE deliverable — the full file or content itself, not a description or plan of it.${fileInstruction}`;
   const run = async () => {
     const updateExec = (patch) => { store.addExecution({ ...exec, ...patch }); store.saveRuntime(); };
     const onNodeDone = (result, i) => {
@@ -932,6 +953,22 @@ async function chatLaunch(res, b) {
 
     const rep = costReport(results);
     const eff = efficiencyReport({ plan: r.plan, results, shape: r.shape });
+    // A file spec becomes a REAL FILE here (never "code that could make one" as the deliverable).
+    const outText = results.map((x) => x.output || "").join("\n");
+    const specMatch = outText.match(/```file:spec\.json\s*([\s\S]*?)```/);
+    if (specMatch) {
+      try {
+        const spec = JSON.parse(specMatch[1]);
+        const { pdf, skippedImages } = buildPdf(spec, { imagesDir: join(store.dir, "uploads") });
+        const fname = `${(spec.title || "document").replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 40) || "document"}.pdf`;
+        mkdirSync(join(store.dir, "files"), { recursive: true, mode: 0o700 });
+        const rel = join("files", `${exec.id}-${fname}`);
+        writeFileSync(join(store.dir, rel), pdf, { mode: 0o600 });
+        store.addArtifact({ id: uid("file"), kind: "file", name: fname, path: rel, size: pdf.length,
+          mime: "application/pdf", executionId: exec.id, projectId: m.projectId || null, createdAt: Date.now() });
+        eff.artifacts.push(`file:${fname}${skippedImages.length ? ` (skipped non-JPEG: ${skippedImages.join(", ")})` : ""}`);
+      } catch (e) { eff.artifacts.push(`file-spec-error: ${String(e.message || e).slice(0, 120)}`); }
+    }
     updateExec({ results, costBySource: rep.byCostSource, efficiency: eff, status: "done",
       logs: results.flatMap((x) => x.logs || (x.output ? [String(x.output)] : [])) });
     const gates = r.plan.filter((n) => n.gate);

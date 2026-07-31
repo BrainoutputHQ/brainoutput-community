@@ -27,6 +27,8 @@ before(async () => {
         return res.end(JSON.stringify({ choices: [{ message: { content: "" }, finish_reason: "length" }] }));
       if (d.includes("CLARIFY-NOW"))
         return res.end(JSON.stringify({ choices: [{ message: { content: "You haven't provided any context for me to analyze. Could you please clarify?" } }] }));
+      if (d.includes("PDF-SPEC"))
+        return res.end(JSON.stringify({ choices: [{ message: { content: "```file:spec.json\n" + JSON.stringify({ title: "Hotel Soleil — pictures", pages: [{ heading: "The hotel", lines: ["A real hotel brochure, generated as a real PDF file by the runtime — not as code that could make one. ".repeat(2)], images: [] }] }) + "\n```" } }] }));
       res.end(JSON.stringify({ choices: [{ message: { content: "ok — done. " + "Real work output follows: ".repeat(8) } }] })); });
   });
   await new Promise((r) => zenStub.listen(0, "127.0.0.1", r));
@@ -237,6 +239,28 @@ test("routines: add, toggle, run-now posts into its thread", async () => {
   const st = await state();
   const after = st.routines.find((x) => x.id === r.id);
   assert.ok(after.nextRunAt > Date.now());
+});
+
+test("a PDF mission produces a REAL downloadable PDF — never 'code that could make one'", async () => {
+  const plan = await post("/api/chat/send", { scope: "department", department: "technical", mode: "plan", text: "create a PDF-SPEC brochure for the hotel" });
+  const m = plan.body.mission;
+  assert.ok(m);
+  await post("/api/chat/mission", { missionId: m.id, action: "approve" });
+  await post("/api/chat/launch", { missionId: m.id, timeoutMs: 20000 });
+  const st = await until(async () => {
+    const s = await state();
+    return (s.artifacts || []).find((a) => a.kind === "file") ? s : null;
+  });
+  const art = st.artifacts.find((a) => a.kind === "file");
+  assert.match(art.name, /\.pdf$/);
+  assert.equal(art.mime, "application/pdf");
+  const dl = await fetch(`${BASE}/api/artifact/download?id=${art.id}`);
+  assert.equal(dl.status, 200);
+  assert.match(dl.headers.get("content-type"), /application\/pdf/);
+  const buf = Buffer.from(await dl.arrayBuffer());
+  assert.equal(buf.subarray(0, 5).toString(), "%PDF-");
+  const ghost = await fetch(`${BASE}/api/artifact/download?id=nope`);
+  assert.equal(ghost.status, 404);
 });
 
 test("a build request in ASK mode auto-drafts a mission — the user never thinks about modes", async () => {
