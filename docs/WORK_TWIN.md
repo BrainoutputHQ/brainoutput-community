@@ -1,4 +1,6 @@
-# Work Twin
+# Work Twin — the "Alter"
+
+> Customer-facing name: **Alter** (per-employee agent). This document uses the original term; they are the same thing.
 
 A **Work Twin** is a dedicated agent bound to **one human employee** and that person's authorized
 workplace context. It is distinct from a departmental agent: it represents a *person*, not a function.

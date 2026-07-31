@@ -26,12 +26,21 @@ own, free, or local — you always see who pays for each model, and your keys ne
   **policies bound to that work** (loaded by department/tag, not the worker's raw instructions); a
   human is pulled in **only when the reviewer can't clear it**, with a decision-ready brief. Money
   movement and deploys always gate. See **[REVIEW_AND_APPROVAL.md](docs/REVIEW_AND_APPROVAL.md)**.
-- **Setup once, then just work.** A fresh install walks the four setup steps in order; after that the
-  product is **Chat · Work Twin · Work**, with everything configurable tucked into **Settings**.
-- **Talk to it.** A Command Center chat: speak to the company, a department, one agent, or your own
-  **Work Twin**; plan a mission, approve it, watch it run — the transcript never leaves your machine.
-- **A Work Twin per person** — read‑only by default, drafts you review, and nothing sent without an
-  explicit grant *and* your approval.
+- **Onboarding IS a conversation.** First run is a chat: it asks what your company does, detects or
+  connects models (one click for **free OpenCode models**, health-checked and speed/tool-probed), and
+  builds your team — no wizard. en / fr / de from day one.
+- **A chat-native shell.** Projects in the sidebar, everything else is a message: missions, approvals,
+  run cards (live, streaming), and real files — HTML previews and **generated PDFs** you download with
+  one click. Ask for work in plain words ("crée-moi…", "build…") and it drafts the mission for you.
+- **Projects that remember.** Each project keeps its conversations, tasks (with subtasks) and results
+  together; missions report **into** tasks, and a worker never starts cold — it gets the project's
+  compact brief. Ask across projects; the knowledge base carries them.
+- **Async by design.** Launches never block the chat: missions run in the background with a live run
+  view and a working dot on the project — work that takes minutes or days stays watchable, not blocking.
+- **Your Alter (Work Twin) per person** — read‑only by default, drafts you review, and nothing sent
+  without an explicit grant *and* your approval.
+- **Routines, not heartbeats.** A daily digest (meetings, priority mail, waiting-on-you) and a
+  regulation watch (RSS diff → assessment) run on a schedule you see and control — never on hidden loops.
 - **Zero‑dependency Node ESM.** Requires only **Node ≥ 18**.
 
 ## Quick start
@@ -39,12 +48,13 @@ own, free, or local — you always see who pays for each model, and your keys ne
 ```bash
 git clone https://github.com/BrainoutputHQ/brainoutput-community.git
 cd brainoutput-community
-node bo-community.mjs setup      # loads a starter company (agents dormant)
-node bo-community.mjs serve      # dashboard → http://127.0.0.1:4177
+node bo-community.mjs serve      # the shell → http://127.0.0.1:4177
 ```
 
-A fresh install opens the four setup steps in order. **Nothing above needs a model** — and if you have
-none yet, two walkthroughs still run today:
+The first screen **is** the setup — a conversation that detects your models (or connects **free
+OpenCode models** in one click), asks what your company does, and builds your team. Then: projects in
+the sidebar, ad-hoc chats you promote with one click, missions you approve, results you open.
+**Nothing above needs a model** — and if you have none yet, two walkthroughs still run today:
 
 ```bash
 node bo-community.mjs twin-demo   # the whole Work Twin story on imported mail — no model, no account
@@ -114,7 +124,7 @@ on a public interface without an access token.
 
 ## Work Twin (`worktwin.mjs`)
 
-A **Work Twin** is a dedicated agent for **one employee** and their authorized work context — distinct
+An **Alter (Work Twin)** is a dedicated agent for **one employee** and their authorized work context — distinct
 from a departmental agent. Three modes: **Mirror** (read/search/summarize, the default) · **Copilot**
 (prepares drafts, never sends) · **Delegate** (executes explicitly granted actions, with approvals).
 It connects to **mail** (IMAP/SMTP · Maildir · mbox · JSON · Google Workspace · Microsoft 365),
@@ -123,7 +133,7 @@ Google Drive · OneDrive · SharePoint) and **financial accounts** (Plaid · Coi
 only, unless you grant and approve each value-moving action), and it never treats your mailbox as context: it indexes headers plus a snippet and
 retrieves only what a request needs, with sources. **No silent impersonation** — every draft is
 attributed and every action is audited (who · on whose behalf · which model · which permission · which
-approval · which sources). See **[docs/WORK_TWIN.md](docs/WORK_TWIN.md)**.
+approval · which sources). See **[docs/WORK_TWIN.md](docs/WORK_TWIN.md)** (the Alter).
 
 ## Connectors & playbooks (`connectors.mjs` · `playbooks.mjs`)
 
@@ -143,15 +153,16 @@ with retention and a strict read≠draft≠send separation (`rag.mjs`).
 ## Commands
 
 ```bash
-node bo-community.mjs setup      # load the starter company
-node bo-community.mjs serve      # web dashboard
-node bo-community.mjs onboard             # Regular onboarding (free-model first)
-node bo-community.mjs onboard --advanced  # Advanced: per-stage models, fallbacks, limits, permissions
-node bo-community.mjs onboard --example   # the mixed-runtime example (Claude Code · Codex · local · free)
+node bo-community.mjs serve      # the chat-native shell → http://127.0.0.1:4177
+node bo-community.mjs setup      # load the starter company (agents dormant)
+node bo-community.mjs ask "why can't I reach the printer?"   # ad-hoc ask from the CLI → lands in the shell
+node bo-community.mjs onboard             # CLI onboarding (free-model first)
+node bo-community.mjs onboard --advanced  # CLI advanced: per-stage models, fallbacks, limits
 node bo-community.mjs demo       # run the sample workflows on your local models
 node bo-community.mjs playbook   # print the free open-source company playbook
-node bo-community.mjs twin-demo  # Work Twin walkthrough on imported mail (no account, no model)
+node bo-community.mjs twin-demo  # Alter walkthrough on imported mail (no account, no model)
 node bo-community.mjs write-demo # how an approved write actually happens (grant → approval → execute)
+node bo-e2e.mjs                  # END-TO-END battery against the real product (needs internet)
 npm test                         # node --test *.test.mjs  (zero-dep)
 npm run smoke:community-clean    # end-to-end clean-install smoke in a temp dir
 
@@ -172,7 +183,7 @@ unconfigured to show the no‑paid‑fallback path). Every run reports model / p
 
 ## Status
 
-**Alpha 0.5.0** — early but real; open source and free to run, self-host, or build on. See
+**Alpha 0.6.0** — early but real; open source and free to run, self-host, or build on. See
 **[SAFETY.md](SAFETY.md)**. Zero external dependencies; the test suite runs with `npm test`.
 
 ## License

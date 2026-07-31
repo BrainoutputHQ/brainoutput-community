@@ -34,7 +34,7 @@ The first screen **is** the setup — a conversation that detects your models, a
 company does, and builds your team (no wizard). From then on the shell is home: projects in
 the sidebar, ad-hoc threads you promote into projects with one click, missions/approvals as
 cards in the thread. en/fr/de in the footer; the advanced multi-tab dashboard stays at
-`/dashboard`. The header always shows **Runs on your own models.**
+`/dashboard` (internal surface). The header always shows **Runs on your own models.**
 
 From a terminal, ad-hoc questions work too — and land in the shell as threads:
 ```bash
@@ -49,7 +49,7 @@ Headless (runs all three against your local models, prints model/provider/cost s
 node bo-community.mjs demo
 ```
 
-Or in the dashboard (page 6, *New objective*):
+Or in the shell (Plan mode, *New objective*):
 
 **A · Technical project** — Department `technical`, objective:
 > *Add a `slugify(title)` function and a matching unit test.*
