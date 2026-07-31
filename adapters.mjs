@@ -33,9 +33,12 @@ export async function chatCompletion({ endpoint, model, apiKey, prompt, maxToken
         // this file already refuses for a missing model. Found against a real GB10.
         if (content == null || String(content).trim() === "") {
           const reasoned = String(msg.reasoning_content ?? "").trim().length;
+          const finish = j.choices?.[0]?.finish_reason;
           const why = reasoned
-            ? `it spent the whole ${maxTokens}-token budget on reasoning (${reasoned} chars) and had none left for an answer — raise maxTokens`
-            : `response: ${JSON.stringify(j).slice(0, 160)}`;
+            ? `it spent the whole ${maxTokens}-token budget on reasoning (${reasoned} chars) and had none left for an answer`
+            : finish === "length"
+              ? `it hit the ${maxTokens}-token output budget before writing anything (finish_reason=length) — a retry with a bigger budget may work`
+              : `response: ${JSON.stringify(j).slice(0, 160)}`;
           return reject(new Error(`model '${model}' returned no content — ${why}`));
         }
         const usage = j.usage || {};

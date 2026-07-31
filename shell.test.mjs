@@ -17,11 +17,15 @@ let srv, dir, zenStub, zenPort;
 before(async () => {
   dir = mkdtempSync(join(tmpdir(), "bo-shell-"));
   // A stub "OpenCode Zen" so /api/connect-free is tested without touching the real network.
+  // Bodies containing FLAKY-BUDGET get ONE empty-content/length answer, then recover.
   const { createServer } = await import("node:http");
+  let flakySeen = 0;
   zenStub = createServer((req, res) => {
     let d = ""; req.on("data", (c) => (d += c));
     req.on("end", () => { res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ choices: [{ message: { content: "ok" } }] })); });
+      if (d.includes("FLAKY-BUDGET") && flakySeen++ === 0)
+        return res.end(JSON.stringify({ choices: [{ message: { content: "" }, finish_reason: "length" }] }));
+      res.end(JSON.stringify({ choices: [{ message: { content: "ok — done" } }] })); });
   });
   await new Promise((r) => zenStub.listen(0, "127.0.0.1", r));
   zenPort = zenStub.address().port;
@@ -136,6 +140,16 @@ test("connect-free: health-checks candidates for real, connects the first health
     if (slot === survivor) assert.equal(r2.body.assignments[slot], before.assignments[slot], "local/BYOK choice still untouched");
     else assert.equal(r2.body.assignments[slot], conn2.id, `slot '${slot}' upgraded to the new pick`);
   }
+});
+
+test("a model that dies on the output budget gets ONE bigger-budget retry — and the thread says so", async () => {
+  const plan = await post("/api/chat/send", { scope: "department", department: "technical", mode: "plan", text: "build the FLAKY-BUDGET widget" });
+  const m = plan.body.mission;
+  assert.ok(m, JSON.stringify(plan.body).slice(0, 200));
+  await post("/api/chat/mission", { missionId: m.id, action: "approve" });
+  const launch = await post("/api/chat/launch", { missionId: m.id, timeoutMs: 20000 });
+  assert.equal(launch.status, 200, JSON.stringify(launch.body).slice(0, 300));
+  assert.match(launch.body.conversation.messages.at(-1).text, /retry with a bigger output budget/);
 });
 
 test("a build request in ASK mode auto-drafts a mission — the user never thinks about modes", async () => {

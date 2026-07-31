@@ -791,6 +791,23 @@ function chatMission(res, b) {
   return json(res, { mission: m, composer: missionComposer(m) });
 }
 
+/**
+ * A failed run must never leave a mission stuck mid-flight: record the failure, say so in the
+ * conversation (localized, no stale "Connections tab" guidance), and put the mission back to
+ * APPROVED so the user can retry or edit and re-approve.
+ */
+function launchFailed(res, m, spineTask, e) {
+  const msg = String(e.message || e);
+  const failed = { ...m, status: "approved", lastError: msg };
+  store.addMission(failed);
+  if (spineTask) store.addTask(reportMissionToTask(store.runtime, spineTask.id, { missionId: m.id, ok: false, summary: msg.slice(0, 200), at: Date.now() }));
+  const cf = getConversation(m.conversationId);
+  if (cf) saveConversation(addMessage(cf, { role: "assistant", mode: "execute", at: Date.now(),
+    text: tChat("chat.launchFailed").replace("{error}", msg.slice(0, 300)) }));
+  store.saveRuntime();
+  return json(res, { error: `execution failed: ${msg}`, mission: failed }, 500);
+}
+
 /** Execute an APPROVED mission through the existing direct executor — no management relay. */
 async function chatLaunch(res, b) {
   const m = (store.runtime.missions || []).find((x) => x.id === b.missionId);
@@ -813,18 +830,16 @@ async function chatLaunch(res, b) {
   const cc = conv ? compactContext(conv, { query: m.objective, k: 3 }) : { pinned: [], relevant: [] };
   const prompt = `${m.objective}\n\nConstraints: ${(m.constraints || []).join("; ") || "none"}\nAcceptance: ${(m.acceptanceCriteria || []).join("; ") || "none"}`;
   let results = [];
+  let retried = false;
   try { results = await executePlan(r.plan, { _all: { prompt } }, { maxTokens: b.maxTokens || 1500, boundPolicies: r.boundPolicies, task: m.task, timeoutMs: b.timeoutMs || 240000 }); }
   catch (e) {
-    // A failed run must never leave a mission stuck mid-flight: record the failure, say so in the
-    // conversation, and put the mission back to APPROVED so the user can retry or edit and re-approve.
-    const failed = { ...m, status: "approved", lastError: String(e.message || e) };
-    store.addMission(failed);
-    if (spineTask) store.addTask(reportMissionToTask(store.runtime, spineTask.id, { missionId: m.id, ok: false, summary: String(e.message || e).slice(0, 200), at: Date.now() }));
-    const cf = getConversation(m.conversationId);
-    if (cf) saveConversation(addMessage(cf, { role: "assistant", mode: "execute", at: Date.now(),
-      text: `Mission did not run: ${e.message}. Nothing was changed. Check the model connection (Connections tab) and launch again.` }));
-    store.saveRuntime();
-    return json(res, { error: `execution failed: ${e.message}`, mission: failed }, 500);
+    // One bounded retry when the model died on the OUTPUT BUDGET (empty content at
+    // finish_reason=length / budget spent reasoning) — the same model, double the budget.
+    // Not a fallback, never a different (let alone paid) model: just a bigger allowance.
+    if (!/no content|budget/i.test(String(e.message || e))) return launchFailed(res, m, spineTask, e);
+    retried = true;
+    try { results = await executePlan(r.plan, { _all: { prompt } }, { maxTokens: (b.maxTokens || 1500) * 2, boundPolicies: r.boundPolicies, task: m.task, timeoutMs: b.timeoutMs || 240000 }); }
+    catch (e2) { return launchFailed(res, m, spineTask, e2); }
   }
 
   const rep = costReport(results);
@@ -856,7 +871,7 @@ async function chatLaunch(res, b) {
 
   const review = reviewMission(done, results);
   let c2 = conv ? addMessage(conv, { role: "assistant", mode: "execute", at: Date.now(),
-    text: `Mission complete — graph ${eff.graph}${eff.stagesSkipped.length ? `, skipped ${eff.stagesSkipped.join(", ")}` : ""}. ${review.allMet ? "Acceptance criteria met." : review.unmet.length ? `Unmet: ${review.unmet.join("; ")}` : ""}`,
+    text: `Mission complete${retried ? " (after a retry with a bigger output budget)" : ""} — graph ${eff.graph}${eff.stagesSkipped.length ? `, skipped ${eff.stagesSkipped.join(", ")}` : ""}. ${review.allMet ? "Acceptance criteria met." : review.unmet.length ? `Unmet: ${review.unmet.join("; ")}` : ""}`,
     meta: { executionId: exec.id, efficiency: eff } }) : null;
   if (c2) saveConversation(c2);
   store.saveRuntime();
