@@ -39,7 +39,7 @@ import { pickFreeModel, freeConnection, FREE_PRIVACY_NOTE } from "./free-models.
 import { t as i18nT } from "./i18n.mjs";
 import { newRoutine, isDue, markFired, parseFeed, unseenItems, ROUTINE_TEMPLATES } from "./routines.mjs";
 import { buildPdf } from "./pdf.mjs";
-import { fetchSiteImages } from "./site-images.mjs";
+import { fetchSiteImages, urlFromMessages } from "./site-images.mjs";
 /** Server-side chat strings in the user's locale (settings.locale). */
 const tChat = (key) => i18nT(store.def.settings?.locale || "en", key);
 
@@ -942,22 +942,26 @@ async function chatLaunch(res, b) {
   const wantsFile = /pdf|document|brochure|catalog|flyer/i.test(m.objective || "");
   const conv = getConversation(m.conversationId);
   const run = async () => {
-    // Images: uploaded JPEGs first; else fetch from the project's or the company's website
-    // ("the chat knows where to get the pics from"). Registered as uploads for reuse.
+    // Images: uploaded JPEGs first; else fetch from the project's or the company's website —
+    // or a URL someone simply PASTED IN THE CHAT ("the chat knows where to get the pics").
+    // The page's text goes into the prompt too, so the document is about the REAL business,
+    // not invented hotels with a fake phone number.
     let imageNames = (store.runtime.artifacts || []).filter((a) => a.kind === "upload" && /\.jpe?g$/i.test(a.name)).map((a) => a.name);
+    let siteText = null;
     if (wantsFile && !imageNames.length) {
       const proj = m.projectId ? (store.runtime.projects || []).find((x) => x.id === m.projectId) : null;
-      const site = proj?.url || store.def.company?.website;
+      const site = proj?.url || store.def.company?.website || (conv ? urlFromMessages(conv.messages) : null);
       if (site) {
         try {
-          const got = await fetchSiteImages(site, { dir: join(store.dir, "uploads"), limit: 3 });
-          for (const g of got) store.addArtifact({ id: uid("upl"), kind: "upload", name: g.name, path: join("uploads", g.name), size: g.size, mime: "image/jpeg", projectId: m.projectId || null, createdAt: Date.now() });
-          if (got.length) { store.saveRuntime(); imageNames = got.map((g) => g.name); }
+          const { images, pageText } = await fetchSiteImages(site, { dir: join(store.dir, "uploads"), limit: 3 });
+          for (const g of images) store.addArtifact({ id: uid("upl"), kind: "upload", name: g.name, path: join("uploads", g.name), size: g.size, mime: "image/jpeg", projectId: m.projectId || null, createdAt: Date.now() });
+          if (images.length) { store.saveRuntime(); imageNames = images.map((g) => g.name); }
+          siteText = pageText || null;
         } catch {}
       }
     }
     const fileInstruction = wantsFile
-      ? `\n\nThe deliverable is a DOCUMENT. Output ONLY a fenced file spec, nothing else:\n\`\`\`file:spec.json\n{"title":"…","pages":[{"heading":"…","lines":["…","…"],"images":["uploaded-file-name.jpg"]}]}\n\`\`\`\nAvailable uploaded images you may embed: ${imageNames.join(", ") || "(none — leave images out)"}.`
+      ? `\n\nThe deliverable is a DOCUMENT. Output ONLY a fenced file spec, nothing else:\n\`\`\`file:spec.json\n{"title":"…","pages":[{"heading":"…","lines":["…","…"],"images":["uploaded-file-name.jpg"]}]}\n\`\`\`\nAvailable uploaded images you may embed: ${imageNames.join(", ") || "(none — leave images out)"}.${siteText ? `\nAbout the business (from its own website — use THESE facts, never invent others): ${siteText}` : ""}`
       : "";
     const prompt = `${m.objective}\n\nConstraints: ${(m.constraints || []).join("; ") || "none"}\nAcceptance: ${(m.acceptanceCriteria || []).join("; ") || "none"}\n\nDo not ask for clarification. Make reasonable assumptions (state them in one line), then produce the COMPLETE deliverable — the full file or content itself, not a description or plan of it.${fileInstruction}`;
     const updateExec = (patch) => { store.addExecution({ ...exec, ...patch }); store.saveRuntime(); };

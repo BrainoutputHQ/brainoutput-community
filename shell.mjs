@@ -89,12 +89,14 @@ pre{background:var(--pre)!important}
   <div class=vmenu>
    <button id=vm-chat>💬 <span></span></button>
    <button id=vm-work>🗂 <span></span></button>
-   <button id=vm-models>⚙ <span></span></button>
+   <button id=vm-settings>⚙ <span></span></button>
   </div>
+  <input id=qsearch class=inp style="margin:4px 0 8px;width:100%" placeholder="">
   <div class=shead><span id=lprojects></span><button id=newproj>+ <span id=lnewproj></span></button></div>
   <div id=projects></div>
   <div class=shead><span id=ladhoc></span></div>
   <div id=adhoc></div>
+  <div id=qresults></div>
  </div>
  <div class=foot>
   <select id=locale><option value="en">EN</option><option value="fr">FR</option><option value="de">DE</option></select>
@@ -159,8 +161,8 @@ function sidebar(){
  // navigating from the sidebar closes the mobile nav
  document.querySelectorAll('aside .pitem,aside .vmenu button').forEach(b=>b.addEventListener('click',()=>{document.body.classList.remove('nav-open');document.getElementById('scrim')?.remove()}));
  // view menu + mode dropdown + theme toggle
- const vm=[['chat',t('nav.chat')],['work',t('nav.work')],['models',t('models.title')]];
- ['chat','work','models'].forEach((v,i)=>{const b=document.getElementById('vm-'+v);b.querySelector('span').textContent=vm[i][1];
+ const vm=[['chat',t('nav.chat')],['work',t('nav.work')],['settings',t('nav.settings')]];
+ ['chat','work','settings'].forEach((v,i)=>{const b=document.getElementById('vm-'+v);b.querySelector('span').textContent=vm[i][1];
   b.className=S.view===v?'on':'';b.onclick=()=>{S.view=v;render()}});
  document.getElementById('mstd').textContent=t('mode.standard');
  document.getElementById('madv').textContent=t('mode.advanced');
@@ -169,6 +171,28 @@ function sidebar(){
  const tb=document.getElementById('themebtn');tb.textContent=document.body.classList.contains('dark')?'☀':'☾';
  tb.onclick=toggleTheme;
  const convs=s.conversations||[];
+ // Chat search: find and reopen any conversation by its content.
+ const qs=document.getElementById('qsearch');
+ qs.placeholder=t('shell.searchChats');qs.value=S.q||'';
+ const qr=document.getElementById('qresults');qr.innerHTML='';
+ const searching=!!(S.q&&S.q.trim());
+ document.getElementById('projects').style.display=searching?'none':'';
+ document.getElementById('adhoc').style.display=searching?'none':'';
+ document.querySelectorAll('aside .shead').forEach(h=>h.style.display=searching?'none':'flex');
+ if(searching){
+  const q=S.q.trim().toLowerCase();
+  const hits=(s.conversations||[]).filter(c=>(c.title||'').toLowerCase().includes(q)
+    ||(c.messages||[]).some(m=>String(m.text).toLowerCase().includes(q))).reverse().slice(0,20);
+  hits.forEach(c=>{
+   const label=c.title||(c.messages[0]?String(c.messages[0].text).slice(0,40):c.id);
+   const proj=c.projectId?(s.projects||[]).find(p=>p.id===c.projectId):null;
+   const b=el('<button class="pitem">'+esc(label)+(proj?' <span class=mut>· '+esc(proj.name)+'</span>':'')+'</button>');
+   b.onclick=()=>{S.projectId=c.projectId||null;S.convId=c.id;S.view='chat';S.q='';render()};
+   qr.appendChild(b)});
+  if(!hits.length)qr.appendChild(el('<div class=mut style="font-size:13px;padding:4px 6px">—</div>'));
+ }
+ qs.onchange=()=>{S.q=qs.value;render()};
+ qs.oninput=()=>{S.q=qs.value;clearTimeout(S._q);S._q=setTimeout(render,250)};
  const runningPids=new Set((s.executions||[]).filter(e=>e.status==='running').map(e=>e.projectId).filter(Boolean));
  const proj=document.getElementById('projects');proj.innerHTML='';
  (s.projects||[]).forEach(p=>{
@@ -335,12 +359,21 @@ function projectView(proj){
  return d;
 }
 
-// ── models: standard-mode visibility — see which LLM does what, change it, remove it ─────
-function modelsView(){
+// ── settings: company, models, connections — everything standard needs in one place ──────
+function settingsView(){
  const s=S.state||{};
  const conns=s.connections||[];
  const slots=[...new Set((s.agents||[]).flatMap(a=>Object.values(a.capabilities||{})))];
  const wrap=el('<div></div>');
+ // Company identity — including the website the Brain fetches pictures and context from.
+ const co=el('<div class="cardx"><h3>'+esc(t('settings.company'))+'</h3>'
+  +'<label>'+esc(t('settings.name'))+'</label><input class=inp id=cn value="'+esc(s.company?.name||'')+'">'
+  +'<label>'+esc(t('settings.website'))+'</label><input class=inp id=cw value="'+esc(s.company?.website||'')+'" placeholder="https://…">'
+  +'<div style="margin-top:10px"><button class=act id=csave>'+esc(t('settings.save'))+'</button> <span class=mut id=cmsg style="font-size:12px"></span></div></div>');
+ co.querySelector('#csave').onclick=async()=>{
+  const r=await api('/api/company',{name:co.querySelector('#cn').value,website:co.querySelector('#cw').value});
+  co.querySelector('#cmsg').textContent=r.error||'✓';if(!r.error){S.state=r;render()}};
+ wrap.appendChild(co);
  const a=el('<div class="cardx"><h3>'+esc(t('models.assignments'))+'</h3><div class=mut style="font-size:12.5px;margin-bottom:8px">'+esc(t('models.hint'))+'</div></div>');
  slots.forEach(sl=>{
   const cur=(s.assignments||{})[sl];
@@ -496,7 +529,7 @@ function bubble(m){
 }
 function thread(){
  const s=S.state||{};const box=document.getElementById('msgs');box.innerHTML='';
- if(S.view==='models'){box.appendChild(modelsView());return}
+ if(S.view==='settings'){box.appendChild(settingsView());return}
  if(S.view==='work'){box.appendChild(workView());return}
  if(!tourSeen())box.appendChild(tourCard());
  const conv=(s.conversations||[]).find(c=>c.id===S.convId);

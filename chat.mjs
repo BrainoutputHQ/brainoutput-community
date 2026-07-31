@@ -130,7 +130,9 @@ export function draftMissionSpec(conversation, {
   complexity = null, risk = null, id = null, refine = null,
 } = {}) {
   const userMsgs = conversation.messages.filter((m) => m.role === "user");
-  const obj = objective || userMsgs[0]?.text || "";
+  // The objective is the RECENT intent, not just the first message — follow-ups carry real
+  // requirements ("create a pdf…" + "www.my-hotel.com" as the next message).
+  const obj = objective || userMsgs.slice(-3).map((m) => m.text).join("\n");
   const constraints = conversation.pinned.filter((p) => p.kind === "constraint").map((p) => p.text);
   const decisions = conversation.pinned.filter((p) => p.kind === "decision").map((p) => p.text);
   const criteria = conversation.pinned.filter((p) => p.kind === "criterion").map((p) => p.text);

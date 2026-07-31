@@ -25,13 +25,21 @@ export function imageLinks(html, baseUrl) {
 }
 
 /**
- * Download up to `limit` JPEGs from a website into `dir`. Returns [{ name, path }] —
- * `name` is the sanitized basename pdf.mjs can embed from the uploads dir.
+ * Download up to `limit` JPEGs from a website into `dir`, and return the page's own text too —
+ * the images become embeddable, the text is what stops a document mission from inventing
+ * facts about the business. Returns { images: [{ name, path, size }], pageText }.
  */
 export async function fetchSiteImages(url, { dir, limit = 3, fetchImpl = fetch, maxBytes = 1_500_000 } = {}) {
   if (!url || !/^https?:\/\//i.test(url)) throw new Error("a website must be http(s)");
-  const page = await (await fetchImpl(url, { signal: AbortSignal.timeout(10000) })).text();
-  const links = imageLinks(page, url).filter((u) => /\.jpe?g($|\?)/i.test(u));
+  const html = await (await fetchImpl(url, { signal: AbortSignal.timeout(10000) })).text();
+  const pageText = html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 800);
+  const links = imageLinks(html, url).filter((u) => /\.jpe?g($|\?)/i.test(u));
   const saved = [];
   for (const link of links.slice(0, limit * 2)) {
     if (saved.length >= limit) break;
@@ -46,5 +54,14 @@ export async function fetchSiteImages(url, { dir, limit = 3, fetchImpl = fetch, 
       saved.push({ name, path: join(dir, name), size: buf.length });
     } catch {}
   }
-  return saved;
+  return { images: saved, pageText };
+}
+
+/** The first URL someone posted in a thread (latest first) — "the chat knows where to look". */
+export function urlFromMessages(messages = []) {
+  for (const m of [...messages].reverse()) {
+    const hit = String(m.text || "").match(/(?:https?:\/\/|www\.)[^\s)>"']+/i);
+    if (hit) return hit[0].startsWith("http") ? hit[0] : `https://${hit[0]}`;
+  }
+  return null;
 }
