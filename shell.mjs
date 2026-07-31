@@ -9,63 +9,73 @@
 // advanced surface. All UI strings come from the embedded locale catalog (i18n.mjs).
 export const SHELL_PAGE = `<!doctype html><html lang="__BO_LOCALE__"><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>BrainOutput</title>
 <style>
-:root{--bg:#0e1014;--card:#171a21;--card2:#1c202a;--fg:#e8eaf0;--mut:#8f96a8;--acc:#5b9dff;--ok:#3ddc84;--warn:#ffb454;--line:#242935;--ub:#1e3a5f}
+:root{--bg:#f5f6f8;--card:#ffffff;--card2:#f2f4f7;--fg:#1a1d24;--mut:#667085;--acc:#2f7cf6;--ok:#16a34a;--warn:#d97706;--line:#e4e7ec;--ub:#dbeafe;--ubline:#bfdbfe;--inp:#f9fafb;--pre:#f2f4f7;--side:#ffffff;--thead:#ffffff;--shadow:0 1px 2px rgba(16,24,40,.06)}
+body.dark{--bg:#0e1014;--card:#171a21;--card2:#1c202a;--fg:#e8eaf0;--mut:#8f96a8;--acc:#5b9dff;--ok:#3ddc84;--warn:#ffb454;--line:#242935;--ub:#1e3a5f;--ubline:#2a4a73;--inp:#0f1319;--pre:#0b0d11;--side:#11131a;--thead:#10121a;--shadow:none}
 *{box-sizing:border-box}body{margin:0;font:15.5px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;background:var(--bg);color:var(--fg);display:flex;height:100vh;overflow:hidden;-webkit-font-smoothing:antialiased}
-aside{width:280px;min-width:280px;border-right:1px solid var(--line);background:#11131a;display:flex;flex-direction:column}
+aside{width:280px;min-width:280px;border-right:1px solid var(--line);background:var(--side);display:flex;flex-direction:column}
 aside .brand{padding:18px 18px 14px;border-bottom:1px solid var(--line);font-weight:700;font-size:17px;letter-spacing:-.01em}
 aside .brand .tag{display:block;font-weight:400;font-size:12px;color:var(--mut);margin-top:2px}
 aside .scroll{flex:1;overflow:auto;padding:12px}
 aside .foot{padding:12px 16px;border-top:1px solid var(--line);display:flex;gap:10px;align-items:center;font-size:13px}
-aside select{background:#0f1319;border:1px solid var(--line);color:var(--fg);border-radius:8px;padding:5px 8px;font-size:13px}
+aside select{background:var(--inp);border:1px solid var(--line);color:var(--fg);border-radius:8px;padding:5px 8px;font-size:13px}
+.vmenu{display:flex;gap:4px;padding:2px 2px 8px;border-bottom:1px solid var(--line);margin-bottom:6px}
+.vmenu button{flex:1;background:none;border:1px solid transparent;color:var(--mut);border-radius:9px;padding:7px 4px;cursor:pointer;font-size:12.5px;font-weight:600}
+.vmenu button.on{background:var(--card2);color:var(--fg);border-color:var(--line)}
 .shead{color:var(--mut);font-size:11.5px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;margin:14px 6px 8px;display:flex;align-items:center}
 .shead button{margin-left:auto;background:none;border:1px solid var(--line);color:var(--mut);border-radius:8px;font-size:12px;padding:3px 10px;cursor:pointer}
 .shead button:hover{color:var(--fg);border-color:var(--acc)}
 .pitem{display:block;width:100%;text-align:left;background:none;border:1px solid transparent;border-radius:10px;padding:9px 12px;color:var(--fg);cursor:pointer;font-size:14px;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.pitem:hover{background:var(--card)}.pitem.on{background:var(--card);border-color:var(--line)}
+.pitem:hover{background:var(--card2)}.pitem.on{background:var(--card2);border-color:var(--line)}
 .pitem .cnt{float:right;color:var(--mut);font-size:12px}
 main{flex:1;display:flex;flex-direction:column;min-width:0}
-#thead{border-bottom:1px solid var(--line);padding:12px 22px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;background:#10121a}
+#thead{border-bottom:1px solid var(--line);padding:12px 22px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;background:var(--thead)}
 #thead .title{font-weight:650;font-size:15px}
-#thead select{background:#0f1319;border:1px solid var(--line);color:var(--fg);border-radius:8px;padding:6px 9px;font-size:13px}
+#thead select{background:var(--inp);border:1px solid var(--line);color:var(--fg);border-radius:8px;padding:6px 9px;font-size:13px}
 #thread{flex:1;overflow:auto;padding:26px 22px 12px}
 .wrap{max-width:780px;margin:0 auto}
 .msg{margin-bottom:22px}
 .msg .who{font-size:12px;color:var(--mut);margin-bottom:5px;font-weight:600}
 .msg.user{text-align:right}
 .msg.user .who{text-align:right}
-.msg.user .body{display:inline-block;text-align:left;background:var(--ub);border:1px solid #2a4a73;border-radius:18px 18px 4px 18px;padding:11px 16px;max-width:85%;white-space:pre-wrap}
+.msg.user .body{display:inline-block;text-align:left;background:var(--ub);border:1px solid var(--ubline);border-radius:18px 18px 4px 18px;padding:11px 16px;max-width:85%;white-space:pre-wrap}
 .msg.bot .body{white-space:pre-wrap;padding:2px 0}
 .msg .meta{font-size:11.5px;color:var(--mut);margin-top:5px}
 .msg.user .meta{padding-right:4px}
-.cardx{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px;margin:4px 0 20px}
+.cardx{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px;margin:4px 0 20px;box-shadow:var(--shadow)}
 .cardx h3{margin:0 0 10px;font-size:14px;color:var(--acc);font-weight:650}
-.cardx.warn{border-color:#6b4d1f}.cardx.warn h3{color:var(--warn)}
+.cardx.warn{border-color:var(--warn)}.cardx.warn h3{color:var(--warn)}
 .mut{color:var(--mut)}.ok{color:var(--ok)}.warn{color:var(--warn)}
-button.act{background:var(--acc);color:#06121f;border:none;border-radius:10px;padding:9px 16px;font-weight:650;cursor:pointer;font-size:14px}
+button.act{background:var(--acc);color:#fff;border:none;border-radius:10px;padding:9px 16px;font-weight:650;cursor:pointer;font-size:14px}
 button.ghost{background:none;border:1px solid var(--line);color:var(--mut);border-radius:10px;padding:9px 15px;cursor:pointer;font-size:14px}
 button.ghost:hover{color:var(--fg);border-color:var(--acc)}
-input,textarea,select.inp{background:#0f1319;border:1px solid var(--line);color:var(--fg);border-radius:10px;padding:10px 12px;width:100%;font:inherit;margin-top:4px}
+input,textarea,select.inp{background:var(--inp);border:1px solid var(--line);color:var(--fg);border-radius:10px;padding:10px 12px;width:100%;font:inherit;margin-top:4px}
 label{display:block;margin:10px 0 3px;color:var(--mut);font-size:13px}
-#composer{border-top:1px solid var(--line);padding:14px 22px 18px;background:#0e1014}
-#cbox{background:var(--card);border:1px solid var(--line);border-radius:20px;padding:10px 12px 8px;transition:border-color .15s, box-shadow .15s}
-#cbox:focus-within{border-color:var(--acc);box-shadow:0 0 0 3px rgba(91,157,255,.12)}
+#composer{border-top:1px solid var(--line);padding:14px 22px 18px;background:var(--bg)}
+#cbox{background:var(--card);border:1px solid var(--line);border-radius:20px;padding:10px 12px 8px;transition:border-color .15s, box-shadow .15s;box-shadow:var(--shadow)}
+#cbox:focus-within{border-color:var(--acc);box-shadow:0 0 0 3px rgba(47,124,246,.14)}
 #msg{width:100%;background:none;border:none;outline:none;color:var(--fg);font:inherit;resize:none;max-height:200px;padding:4px 6px;line-height:1.55}
 #cbar{display:flex;align-items:center;margin-top:4px}
 .seg{display:flex;border:1px solid var(--line);border-radius:10px;overflow:hidden}
 .seg button{background:none;border:none;color:var(--mut);padding:6px 13px;cursor:pointer;font-size:12.5px}
 .seg button.on{background:var(--card2);color:var(--fg)}
-#send{margin-left:auto;width:38px;height:38px;border-radius:50%;background:var(--acc);color:#06121f;border:none;font-size:17px;font-weight:700;cursor:pointer;display:grid;place-items:center}
+#send{margin-left:auto;width:38px;height:38px;border-radius:50%;background:var(--acc);color:#fff;border:none;font-size:17px;font-weight:700;cursor:pointer;display:grid;place-items:center}
 #send:disabled{background:var(--card2);color:var(--mut);cursor:default}
 #busy{font-size:12.5px;color:var(--mut);margin:6px 4px 0;min-height:16px}
 .deptpick{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
-.deptpick label{background:#0f1319;border:1px solid var(--line);border-radius:18px;padding:7px 14px;color:var(--fg);font-size:13.5px;cursor:pointer;margin:0}
+.deptpick label{background:var(--inp);border:1px solid var(--line);border-radius:18px;padding:7px 14px;color:var(--fg);font-size:13.5px;cursor:pointer;margin:0}
 .deptpick input{width:auto;margin-right:6px}
 details summary{cursor:pointer}
+pre{background:var(--pre)!important}
 @media(max-width:760px){aside{display:none}}
 </style></head><body>
 <aside>
  <div class=brand>🏢 BrainOutput<span class=tag id=tagline></span></div>
  <div class=scroll>
+  <div class=vmenu>
+   <button id=vm-chat>💬 <span></span></button>
+   <button id=vm-work>🗂 <span></span></button>
+   <button id=vm-models>⚙ <span></span></button>
+  </div>
   <div class=shead><span id=lprojects></span><button id=newproj>+ <span id=lnewproj></span></button></div>
   <div id=projects></div>
   <div class=shead><span id=ladhoc></span></div>
@@ -73,8 +83,8 @@ details summary{cursor:pointer}
  </div>
  <div class=foot>
   <select id=locale><option value="en">EN</option><option value="fr">FR</option><option value="de">DE</option></select>
-  <button class=ghost id=modelsbtn style="font-size:13px;padding:5px 10px"></button>
-  <a href="/dashboard" style="color:var(--mut);font-size:13px;text-decoration:none" id=ldash></a>
+  <select id=modepick><option value="standard" id=mstd></option><option value="advanced" id=madv></option></select>
+  <button class=ghost id=themebtn style="padding:5px 9px"></button>
  </div>
 </aside>
 <main>
@@ -96,9 +106,12 @@ const T=__BO_I18N__;
 const LOCALE='__BO_LOCALE__';
 const CSRF='__BO_CSRF__';
 const t=(k)=>T[k]||k;
-const S={state:null,convId:null,projectId:null,mode:'ask',scope:'company',dept:'',agent:'',ob:null};
+const S={state:null,convId:null,projectId:null,mode:'ask',scope:'company',dept:'',agent:'',ob:null,view:'chat'};
 const esc=(s)=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const el=(h)=>{const d=document.createElement('div');d.innerHTML=h;return d.firstElementChild};
+// Theme: LIGHT is the default (business look); the toggle persists a dark choice.
+try{if(localStorage.getItem('bo_theme')==='dark')document.body.classList.add('dark')}catch{}
+const toggleTheme=()=>{const d=document.body.classList.toggle('dark');try{localStorage.setItem('bo_theme',d?'dark':'light')}catch{}};
 async function api(p,body){const r=await fetch(p,body?{method:'POST',headers:{'Content-Type':'application/json','X-BO-CSRF':CSRF},body:JSON.stringify(body)}:{headers:{'X-BO-CSRF':CSRF}});return r.json()}
 async function refresh(){S.state=await api('/api/state');render()}
 const onboarded=(s)=>!!(s&&(s.agents||[]).length);
@@ -113,23 +126,30 @@ function sidebar(){
  document.getElementById('lprojects').textContent=t('shell.projects');
  document.getElementById('lnewproj').textContent=t('shell.newProject');
  document.getElementById('ladhoc').textContent=t('shell.adHoc');
- document.getElementById('ldash').textContent=t('shell.dashboard');
  document.getElementById('locale').value=LOCALE;
- const mb=document.getElementById('modelsbtn');mb.textContent='⚙ '+t('models.title');
- mb.onclick=()=>{S.showModels=!S.showModels;render()};
+ // view menu + mode dropdown + theme toggle
+ const vm=[['chat',t('nav.chat')],['work',t('nav.work')],['models',t('models.title')]];
+ ['chat','work','models'].forEach((v,i)=>{const b=document.getElementById('vm-'+v);b.querySelector('span').textContent=vm[i][1];
+  b.className=S.view===v?'on':'';b.onclick=()=>{S.view=v;render()}});
+ document.getElementById('mstd').textContent=t('mode.standard');
+ document.getElementById('madv').textContent=t('mode.advanced');
+ document.getElementById('modepick').value='standard';
+ document.getElementById('modepick').onchange=(e)=>{if(e.target.value==='advanced')location.href='/dashboard'};
+ const tb=document.getElementById('themebtn');tb.textContent=document.body.classList.contains('dark')?'☀':'☾';
+ tb.onclick=toggleTheme;
  const convs=s.conversations||[];
  const proj=document.getElementById('projects');proj.innerHTML='';
  (s.projects||[]).forEach(p=>{
   const n=convs.filter(c=>c.projectId===p.id).length;
   const b=el('<button class="pitem'+(S.projectId===p.id?' on':'')+'">'+esc(p.name)+'<span class=cnt>'+(n||'')+'</span></button>');
-  b.onclick=()=>{S.projectId=p.id;S.convId=null;S.showModels=false;render()};
+  b.onclick=()=>{S.projectId=p.id;S.convId=null;S.view='chat';render()};
   proj.appendChild(b)});
  if(!(s.projects||[]).length)proj.appendChild(el('<div class=mut style="font-size:13px;padding:4px 6px">'+esc(t('shell.emptyProjects'))+'</div>'));
  const ad=document.getElementById('adhoc');ad.innerHTML='';
  convs.filter(c=>!c.projectId).slice().reverse().forEach(c=>{
   const label=c.title||(c.messages[0]?String(c.messages[0].text).slice(0,34):c.id);
   const b=el('<button class="pitem'+(S.convId===c.id&&!S.projectId?' on':'')+'">'+esc(label)+'</button>');
-  b.onclick=()=>{S.projectId=null;S.convId=c.id;S.showModels=false;render()};
+  b.onclick=()=>{S.projectId=null;S.convId=c.id;S.view='chat';render()};
   ad.appendChild(b)});
  document.getElementById('newproj').onclick=async()=>{
   const name=prompt(t('shell.projectName'));if(!name||!name.trim())return;
@@ -297,6 +317,88 @@ function modelsView(){
  return wrap;
 }
 
+// ── work: the intranet — planner + your sources (mail/drives) + one search over all of it ──
+function workView(){
+ const s=S.state||{};
+ const wrap=el('<div></div>');
+ // Planner: every project's open work in one place.
+ const pl=el('<div class="cardx"><h3>'+esc(t('work.planner'))+'</h3></div>');
+ const projs=(s.projects||[]);
+ if(!projs.length)pl.appendChild(el('<div class=mut style="font-size:13px">'+esc(t('shell.emptyProjects'))+'</div>'));
+ projs.forEach(p=>{
+  const tasks=(s.tasks||[]).filter(x=>x.projectId===p.id);
+  const tops=tasks.filter(x=>!x.parentId);
+  const flat=tops.flatMap(x=>[x,...tasks.filter(y=>y.parentId===x.id)]);
+  const doneN=flat.filter(x=>x.status==='done'&&!tasks.some(y=>y.parentId===x.id&&y.status!=='done')).length;
+  const pct=flat.length?Math.round(doneN/flat.length*100):0;
+  const row=el('<div style="padding:6px 0;border-bottom:1px solid var(--line)"><div style="display:flex;gap:8px;align-items:center;font-size:13.5px"><b>'+esc(p.name)+'</b><span class=mut style="font-size:12px">'+doneN+'/'+flat.length+'</span></div>'
+   +'<div style="background:var(--pre);border-radius:8px;height:5px;overflow:hidden;margin:5px 0"><div style="background:var(--ok);height:100%;width:'+pct+'%"></div></div>'
+   +tops.filter(tk=>tk.status!=='done').slice(0,4).map(tk=>'<div style="font-size:12.5px;padding:2px 0" class="'+(tk.status==='blocked'?'warn':'mut')+'">○ '+esc(tk.title)+'</div>').join('')+'</div>');
+  row.querySelector('b').style.cursor='pointer';
+  row.querySelector('b').onclick=()=>{S.view='chat';S.projectId=p.id;S.convId=null;render()};
+  pl.appendChild(row)});
+ wrap.appendChild(pl);
+
+ // Sources: the mail/drives your Alter reads — list, sync, add.
+ const T=(s.workTwins||[])[0];
+ const sc=el('<div class="cardx"><h3>'+esc(t('work.sources'))+'</h3></div>');
+ if(!T){
+  const d=el('<div><div class=mut style="font-size:13px;margin-bottom:8px">'+esc(t('work.noTwin'))+'</div>'
+   +'<div class=row style="display:flex;gap:8px"><input class=inp id=wn placeholder="'+esc(t('work.yourName'))+'" style="margin-top:0"><input class=inp id=we placeholder="you@company.com" style="margin-top:0"></div>'
+   +'<div style="margin-top:8px"><button class=act>'+esc(t('work.createAlter'))+'</button> <span class=mut id=wmsg style="font-size:12px"></span></div></div>');
+  d.querySelector('button').onclick=async()=>{
+   const nm=d.querySelector('#wn').value.trim(),em=d.querySelector('#we').value.trim();
+   if(!em){d.querySelector('#wmsg').textContent='email?';return}
+   const r=await api('/api/worktwin/create',{employee:{id:em.split('@')[0],name:nm||em,email:em}});
+   d.querySelector('#wmsg').textContent=r.error||'✓';if(!r.error){S.state=r.state;render()}};
+  sc.appendChild(d);
+ } else {
+  const acc=T.accounts||[];
+  sc.appendChild(el('<div class=mut style="font-size:13px;margin-bottom:8px">'+esc(T.name)+' · '+(T.indexSize||0)+' '+(t('work.indexed'))+'</div>'));
+  if(acc.length)acc.forEach(a=>sc.appendChild(el('<div style="font-size:13px;padding:3px 0">• '+esc(a.kind)+' ('+esc(a.account)+') · '+esc((a.resources||[]).join(', '))+'</div>')));
+  const bar=el('<div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+   +'<button class=ghost id=sync>'+esc(t('work.sync'))+'</button><span class=mut id=smsg style="font-size:12px"></span>'
+   +'<select id=sk style="margin-left:auto">'
+   +'<option value="">+ '+esc(t('work.addSource'))+'</option>'
+   +'<option value="imap">IMAP (mail)</option><option value="local-mail">Local mail (Maildir/mbox)</option><option value="drive">Local folder (drive)</option></select></div>');
+  bar.querySelector('#sync').onclick=async()=>{const m=bar.querySelector('#smsg');m.textContent='…';
+   const r=await api('/api/worktwin/sync',{twinId:T.id,limit:50});
+   m.textContent=r.error?r.error:('✓ '+r.indexed);
+   await refresh()};
+  bar.querySelector('#sk').onchange=async(e)=>{
+   const kind=e.target.value;if(!kind)return;
+   const src={kind,account:T.employee.email};
+   if(kind==='imap'){const hp=prompt('IMAP host:port (mail.example.com:993)');if(!hp)return;const[h,p]=hp.split(':');
+    src.host=h;src.port=Number(p||993);src.user=T.employee.email;src.password=prompt('IMAP password')||'';src.tls=(Number(p)||993)!==143}
+   if(kind==='local-mail'){const d=prompt(t('work.mailPath'));if(!d)return;/mbox$/i.test(d)?src.mbox=d:src.dir=d}
+   if(kind==='drive'){const d=prompt(t('work.drivePath'));if(!d)return;src.dir=d}
+   const r=await api('/api/worktwin/connect',{twinId:T.id,source:src});
+   if(r.error)alert(r.error);
+   await refresh()};
+  sc.appendChild(bar);
+ }
+ wrap.appendChild(sc);
+
+ // One search over mail + documents.
+ if(T){
+  const se=el('<div class="cardx"><h3>'+esc(t('work.search'))+'</h3>'
+   +'<div style="display:flex;gap:8px"><input class=inp id=q placeholder="'+esc(t('work.searchPlaceholder'))+'" style="margin-top:0"><button class=ghost id=go>→</button></div>'
+   +'<div id=sr style="margin-top:8px"></div></div>');
+  const run=async()=>{
+   const q=se.querySelector('#q').value.trim();if(!q)return;
+   const out=se.querySelector('#sr');out.innerHTML='<span class=mut>…</span>';
+   const [m,f]=await Promise.all([
+    api('/api/worktwin/action',{twinId:T.id,action:'search-mail',query:q,k:5}),
+    api('/api/worktwin/action',{twinId:T.id,action:'search-files',query:q,k:5})]);
+   const hits=[...(m.hits||[]),...(f.hits||[])];
+   out.innerHTML=hits.length?hits.map(x=>'<div style="font-size:13px;padding:5px 0;border-bottom:1px solid var(--line)"><b>'+esc(x.subject||x.citation||'')+'</b> <span class=mut>'+esc(x.from||'')+'</span><div class=mut style="font-size:12px">'+esc(String(x.snippet||'').replace(/\s+/g,' ').slice(0,140))+'</div></div>').join(''):'<span class=mut>—</span>'};
+  se.querySelector('#go').onclick=run;
+  se.querySelector('#q').onkeydown=(e)=>{if(e.key==='Enter')run()};
+  wrap.appendChild(se);
+ }
+ return wrap;
+}
+
 // ── thread ───────────────────────────────────────────────────────────────────
 function bubble(m){
  const d=el('<div class="msg '+(m.role==='user'?'user':'bot')+'"><div class=who>'+(m.role==='user'?esc(t('shell.you')):esc(t('shell.brain')))+'</div>'
@@ -307,7 +409,8 @@ function bubble(m){
 }
 function thread(){
  const s=S.state||{};const box=document.getElementById('msgs');box.innerHTML='';
- if(S.showModels){box.appendChild(modelsView());return}
+ if(S.view==='models'){box.appendChild(modelsView());return}
+ if(S.view==='work'){box.appendChild(workView());return}
  const conv=(s.conversations||[]).find(c=>c.id===S.convId);
  if(!conv){
   const proj=S.projectId?(s.projects||[]).find(p=>p.id===S.projectId):null;
