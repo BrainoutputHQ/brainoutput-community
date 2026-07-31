@@ -115,7 +115,8 @@ test("connect-free: health-checks candidates for real, connects the first health
 
   const r = await post("/api/connect-free", {});
   assert.equal(r.status, 200, JSON.stringify(r.body));
-  assert.equal(r.body.picked.model, "deepseek-v4-flash-free");   // first candidate, stubbed healthy
+  const { FREE_CANDIDATES } = await import("./free-models.mjs");
+  assert.ok(FREE_CANDIDATES.includes(r.body.picked.model), `picked a real candidate (fastest healthy — ties break by measurement)`);
   assert.equal(r.body.picked.costSource, "free");
   assert.match(r.body.privacyNote, /improve the model/);
   const conn = r.body.connections.find((c) => c.kind === "opencode-free");
