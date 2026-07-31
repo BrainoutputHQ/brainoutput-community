@@ -66,6 +66,8 @@ label{display:block;margin:10px 0 3px;color:var(--mut);font-size:13px}
 .think span{width:7px;height:7px;border-radius:50%;background:var(--mut);animation:boDot 1.2s infinite}
 .think span:nth-child(2){animation-delay:.2s}.think span:nth-child(3){animation-delay:.4s}
 @keyframes boDot{30%{opacity:.25}60%{opacity:1}}
+.wdot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--acc);margin-left:6px;animation:boPulse 1.1s ease-in-out infinite}
+.attach{display:inline-block;margin-top:6px;padding:3px 10px;border:1px solid var(--line);border-radius:12px;font-size:12px;color:var(--mut);background:var(--card2)}
 #busy{font-size:12.5px;color:var(--mut);margin:6px 4px 0;min-height:16px}
 .deptpick{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
 .deptpick label{background:var(--inp);border:1px solid var(--line);border-radius:18px;padding:7px 14px;color:var(--fg);font-size:13.5px;cursor:pointer;margin:0}
@@ -75,7 +77,7 @@ pre{background:var(--pre)!important}
 @media(max-width:760px){aside{display:none}}
 </style></head><body>
 <aside>
- <div class=brand>🏢 BrainOutput<span class=tag id=tagline></span></div>
+ <div class=brand><span id=coname>🏢 BrainOutput</span><span class=tag id=tagline></span></div>
  <div class=scroll>
   <div class=vmenu>
    <button id=vm-chat>💬 <span></span></button>
@@ -100,9 +102,12 @@ pre{background:var(--pre)!important}
   <div id=cbox>
    <textarea id=msg rows=2></textarea>
    <div id=cbar>
+    <button class=ghost id=attach title="" style="padding:6px 10px;margin-right:8px">📎</button>
+    <input type=file id=file style="display:none">
     <div class=seg id=modes></div>
     <button id=send title="">↑</button>
    </div>
+   <div id=atts style="margin-top:4px"></div>
   </div>
   <div id=busy></div>
  </div></div>
@@ -133,6 +138,7 @@ function sidebar(){
  document.getElementById('lnewproj').textContent=t('shell.newProject');
  document.getElementById('ladhoc').textContent=t('shell.adHoc');
  document.getElementById('locale').value=LOCALE;
+ document.getElementById('coname').textContent='🏢 '+(s.company?.name||'BrainOutput');
  // view menu + mode dropdown + theme toggle
  const vm=[['chat',t('nav.chat')],['work',t('nav.work')],['models',t('models.title')]];
  ['chat','work','models'].forEach((v,i)=>{const b=document.getElementById('vm-'+v);b.querySelector('span').textContent=vm[i][1];
@@ -144,15 +150,16 @@ function sidebar(){
  const tb=document.getElementById('themebtn');tb.textContent=document.body.classList.contains('dark')?'☀':'☾';
  tb.onclick=toggleTheme;
  const convs=s.conversations||[];
+ const runningPids=new Set((s.executions||[]).filter(e=>e.status==='running').map(e=>e.projectId).filter(Boolean));
  const proj=document.getElementById('projects');proj.innerHTML='';
  (s.projects||[]).forEach(p=>{
   const n=convs.filter(c=>c.projectId===p.id).length;
-  const b=el('<button class="pitem'+(S.projectId===p.id?' on':'')+'">'+esc(p.name)+'<span class=cnt>'+(n||'')+'</span></button>');
+  const b=el('<button class="pitem'+(S.projectId===p.id?' on':'')+'">'+esc(p.name)+(runningPids.has(p.id)?'<span class=wdot></span>':'')+'<span class=cnt>'+(n||'')+'</span></button>');
   b.onclick=()=>{S.projectId=p.id;S.convId=null;S.view='chat';render()};
   proj.appendChild(b)});
  if(!(s.projects||[]).length)proj.appendChild(el('<div class=mut style="font-size:13px;padding:4px 6px">'+esc(t('shell.emptyProjects'))+'</div>'));
  const ad=document.getElementById('adhoc');ad.innerHTML='';
- convs.filter(c=>!c.projectId).slice().reverse().forEach(c=>{
+ convs.filter(c=>!c.projectId).slice().reverse().slice(0,20).forEach(c=>{
   const label=c.title||(c.messages[0]?String(c.messages[0].text).slice(0,34):c.id);
   const b=el('<button class="pitem'+(S.convId===c.id&&!S.projectId?' on':'')+'">'+esc(label)+'</button>');
   b.onclick=()=>{S.projectId=null;S.convId=c.id;S.view='chat';render()};
@@ -199,9 +206,8 @@ function missionCard(m){
   +'<button class=ghost id=mcan>'+esc(t('mission.cancel'))+'</button></div></div>');
  d.querySelector('#med').onclick=async()=>{const r=await api('/api/chat/mission',{missionId:m.id,action:'edit',patch:{objective:d.querySelector('#mo').value,department:d.querySelector('#mdp').value}});if(r.error){alert(r.error);return}await refresh()};
  d.querySelector('#mok').onclick=async()=>{const a=await api('/api/chat/mission',{missionId:m.id,action:'approve'});if(a.error){alert(a.error);return}
-  thinking(true);
-  const r=await api('/api/chat/launch',{missionId:m.id});thinking(false);
-  if(r.error){alert(r.error)}
+  // Async launch: returns instantly; the live run view + polling take it from here.
+  const r=await api('/api/chat/launch',{missionId:m.id});if(r.error){alert(r.error);return}
   await refresh();const th=document.getElementById('thread');th.scrollTop=th.scrollHeight};
  d.querySelector('#mcan').onclick=async()=>{await api('/api/chat/mission',{missionId:m.id,action:'cancel'});await refresh()};
  return d;
@@ -219,13 +225,14 @@ function approvalCard(a){
 const extractHtml=(txt)=>{const m=String(txt||'').match(/\`\`\`html\s*([\s\S]*?)\`\`\`/);if(m)return m[1];
  if(/<!doctype html|<html[\s>]/i.test(String(txt||'')))return txt;return null};
 function runCard(ex){
+ const running=ex.status==='running';
  const eff=ex.efficiency||{};
- const rows=(ex.graph||[]).map(g=>esc(g.node)+(g.model?' <span class=mut>['+esc(g.provider)+'/'+esc(g.model)+']</span>':'')).join(' → ');
+ const rows=(ex.graph||[]).map(g=>(g.status==='done'?'✓ ':running?'… ':'')+esc(g.node)+(g.model?' <span class=mut>['+esc(g.provider)+'/'+esc(g.model)+']</span>':'')).join(' → ');
  const artifacts=(eff.artifacts||[]);
  const files=(ex.codeFiles||[]);
  const logs=(ex.logs||[]).slice(0,30);
  const outs=(ex.results||[]).map((r,i)=>({node:r.node||('output '+(i+1)),output:String(r.output||'')})).filter(r=>r.output.trim());
- const d=el('<div class="cardx"><h3>'+esc(t('run.title'))+' · '+esc(ex.department||'')+' · <span class=ok>'+esc(ex.status||'')+'</span></h3>'
+ const d=el('<div class="cardx"><h3>'+esc(t('run.title'))+' · '+esc(ex.department||'')+' · <span class="'+(running?'warn':'ok')+'">'+(running?esc(t('run.running')):esc(ex.status||''))+'</span></h3>'
   +'<div class=mut style="font-size:13px">'+rows+'</div>'
   +'<div class=mut style="font-size:13px;margin-top:4px">'+(eff.tokensTotal!=null?esc(eff.tokensTotal)+' '+esc(t('run.tokens')):'')
    +(eff.stagesSkipped&&eff.stagesSkipped.length?' · '+esc(t('run.skipped'))+': '+esc(eff.stagesSkipped.join(', ')):'')+'</div>'
@@ -250,15 +257,26 @@ function runCard(ex){
 // ── project view: the task spine + its threads ───────────────────────────────
 function taskRow(tk,subs){
  const done=tk.status==='done';
+ const open=S.openTask===tk.id;
+ const mission=tk.missionId?((S.state||{}).missions||[]).find(m=>m.id===tk.missionId):null;
  const d=el('<div style="padding:8px 0;border-bottom:1px solid var(--line)">'
   +'<label style="display:flex;gap:9px;align-items:center;color:var(--fg);font-size:14px;margin:0;cursor:pointer">'
   +'<input type=checkbox style="width:auto" '+(done?'checked':'')+'> '
-  +'<span style="'+(done?'text-decoration:line-through;color:var(--mut)':'')+'">'+esc(tk.title)+'</span>'
+  +'<span class=tlink style="'+(done?'text-decoration:line-through;color:var(--mut)':'')+'cursor:pointer">'+esc(tk.title)+'</span>'
   +(tk.status==='blocked'?'<span class=warn style="font-size:12px">blocked</span>':'')
   +(tk.assignee?'<span class=mut style="font-size:12px">· '+esc(tk.assignee)+'</span>':'')+'</label>'
   +(tk.result?'<div class="'+(tk.result.ok?'ok':'warn')+'" style="font-size:12px;margin-left:26px">'+esc(tk.result.summary)+(tk.result.artifacts&&tk.result.artifacts.length?' · '+tk.result.artifacts.length+' artifact(s)':'')+'</div>':'')
+  +(open?'<div class=cardx style="margin:8px 0 4px 26px;padding:12px 14px">'
+    +'<div class=mut style="font-size:12px">status: <b>'+esc(tk.status)+'</b>'+(tk.assignee?' · '+esc(tk.assignee):'')+(tk.missionId?' · mission '+esc(tk.missionId)+(mission?' ('+esc(mission.status)+')':''):' · manual task')+'</div>'
+    +(tk.result?'<div style="font-size:13px;margin-top:6px">'+esc(tk.result.summary)+'</div>'
+      +(tk.result.artifacts&&tk.result.artifacts.length?'<div class=mut style="font-size:12px;margin-top:4px">'+tk.result.artifacts.map(esc).join('<br>')+'</div>':''):'')
+    +(mission&&mission.conversationId?'<div style="margin-top:8px"><button class=ghost id=goc>'+esc(t('task.openThread'))+'</button></div>':'')
+    +'</div>':'')
   +subs.map(srow).join('')+'</div>');
- d.querySelector('input').onchange=async(e)=>{await api('/api/task/status',{id:tk.id,status:e.target.checked?'done':'todo'});await refresh()};
+ d.querySelector('input').onchange=async(e)=>{e.stopPropagation();await api('/api/task/status',{id:tk.id,status:e.target.checked?'done':'todo'});await refresh()};
+ d.querySelector('.tlink').onclick=()=>{S.openTask=open?null:tk.id;render()};
+ const goc=d.querySelector('#goc');
+ if(goc)goc.onclick=()=>{S.view='chat';S.convId=mission.conversationId;render()};
  return d;
 }
 const srow=(s)=>'<div style="margin-left:26px;padding:3px 0;font-size:13px" class="'+(s.status==='done'?'mut':'')+'">'+(s.status==='done'?'✓ ':'○ ')+esc(s.title)+(s.result?' <span class=ok>— '+esc(s.result.summary)+'</span>':'')+'</div>';
@@ -279,13 +297,14 @@ function projectView(proj){
   +(threads.length?'<div class=mut style="font-size:13px;margin:14px 0 4px">'+esc(t('project.threads'))+'</div>':'')
   +'</div>');
  const pt=d.querySelector('#ptasks');
- tops.forEach(tk=>pt.appendChild(taskRow(tk,tasks.filter(y=>y.parentId===tk.id))));
+ tops.slice(0,25).forEach(tk=>pt.appendChild(taskRow(tk,tasks.filter(y=>y.parentId===tk.id))));
+ if(tops.length>25)pt.appendChild(el('<div class=mut style="font-size:12px;padding:4px 0">+ '+(tops.length-25)+' more</div>'));
  if(!tops.length)pt.appendChild(el('<div class=mut style="font-size:13px;padding:4px 0">—</div>'));
  const add=async()=>{const v=d.querySelector('#nt').value.trim();if(!v)return;
   const r=await api('/api/task/new',{title:v,projectId:proj.id});if(r.error){alert(r.error);return}await refresh()};
  d.querySelector('#ntb').onclick=add;
  d.querySelector('#nt').onkeydown=(e)=>{if(e.key==='Enter')add()};
- threads.slice().reverse().forEach(c=>{
+ threads.slice().reverse().slice(0,20).forEach(c=>{
   const label=c.title||(c.messages[0]?String(c.messages[0].text).slice(0,50):c.id);
   const b=el('<button class="pitem'+(S.convId===c.id?' on':'')+'">'+esc(label)+'</button>');
   b.onclick=()=>{S.convId=c.id;render()};d.appendChild(b)});
@@ -408,8 +427,10 @@ function workView(){
 
 // ── thread ───────────────────────────────────────────────────────────────────
 function bubble(m){
+ const arts=(m.meta&&m.meta.artifacts)||[];
+ const names=arts.map(id=>{const a=((S.state||{}).artifacts||[]).find(x=>x.id===id);return a?a.name:id});
  const d=el('<div class="msg '+(m.role==='user'?'user':'bot')+'"><div class=who>'+(m.role==='user'?esc(t('shell.you')):esc(t('shell.brain')))+'</div>'
-  +'<div class=body>'+esc(m.text)+'</div>'
+  +'<div class=body>'+esc(m.text)+(names.length?'<br>'+names.map(n=>'<span class=attach>📎 '+esc(n)+'</span>').join(' '):'')+'</div>'
   +(m.meta&&(m.meta.model||m.meta.citations&&m.meta.citations.length)?'<div class=meta>'+esc([m.meta.provider&&m.meta.model?(m.meta.provider+'/'+m.meta.model):null,m.meta.costSource,m.meta.citations&&m.meta.citations.length?(t('shell.sources')+': '+m.meta.citations.join(' · ')):null].filter(Boolean).join(' · '))+'</div>':'')
   +'</div>');
  return d;
@@ -432,6 +453,10 @@ function thread(){
  if(mission){const ex=(s.executions||[]).filter(e=>e.missionId===mission.id).slice(-1)[0];
   if(ex)box.appendChild(runCard(ex))}
  const th=document.getElementById('thread');th.scrollTop=th.scrollHeight;
+ // Live work keeps the view fresh WITHOUT blocking the user: poll while anything runs.
+ if((s.executions||[]).some(e=>e.status==='running')){
+  clearTimeout(S._poll);S._poll=setTimeout(refresh,3000);
+ }
 }
 
 // ── onboarding: the first conversation — answered IN the composer ───────────
@@ -503,15 +528,28 @@ function composer(){
  const grow=()=>{msg.style.height='auto';msg.style.height=Math.min(msg.scrollHeight,200)+'px'};
  msg.oninput=grow;
  msg.onkeydown=(e)=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();document.getElementById('send').click()}};
+ // Attachments: upload the file first, reference it in the message.
+ const at=document.getElementById('attach');at.title=t('upload.attach');
+ const showAtts=()=>{document.getElementById('atts').innerHTML=(S.pendingAtts||[]).map(a=>'<span class=attach>📎 '+esc(a.name)+'</span>').join(' ')};
+ at.onclick=()=>document.getElementById('file').click();
+ document.getElementById('file').onchange=async(e)=>{
+  const f=e.target.files[0];if(!f)return;
+  if(f.size>2*1024*1024){alert('2 MB max');return}
+  const b64=await new Promise((res)=>{const r=new FileReader();r.onload=()=>res(String(r.result).split(',')[1]);r.readAsDataURL(f)});
+  const r=await api('/api/upload',{name:f.name,contentBase64:b64,mime:f.type,projectId:S.projectId});
+  if(r.error){alert(r.error);return}
+  S.pendingAtts=[...(S.pendingAtts||[]),r.artifact];showAtts();
+  e.target.value='';};
+ showAtts();
  const send=document.getElementById('send');send.title=t('shell.send');
  send.onclick=async()=>{
-  const txt=msg.value.trim();if(!txt)return;
+  const txt=msg.value.trim();if(!txt&&!(S.pendingAtts||[]).length)return;
   if(!onboarded(S.state||{})){msg.value='';grow();await obAnswer(txt);return}
   thinking(true);
-  const r=await api('/api/chat/send',{conversationId:S.convId,scope:S.scope,department:S.dept||null,agentId:S.agent||null,mode:S.mode,text:txt,projectId:S.projectId});
+  const r=await api('/api/chat/send',{conversationId:S.convId,scope:S.scope,department:S.dept||null,agentId:S.agent||null,mode:S.mode,text:txt,projectId:S.projectId,artifacts:(S.pendingAtts||[]).map(a=>a.id)});
   thinking(false);
   if(r.error){alert(r.error);return}
-  S.convId=r.conversation.id;msg.value='';grow();await refresh()};
+  S.pendingAtts=[];S.convId=r.conversation.id;msg.value='';grow();await refresh()};
  grow();
 }
 function render(){

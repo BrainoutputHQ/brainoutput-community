@@ -43,6 +43,18 @@ after(() => { srv?.kill(); zenStub?.close(); rmSync(dir, { recursive: true, forc
 
 const post = (path, body) => fetch(`${BASE}${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json().then((j) => ({ status: r.status, body: j })));
 
+/** Poll until fn() returns truthy (async launches complete in the background). */
+const until = async (fn, ms = 45000) => {
+  const t0 = Date.now();
+  for (;;) {
+    const v = await fn();
+    if (v) return v;
+    if (Date.now() - t0 > ms) throw new Error("timeout waiting for async work");
+    await new Promise((r) => setTimeout(r, 400));
+  }
+};
+const state = () => fetch(`${BASE}/api/state`).then((r) => r.json());
+
 test("/ is the chat-native shell with the locale catalog embedded; /dashboard keeps the old page", async () => {
   const shell = await (await fetch(`${BASE}/`)).text();
   assert.match(shell, /shell\.newProject/);          // catalog keys present
@@ -171,14 +183,20 @@ test("a model that dies on the output budget gets ONE bigger-budget retry — an
   assert.ok(m, JSON.stringify(plan.body).slice(0, 200));
   await post("/api/chat/mission", { missionId: m.id, action: "approve" });
   const launch = await post("/api/chat/launch", { missionId: m.id, timeoutMs: 20000 });
-  assert.equal(launch.status, 200, JSON.stringify(launch.body).slice(0, 300));
-  assert.match(launch.body.conversation.messages.at(-1).text, /retry with a bigger output budget/);
+  assert.equal(launch.status, 200);
+  assert.equal(launch.body.started, true, "launch returns immediately (async)");
+  const conv = await until(async () => {
+    const st = await state();
+    const c = (st.conversations || []).find((x) => x.id === m.conversationId);
+    return c?.messages?.at(-1)?.text?.includes("retry with a bigger output budget") ? c : null;
+  });
+  assert.match(conv.messages.at(-1).text, /retry with a bigger output budget/);
 });
 
 test("a model that only asks for clarification does NOT get a 'Mission complete'", async () => {
   // Route every slot to the stub free connection so the run hits our clarification stub
   // (this machine also has live local models — without this, the worker may use those).
-  const st0 = (await (await fetch(`${BASE}/api/state`)).json());
+  const st0 = await state();
   const freeConn = (st0.connections || []).find((c) => c.kind === "opencode-free");
   assert.ok(freeConn, "connect-free ran earlier in this file");
   for (const slot of Object.keys(st0.assignments || {})) await post("/api/assign", { slot, connectionId: freeConn.id });
@@ -187,11 +205,17 @@ test("a model that only asks for clarification does NOT get a 'Mission complete'
   const m = plan.body.mission;
   await post("/api/chat/mission", { missionId: m.id, action: "approve" });
   const launch = await post("/api/chat/launch", { missionId: m.id, timeoutMs: 20000 });
-  assert.equal(launch.status, 500, "clarification-only output is a failure, never a completion");
-  assert.match(launch.body.error, /no work|clarification|rien produit|précisions|nichts produziert|Klärung/i);
-  // Mission goes back to approved for a relaunch; the spine records the honest failure.
-  const st = await post("/api/chat/send", { scope: "company", mode: "ask", text: "ping" });
-  assert.ok(st.status === 200);
+  assert.equal(launch.body.started, true);
+  const failedMission = await until(async () => {
+    const st = await state();
+    const mm = (st.missions || []).find((x) => x.id === m.id);
+    return mm?.lastError ? mm : null;
+  });
+  assert.match(failedMission.lastError, /no work|clarification|rien produit|précisions|nichts produziert|Klärung/i);
+  assert.equal(failedMission.status, "approved", "back to approved for a relaunch — never stuck running");
+  const st = await state();
+  const ex = (st.executions || []).find((e) => e.id === launch.body.execution.id);
+  assert.equal(ex.status, "failed");
 });
 
 test("a build request in ASK mode auto-drafts a mission — the user never thinks about modes", async () => {
@@ -230,20 +254,15 @@ test("task spine API: manual tasks, subtasks, status flips — and missions repo
   assert.equal(mission.projectId, pid);
 
   await post("/api/chat/mission", { missionId: mission.id, action: "approve" });
-  // Bounded timeout: this machine may have live local models; either way the spine must get
-  // the report — done on success, blocked on failure. Never silent, never stuck.
+  // Async launch: starts instantly; the spine receives the outcome when the runner lands.
   const launch = await post("/api/chat/launch", { missionId: mission.id, timeoutMs: 20000 });
+  assert.equal(launch.body.started, true);
 
-  const state = (await (await fetch(`${BASE}/api/state`)).json());
-  const spine = state.tasks.filter((t) => t.projectId === pid);
-  const reported = spine.find((t) => t.missionId === mission.id);
-  assert.ok(reported, "a spine task carries the mission");
-  if (launch.status === 200) {
-    assert.equal(reported.status, "done");
-    assert.equal(reported.result.ok, true);
-  } else {
-    assert.equal(launch.status, 500);
-    assert.equal(reported.status, "blocked");
-    assert.equal(reported.result.ok, false);
-  }
+  const reported = await until(async () => {
+    const st = await state();
+    const task = (st.tasks || []).find((t) => t.projectId === pid && t.missionId === mission.id && t.result);
+    return task || null;
+  });
+  assert.ok(["done", "blocked"].includes(reported.status));
+  assert.equal(typeof reported.result.ok, "boolean");
 });

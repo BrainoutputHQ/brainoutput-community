@@ -131,6 +131,9 @@ export async function executePlan(plan, inputsByNode = {}, opts = {}) {
       r = { ...r, ...resolveApprovalGate({ review: lastReview, node: n, brief }) };
     }
     out.push(r);
+    // Live progress hook (async launches): the caller can persist each node as it lands,
+    // so a watching UI sees the run unfold instead of a blank wait.
+    try { opts.onNodeDone?.(r, out.length - 1, plan); } catch {}
   }
   return out;
 }

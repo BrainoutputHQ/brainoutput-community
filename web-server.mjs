@@ -9,7 +9,7 @@
 import http from "node:http";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { request as httpReq } from "node:http";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { Store } from "./store.mjs";
 import { routeTask, makeCatalog, costReport, executionSummary, validateCompanyConfig } from "./ce-core.mjs";
@@ -266,6 +266,23 @@ async function api(req, res, url) {
     store.setConnections(connections).setAssignments(assignments).saveDefinition();
     return json(res, { ...publicState(), picked: { model: pick.model, provider: conn.provider, costSource: "free", toolSupport: pick.toolSupport },
       tried: pick.tried, upgradedSlots: fillSlots.filter((s) => existing[s]), privacyNote: FREE_PRIVACY_NOTE });
+  }
+  if (url.pathname === "/api/upload") {
+    // Attach a file to the chat: stored beside the runtime (0600), recorded as an artifact the
+    // thread and missions can reference. Bounded, name-sanitized, never executable.
+    const name = String(b.name || "file").replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 60) || "file";
+    const buf = Buffer.from(String(b.contentBase64 || ""), "base64");
+    if (!buf.length) return json(res, { error: "empty file" }, 400);
+    if (buf.length > 2 * 1024 * 1024) return json(res, { error: "file too large (2 MB max)" }, 413);
+    const dir = join(store.dir, "uploads");
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const id = uid("upl");
+    const rel = join("uploads", `${id}-${name}`);
+    writeFileSync(join(store.dir, rel), buf, { mode: 0o600 });
+    const art = store.addArtifact({ id, kind: "upload", name, path: rel, size: buf.length,
+      mime: b.mime || "application/octet-stream", projectId: b.projectId || null, createdAt: Date.now() });
+    store.saveRuntime();
+    return json(res, { artifact: art });
   }
   if (url.pathname === "/api/task/new") {
     try {
@@ -583,8 +600,12 @@ async function chatSend(res, b) {
     conv = { ...conv, department: b.department };
 
   const mentioned = resolveMention(b.text || "", store.def.agents || []);
-  if (mentioned) { conv = { ...conv, scope: "agent", agentId: mentioned.id, department: mentioned.department }; }
-  conv = addMessage(conv, { role: "user", text: b.text || "", mode, at: Date.now() });
+  if (mentioned) { conv = { ...conv, scope: "agent", agentId: mentioned.id, department: mentioned.department } };
+  // Attachments: only ids of artifacts that actually exist (uploaded first) may be referenced.
+  const attachIds = (Array.isArray(b.artifacts) ? b.artifacts : [])
+    .filter((id) => (store.runtime.artifacts || []).some((a) => a.id === id));
+  conv = addMessage(conv, { role: "user", text: b.text || "", mode, at: Date.now(),
+    meta: attachIds.length ? { artifacts: attachIds } : {} });
 
   const model = chatModelFor(conv);
   let reply = null, mission = null, rag = [];
@@ -842,65 +863,77 @@ async function chatLaunch(res, b) {
       assignee: r.agent, status: "in-progress", at: Date.now() }), missionId: m.id };
     store.addTask(spineTask);
   }
-  // The executor receives the compact mission context — never the transcript.
-  const conv = getConversation(m.conversationId);
-  const cc = conv ? compactContext(conv, { query: m.objective, k: 3 }) : { pinned: [], relevant: [] };
-  const prompt = `${m.objective}\n\nConstraints: ${(m.constraints || []).join("; ") || "none"}\nAcceptance: ${(m.acceptanceCriteria || []).join("; ") || "none"}\n\nDo not ask for clarification. Make reasonable assumptions (state them in one line), then produce the COMPLETE deliverable — the full file or content itself, not a description or plan of it.`;
-  let results = [];
-  let retried = false;
-  try { results = await executePlan(r.plan, { _all: { prompt } }, { maxTokens: b.maxTokens || 1500, boundPolicies: r.boundPolicies, task: m.task, timeoutMs: b.timeoutMs || 240000 }); }
-  catch (e) {
-    // One bounded retry when the model died on the OUTPUT BUDGET (empty content at
-    // finish_reason=length / budget spent reasoning) — the same model, double the budget.
-    // Not a fallback, never a different (let alone paid) model: just a bigger allowance.
-    if (!/no content|budget/i.test(String(e.message || e))) return launchFailed(res, m, spineTask, e);
-    retried = true;
-    try { results = await executePlan(r.plan, { _all: { prompt } }, { maxTokens: (b.maxTokens || 1500) * 2, boundPolicies: r.boundPolicies, task: m.task, timeoutMs: b.timeoutMs || 240000 }); }
-    catch (e2) { return launchFailed(res, m, spineTask, e2); }
-  }
-
-  // "Complete" must mean WORK. A model that answers with a clarification request (or near-nothing)
-  // produced no deliverable — report it as the failure it is, never as a done mission. Note a
-  // `completion:…` artifact marks any non-empty ANSWER; it is not work — only real files count.
-  const CLARIFY = /haven't provided|could you please clarif|can you provide|please provide|need more (info|context|detail)|pourriez-vous (préciser|fournir)|besoin de plus/i;
-  const isFileArtifact = (a) => a && !String(a).startsWith("completion:");
-  const producedWork = results.some((x) => isFileArtifact(x.artifact) || ((x.output || "").trim().length > 120 && !CLARIFY.test(x.output || "")));
-  if (!producedWork) return launchFailed(res, m, spineTask, new Error(tChat("chat.noWork")));
-
-  const rep = costReport(results);
-  const eff = efficiencyReport({ plan: r.plan, results, shape: r.shape });
-  const exec = store.addExecution({ id: uid("exec"), missionId: m.id, conversationId: m.conversationId, department: r.department,
-    agent: r.agent, shape: r.shape, graph: r.plan.map((n) => ({ node: n.node, model: n.model?.model || null, provider: n.model?.provider || null,
-      costSource: n.model?.costSource || null, needsConfiguration: !!n.model?.needsConfiguration })),
-    results, costBySource: rep.byCostSource, efficiency: eff, status: "done", createdAt: Date.now(),
-    // `logs` is what the Run-history view joins. runTask writes it; this path did not, so opening
-    // Settings -> Run history after any chat-launched mission threw on `ex.logs.join` and rendered
-    // a blank page with no error.
-    logs: results.flatMap((x) => x.logs || (x.output ? [String(x.output)] : [])) });
-
-  // A plan can contain a human gate. runTask records one as a pending approval (see the loop in
-  // runTask); this path did not — so the mission was written "done", nothing pended anywhere, and
-  // the human the gate exists for was never asked. A gate that nobody sees is not a gate.
-  const gates = r.plan.filter((n) => n.gate);
-  for (const n of gates)
-    store.addApproval({ id: uid("appr"), missionId: m.id, executionId: exec.id, kind: "action",
-      status: "pending", node: n.node, what: n.gateReason || m.objective,
-      requestedBy: r.agent, requestedAt: Date.now() });
-
-  const pending = gates.length > 0 || results.some((x) => x.humanRequired || x.status === "pending-human-approval");
-  const done = { ...m, status: pending ? "awaiting-approval" : "done", artifacts: eff.artifacts,
-                 pendingApprovals: gates.length };
-  store.addMission(done);
-  if (spineTask && !pending) store.addTask(reportMissionToTask(store.runtime, spineTask.id, { missionId: m.id, ok: true,
-    summary: results.map((x) => x.output).filter(Boolean).join(" | ").slice(0, 200) || "done", artifacts: eff.artifacts, at: Date.now() }));
-
-  const review = reviewMission(done, results);
-  let c2 = conv ? addMessage(conv, { role: "assistant", mode: "execute", at: Date.now(),
-    text: `Mission complete${retried ? " (after a retry with a bigger output budget)" : ""} — graph ${eff.graph}${eff.stagesSkipped.length ? `, skipped ${eff.stagesSkipped.join(", ")}` : ""}. ${review.allMet ? "Acceptance criteria met." : review.unmet.length ? `Unmet: ${review.unmet.join("; ")}` : ""}`,
-    meta: { executionId: exec.id, efficiency: eff } }) : null;
-  if (c2) saveConversation(c2);
+  // ASYNC LAUNCH: the execution record exists from this moment (status running, nodes pending)
+  // and the runner fills it as each node lands — the UI watches live, the chat never blocks.
+  // Work may legitimately take minutes-to-days; the thread is the wrong place to wait for it.
+  const exec = store.addExecution({ id: uid("exec"), missionId: m.id, conversationId: m.conversationId,
+    projectId: m.projectId || null, department: r.department, agent: r.agent, shape: r.shape,
+    graph: r.plan.map((n) => ({ node: n.node, model: n.model?.model || null, provider: n.model?.provider || null,
+      costSource: n.model?.costSource || null, needsConfiguration: !!n.model?.needsConfiguration, status: "pending" })),
+    results: [], logs: [], status: "running", createdAt: Date.now() });
   store.saveRuntime();
-  return json(res, { mission: done, execution: exec, efficiency: eff, review, conversation: c2 || null });
+
+  const prompt = `${m.objective}\n\nConstraints: ${(m.constraints || []).join("; ") || "none"}\nAcceptance: ${(m.acceptanceCriteria || []).join("; ") || "none"}\n\nDo not ask for clarification. Make reasonable assumptions (state them in one line), then produce the COMPLETE deliverable — the full file or content itself, not a description or plan of it.`;
+  const conv = getConversation(m.conversationId);
+  const run = async () => {
+    const updateExec = (patch) => { store.addExecution({ ...exec, ...patch }); store.saveRuntime(); };
+    const onNodeDone = (result, i) => {
+      exec.results.push(result);
+      exec.logs.push(`${result.node}: ${result.output ? String(result.output).slice(0, 400) : result.needsConfiguration ? "UNCONFIGURED → offer free/BYOK/local/stop" : result.gate ? "human approval required" : ""}`);
+      if (exec.graph[i]) exec.graph[i] = { ...exec.graph[i], status: "done" };
+      updateExec({});
+    };
+    const fail = (msg) => {
+      store.addMission({ ...m, status: "approved", lastError: msg });
+      if (spineTask) store.addTask(reportMissionToTask(store.runtime, spineTask.id, { missionId: m.id, ok: false, summary: msg.slice(0, 200), at: Date.now() }));
+      updateExec({ status: "failed" });
+      const cf = getConversation(m.conversationId);
+      if (cf) saveConversation(addMessage(cf, { role: "assistant", mode: "execute", at: Date.now(),
+        text: tChat("chat.launchFailed").replace("{error}", msg.slice(0, 300)) }));
+      store.saveRuntime();
+    };
+    let results = [];
+    let retried = false;
+    try {
+      results = await executePlan(r.plan, { _all: { prompt } }, { maxTokens: b.maxTokens || 1500, boundPolicies: r.boundPolicies, task: m.task, timeoutMs: b.timeoutMs || 240000, onNodeDone });
+    } catch (e) {
+      if (!/no content|budget/i.test(String(e.message || e))) return fail(String(e.message || e));
+      retried = true;
+      try {
+        results = await executePlan(r.plan, { _all: { prompt } }, { maxTokens: (b.maxTokens || 1500) * 2, boundPolicies: r.boundPolicies, task: m.task, timeoutMs: b.timeoutMs || 240000, onNodeDone });
+      } catch (e2) { return fail(String(e2.message || e2)); }
+    }
+
+    // "Complete" must mean WORK (see sync-path comment): clarification-only/near-empty is a failure.
+    const CLARIFY = /haven't provided|could you please clarif|can you provide|please provide|need more (info|context|detail)|pourriez-vous (préciser|fournir)|besoin de plus/i;
+    const isFileArtifact = (a) => a && !String(a).startsWith("completion:");
+    if (!results.some((x) => isFileArtifact(x.artifact) || ((x.output || "").trim().length > 120 && !CLARIFY.test(x.output || ""))))
+      return fail(tChat("chat.noWork"));
+
+    const rep = costReport(results);
+    const eff = efficiencyReport({ plan: r.plan, results, shape: r.shape });
+    updateExec({ results, costBySource: rep.byCostSource, efficiency: eff, status: "done",
+      logs: results.flatMap((x) => x.logs || (x.output ? [String(x.output)] : [])) });
+    const gates = r.plan.filter((n) => n.gate);
+    for (const n of gates)
+      store.addApproval({ id: uid("appr"), missionId: m.id, executionId: exec.id, kind: "action",
+        status: "pending", node: n.node, what: n.gateReason || m.objective,
+        requestedBy: r.agent, requestedAt: Date.now() });
+    const pending = gates.length > 0 || results.some((x) => x.humanRequired || x.status === "pending-human-approval");
+    const done = { ...m, status: pending ? "awaiting-approval" : "done", artifacts: eff.artifacts, pendingApprovals: gates.length };
+    store.addMission(done);
+    if (spineTask && !pending) store.addTask(reportMissionToTask(store.runtime, spineTask.id, { missionId: m.id, ok: true,
+      summary: results.map((x) => x.output).filter(Boolean).join(" | ").slice(0, 200) || "done", artifacts: eff.artifacts, at: Date.now() }));
+    const review = reviewMission(done, results);
+    const c2 = conv ? addMessage(conv, { role: "assistant", mode: "execute", at: Date.now(),
+      text: `Mission complete${retried ? " (after a retry with a bigger output budget)" : ""} — graph ${eff.graph}${eff.stagesSkipped.length ? `, skipped ${eff.stagesSkipped.join(", ")}` : ""}. ${review.allMet ? "Acceptance criteria met." : review.unmet.length ? `Unmet: ${review.unmet.join("; ")}` : ""}`,
+      meta: { executionId: exec.id, efficiency: eff } }) : null;
+    if (c2) saveConversation(c2);
+    store.saveRuntime();
+  };
+  run().catch((e) => { try { store.addExecution({ ...exec, status: "failed" }); store.saveRuntime(); } catch {} console.error(`async launch ${exec.id} crashed: ${e.message}`); });
+
+  return json(res, { started: true, mission: { ...m, status: "running" }, execution: exec });
 }
 
 function publicState() {
@@ -909,6 +942,7 @@ function publicState() {
     connections: store.def.modelConnections, assignments: store.def.modelAssignments,
     agentViews: store.def.agents.map((a) => renderAgentView(a, store.def.modelAssignments, store.def.modelConnections)),
     tasks: store.runtime.tasks, executions: store.runtime.executions, approvals: store.runtime.approvals,
+    artifacts: store.runtime.artifacts || [],
     conversations: store.runtime.conversations || [], missions: store.runtime.missions || [],
     projects: listProjects(store.runtime),
     workTwins: (store.runtime.workTwins || []).map(publicTwin),
