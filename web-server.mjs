@@ -116,7 +116,15 @@ function guardRequest(req, url) {
   const fromBrowser = !!origin || !!req.headers["sec-fetch-site"];
   if (origin) {
     let ok = false;
-    try { const o = new URL(origin); ok = LOOPBACK.has(o.hostname.toLowerCase()) && (!o.port || o.port === String(PORT)); } catch {}
+    try {
+      const o = new URL(origin);
+      const hn = o.hostname.toLowerCase();
+      // Loopback origins must come from THIS server's port. A deliberately-allowed host
+      // (BO_CE_ALLOWED_HOSTS — the hosted case, e.g. <id>.trial.brainoutput.com) arrives on
+      // https/443 publicly while the app listens on PORT internally — its Origin port is 443 or absent.
+      ok = (LOOPBACK.has(hn) && (!o.port || o.port === String(PORT)))
+        || (EXTRA_HOSTS.has(hn) && (!o.port || o.port === "443" || o.port === String(PORT)));
+    } catch {}
     if (!ok) return { code: 403, error: `refused: cross-origin request from '${origin}'` };
   }
   const site = req.headers["sec-fetch-site"];

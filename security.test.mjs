@@ -57,8 +57,7 @@ test("a foreign Host is refused (DNS rebinding)", async () => {
 
 test("a browser request without the CSRF token is refused, even same-origin", async () => {
   const r = await post("/api/worktwin/mode", { Origin: BASE, "Content-Type": "application/json" });
-  assert.equal(r.status, 403);
-  assert.match((await r.json()).error, /CSRF/);
+  assert.equal(r.status, 403);  assert.match((await r.json()).error, /CSRF/);
 });
 
 test("state-changing requests must be JSON (blocks form-style posts)", async () => {
@@ -232,5 +231,35 @@ test("hosted mode: a token is required, and only the right one works", async () 
     const cookie = setCookie.split(";")[0];
     assert.equal((await fetch(`${BASE2}/api/state`, { headers: { Cookie: cookie } })).status, 200);
     assert.equal((await fetch(`${BASE2}/api/state`, { headers: { Cookie: "bo_access=forged" } })).status, 401);
+  } finally { proc.kill(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+// Hosted mode (the trial): the workspace's PUBLIC origin (https://<id>.trial.brainoutput.com) must
+// pass the origin gate — the bug that refused every browser POST from a hosted workspace. A foreign
+// origin must still be refused. The Host check needs BO_CE_ALLOWED_HOSTS set for the tenant host.
+test("hosted origin: allowed-host origins pass, foreign origins still refused", async () => {
+  const { spawn } = await import("node:child_process");
+  const dir = mkdtempSync(join(tmpdir(), "bo-sec-hosted-"));
+  const PORT3 = 4399, BASE3 = `http://127.0.0.1:${PORT3}`;
+  const TENANT = "dimitri-rouil-b8808a.trial.brainoutput.com";
+  const proc = spawn(process.execPath, [join(HERE, "web-server.mjs")], {
+    env: { ...process.env, BO_CE_WEB_PORT: String(PORT3), BO_CE_ALLOWED_HOSTS: TENANT, BO_CE_DATA: dir },
+    stdio: "ignore" });
+  try {
+    for (let i = 0; i < 60; i++) { try { await fetch(`${BASE3}/api/state`); break; } catch { await new Promise((r) => setTimeout(r, 250)); } }
+    const postHosted = (origin) => fetch(`${BASE3}/api/settings`, { method: "POST",
+      headers: { "Content-Type": "application/json", Origin: origin, Host: TENANT },
+      body: JSON.stringify({ locale: "fr" }) });
+
+    // The tenant's own origin: passes the ORIGIN gate (fails only on the CSRF token, as any
+    // browser before page load would — the gate order itself is what the bug broke).
+    const ok = await postHosted(`https://${TENANT}`);
+    assert.equal(ok.status, 403);
+    assert.match((await ok.json()).error, /CSRF/, "tenant origin must pass the origin gate");
+
+    // A foreign origin is still refused AT the origin gate.
+    const bad = await postHosted("https://evil.example");
+    assert.equal(bad.status, 403);
+    assert.match((await bad.json()).error, /cross-origin/);
   } finally { proc.kill(); rmSync(dir, { recursive: true, force: true }); }
 });
