@@ -561,7 +561,7 @@ function composer(){
  ['ask','plan','execute','review'].forEach(m=>{const b=el('<button'+(S.mode===m?' class=on':'')+'>'+esc(t('mode.'+m))+'</button>');
   b.onclick=()=>{S.mode=m;composer()};md.appendChild(b)});
  md.style.display=onboarded(s)?'flex':'none';
- const msg=document.getElementById('msg');msg.placeholder=t('shell.composer');
+ const msg=document.getElementById('msg');msg.placeholder=t('composer.'+S.mode)||t('shell.composer');
  const grow=()=>{msg.style.height='auto';msg.style.height=Math.min(msg.scrollHeight,200)+'px'};
  msg.oninput=grow;
  msg.onkeydown=(e)=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();document.getElementById('send').click()}};
