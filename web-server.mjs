@@ -413,7 +413,7 @@ async function twinAction(res, b) {
         if (!body && model.connection && !model.needsConfiguration) {
           const src = retrieveForRequest(t, b.query || b.ref || "", { k: 3 });
           const prompt = `Write a short, professional reply. Use ONLY these facts:\n${src.map((x) => `- ${x.subject}: ${x.snippet}`).join("\n")}\n\nReply:`;
-          try { const r = await runNode({ node: "twin", slot: model.slot }, model, { prompt }, { maxTokens: 250, timeoutMs: 120000 }); body = r.output; } catch {}
+          try { const r = await runNode({ node: "twin", slot: model.slot }, model, { prompt }, { maxTokens: 800, timeoutMs: 120000 }); body = r.output; } catch {}
         }
         const d = draftReply(t, { messageRef: b.ref, body, model: model.model || null, runtime: model.connection?.runtime || null, at: now });
         if (!d.ok) return json(res, { error: d.reason, permission: d.permission }, 403);
@@ -446,7 +446,7 @@ async function twinAction(res, b) {
         let results = [];
         try {
           const prompt = `${packet.objective}\n\nFacts:\n${packet.facts.map((f) => `- ${f}`).join("\n")}\n\nConstraints: ${packet.constraints.join("; ") || "none"}`;
-          results = await executePlan(r.plan, { _all: { prompt } }, { maxTokens: 400, timeoutMs: b.timeoutMs || 120000, boundPolicies: r.boundPolicies });
+          results = await executePlan(r.plan, { _all: { prompt } }, { maxTokens: b.maxTokens || 1500, timeoutMs: b.timeoutMs || 240000, boundPolicies: r.boundPolicies });
         } catch (e) { return json(res, { error: `delegation failed: ${e.message}`, packet }, 500); }
         const eff = efficiencyReport({ plan: r.plan, results, shape: r.shape });
         t = recordDelegation(t, { packet, result: results.map((x) => x.output || x.artifact).filter(Boolean).join(" | ").slice(0, 400), at: now });
@@ -609,7 +609,7 @@ async function chatSend(res, b) {
             let body = null;
             if (model.connection && !model.needsConfiguration) {
               const p = `Write a brief professional reply using ONLY these facts:\n${src.map((x) => `- ${x.subject}: ${x.snippet}`).join("\n")}\n\nReply:`;
-              try { const rr = await runNode({ node: "twin", slot: model.slot }, model, { prompt: p }, { maxTokens: 250, timeoutMs: 120000 }); body = rr.output; } catch {}
+              try { const rr = await runNode({ node: "twin", slot: model.slot }, model, { prompt: p }, { maxTokens: 800, timeoutMs: 120000 }); body = rr.output; } catch {}
             }
             const d = draftReply(t, { messageRef: ref, body, model: model.model || null, runtime: model.connection?.runtime || null, at: now });
             if (!d.ok) reply = d.reason;
@@ -659,16 +659,21 @@ async function chatSend(res, b) {
     // READ-ONLY: retrieve from company knowledge, then answer with the conversation model if available.
     rag = searchRag([knowledgeSource()], b.text || "", { agent: { id: conv.agentId, department: conv.department }, topK: 3 });
     const ctx = compactContext(conv, { query: b.text || "", k: 3 });
+    let modelError = null;
     if (model.connection && !model.needsConfiguration) {
       const prompt = `Answer the question using ONLY the context. Be brief.\n\nContext:\n${rag.map((r) => `- ${r.text} (${r.citation})`).join("\n") || "(no matching company knowledge)"}\n\nPinned constraints: ${ctx.pinned.map((p) => p.text).join("; ") || "none"}\n\nQuestion: ${b.text}`;
       try {
-        const r = await runNode({ node: "chat", slot: model.slot }, model, { prompt }, { maxTokens: 300 });
+        // 800 tokens: reasoning models (deepseek-flash & co.) think first — a small budget used
+        // to be eaten entirely by reasoning and surfaced as "no model configured", which was a lie.
+        const r = await runNode({ node: "chat", slot: model.slot }, model, { prompt }, { maxTokens: 800 });
         reply = r.output || null;
-      } catch (e) { reply = null; }
+      } catch (e) { modelError = String(e.message || e); }
     }
-    if (!reply) reply = rag.length
-      ? `From your company knowledge:\n${rag.map((r) => `• ${r.text}  [${r.citation}]`).join("\n")}`
-      : "No matching company knowledge, and no conversation model is configured — connect a free/local/BYOK model or ask about your departments and agents.";
+    if (!reply) {
+      const knowledge = rag.length ? `From your company knowledge:\n${rag.map((r) => `• ${r.text}  [${r.citation}]`).join("\n")}` : null;
+      if (modelError) reply = `${knowledge ? knowledge + "\n\n" : ""}The conversation model failed: ${modelError}\nTry again, or connect another model (local / free / your own key).`;
+      else reply = knowledge || "No matching company knowledge, and no conversation model is configured — connect a free/local/BYOK model or ask about your departments and agents.";
+    }
   } else if (mode === "plan") {
     const gate = modeAllows(mode, "draft-plan");
     if (!gate.allowed) return json(res, { error: gate.reason }, 400);
@@ -786,7 +791,7 @@ async function chatLaunch(res, b) {
   const cc = conv ? compactContext(conv, { query: m.objective, k: 3 }) : { pinned: [], relevant: [] };
   const prompt = `${m.objective}\n\nConstraints: ${(m.constraints || []).join("; ") || "none"}\nAcceptance: ${(m.acceptanceCriteria || []).join("; ") || "none"}`;
   let results = [];
-  try { results = await executePlan(r.plan, { _all: { prompt } }, { maxTokens: 400, boundPolicies: r.boundPolicies, task: m.task, timeoutMs: b.timeoutMs || 120000 }); }
+  try { results = await executePlan(r.plan, { _all: { prompt } }, { maxTokens: b.maxTokens || 1500, boundPolicies: r.boundPolicies, task: m.task, timeoutMs: b.timeoutMs || 240000 }); }
   catch (e) {
     // A failed run must never leave a mission stuck mid-flight: record the failure, say so in the
     // conversation, and put the mission back to APPROVED so the user can retry or edit and re-approve.

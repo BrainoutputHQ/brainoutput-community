@@ -10,21 +10,27 @@ const okFetch = (good = [], seen = []) => async (url, opts) => {
   return { ok: true, json: async () => ({ choices: [{ message: { content: "ok" } }] }) };
 };
 
-test("health check: a real completion is required — HTTP failures and empty answers are not 'available'", async () => {
+test("health check: a real VISIBLE answer is required — HTTP failures, empty answers and reasoning-only answers are not 'available'", async () => {
   assert.equal((await healthCheckFree("http://x", "a", { fetchImpl: okFetch(["a"]) })).ok, true);
   assert.equal((await healthCheckFree("http://x", "b", { fetchImpl: okFetch(["a"]) })).ok, false);
   const empty = async () => ({ ok: true, json: async () => ({ choices: [{ message: {} }] }) });
   assert.equal((await healthCheckFree("http://x", "a", { fetchImpl: empty })).ok, false);
+  const reasoningOnly = async () => ({ ok: true, json: async () => ({ choices: [{ message: { content: "", reasoning_content: "thinking…" } }] }) });
+  const rr = await healthCheckFree("http://x", "a", { fetchImpl: reasoningOnly });
+  assert.equal(rr.ok, false);
+  assert.match(rr.reason, /reasoning-only/);
   const boom = async () => { throw new Error("offline"); };
   assert.match((await healthCheckFree("http://x", "a", { fetchImpl: boom })).reason, /offline/);
 });
 
-test("pick: first HEALTHY candidate wins, never a hardcoded one; tried list is kept", async () => {
-  const seen = [];
-  const r = await pickFreeModel({ endpoint: "http://x", candidates: ["m1", "m2", "m3"], fetchImpl: okFetch(["m2"], seen) });
-  assert.equal(r.model, "m2");
-  assert.deepEqual(seen, ["m1", "m2"], "stops at the first healthy");
-  assert.equal(r.tried.length, 2);
+test("pick: the FASTEST healthy candidate wins (parallel checks); tried list covers all", async () => {
+  const slow = async (url, opts) => {
+    if (JSON.parse(opts.body).model === "m1") await new Promise((r) => setTimeout(r, 80));
+    return okFetch(["m1", "m2"])(url, opts);
+  };
+  const r = await pickFreeModel({ endpoint: "http://x", candidates: ["m1", "m2", "m3"], fetchImpl: slow });
+  assert.equal(r.model, "m2", "m2 answers instantly (okFetch), m1 answers slowly — fastest wins");
+  assert.equal(r.tried.length, 3, "every candidate was checked");
 
   const none = await pickFreeModel({ endpoint: "http://x", candidates: ["m1"], fetchImpl: okFetch([]) });
   assert.equal(none.model, null);

@@ -27,8 +27,13 @@ export const FREE_CANDIDATES = [
 export const FREE_PRIVACY_NOTE =
   "Free models (OpenCode Zen): $0, no key needed — but during the free period prompts may be used to improve the model. Don't send confidential data through them; use a local model or your own key for private work.";
 
-/** A REAL minimal completion — a model that cannot answer is not "available". */
+/** A REAL minimal completion — a model that cannot answer is not "available".
+ *  Requires visible CONTENT within a tiny budget: reasoning models (deepseek-r1-style) spend
+ *  it all on hidden reasoning_content and return "" — fine models, wrong fit for a chat UI
+ *  where the user watches a blank assistant for minutes. We prefer models that answer fast
+ *  and directly; a reasoning-only set fails honestly. */
 export async function healthCheckFree(endpoint, model, { fetchImpl = fetch, timeoutMs = 15000 } = {}) {
+  const started = Date.now();
   try {
     const r = await fetchImpl(endpoint, {
       method: "POST",
@@ -38,22 +43,19 @@ export async function healthCheckFree(endpoint, model, { fetchImpl = fetch, time
     });
     if (!r.ok) return { model, ok: false, reason: `HTTP ${r.status}` };
     const j = await r.json();
-    const content = j.choices?.[0]?.message?.content ?? j.choices?.[0]?.message?.reasoning_content;
-    if (content == null) return { model, ok: false, reason: "empty completion" };
-    return { model, ok: true };
+    const content = j.choices?.[0]?.message?.content;
+    if (content == null || String(content).trim() === "")
+      return { model, ok: false, reason: j.choices?.[0]?.message?.reasoning_content ? "reasoning-only answer (too slow for chat)" : "empty completion" };
+    return { model, ok: true, ms: Date.now() - started };
   } catch (e) { return { model, ok: false, reason: String(e.message || e) }; }
 }
 
-/** First healthy candidate wins; checks run in order, one at a time (polite to the free tier). */
+/** All candidates checked in PARALLEL (one connect-time burst); the fastest healthy wins. */
 export async function pickFreeModel({ endpoint = process.env.BO_CE_FREE_ENDPOINT || ZEN_CHAT_ENDPOINT,
   candidates = FREE_CANDIDATES, fetchImpl = fetch } = {}) {
-  const tried = [];
-  for (const model of candidates) {
-    const h = await healthCheckFree(endpoint, model, { fetchImpl });
-    tried.push(h);
-    if (h.ok) return { model, endpoint, tried };
-  }
-  return { model: null, endpoint, tried };
+  const tried = await Promise.all(candidates.map((m) => healthCheckFree(endpoint, m, { fetchImpl })));
+  const healthy = tried.filter((h) => h.ok).sort((a, b) => a.ms - b.ms);
+  return { model: healthy[0]?.model || null, endpoint, tried, ms: healthy[0]?.ms ?? null };
 }
 
 /** The ce-core connection for a picked free model. */
