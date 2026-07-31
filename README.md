@@ -10,7 +10,7 @@ own, free, or local — you always see who pays for each model, and your keys ne
 
 [Quick start](#quick-start) · [Full install & examples](CLEAN_INSTALL.md) · [Quickstart](QUICKSTART.md) · [Safety](SAFETY.md)
 
-![Community dashboard — runs on your own models, agents dormant, per-slot local models](docs/community-dashboard.png)
+![The shell — chat-first, projects in the sidebar, a build request auto-drafted as a mission, model + cost shown on every reply (real capture, French UI)](docs/community-shell.png)
 
 ## Why
 
