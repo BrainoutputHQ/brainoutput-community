@@ -100,7 +100,6 @@ pre{background:var(--pre)!important}
  </div>
  <div class=foot>
   <select id=locale><option value="en">EN</option><option value="fr">FR</option><option value="de">DE</option></select>
-  <select id=modepick><option value="standard" id=mstd></option><option value="advanced" id=madv></option></select>
   <button class=ghost id=themebtn style="padding:5px 9px"></button>
  </div>
 </aside>
@@ -125,6 +124,7 @@ pre{background:var(--pre)!important}
 </main>
 <script>
 const T=__BO_I18N__;
+const T_SLOTS=__BO_SLOTS__;
 const LOCALE='__BO_LOCALE__';
 const CSRF='__BO_CSRF__';
 const t=(k)=>T[k]||k;
@@ -164,10 +164,6 @@ function sidebar(){
  const vm=[['chat',t('nav.chat')],['work',t('nav.work')],['settings',t('nav.settings')]];
  ['chat','work','settings'].forEach((v,i)=>{const b=document.getElementById('vm-'+v);b.querySelector('span').textContent=vm[i][1];
   b.className=S.view===v?'on':'';b.onclick=()=>{S.view=v;render()}});
- document.getElementById('mstd').textContent=t('mode.standard');
- document.getElementById('madv').textContent=t('mode.advanced');
- document.getElementById('modepick').value='standard';
- document.getElementById('modepick').onchange=(e)=>{if(e.target.value==='advanced')location.href='/dashboard'};
  const tb=document.getElementById('themebtn');tb.textContent=document.body.classList.contains('dark')?'☀':'☾';
  tb.onclick=toggleTheme;
  const convs=s.conversations||[];
@@ -377,17 +373,21 @@ function settingsView(){
  const a=el('<div class="cardx"><h3>'+esc(t('models.assignments'))+'</h3><div class=mut style="font-size:12.5px;margin-bottom:8px">'+esc(t('models.hint'))+'</div></div>');
  slots.forEach(sl=>{
   const cur=(s.assignments||{})[sl];
-  const row=el('<div style="display:flex;gap:10px;align-items:center;padding:5px 0;border-bottom:1px solid var(--line)">'
-   +'<span class=mut style="min-width:170px;font-size:13px">'+esc(sl)+'</span>'
+  const lab=T_SLOTS[sl]||[sl.replace(/[-_]/g,' '),''];
+  const row=el('<div style="padding:8px 0;border-bottom:1px solid var(--line)">'
+   +'<div style="display:flex;gap:10px;align-items:center">'
+   +'<span style="min-width:200px;font-size:14px;font-weight:600">'+esc(lab[0])+'</span>'
    +'<select class=inp style="margin-top:0" data-slot="'+esc(sl)+'"><option value="">'+esc(t('models.unassigned'))+'</option>'
-   +conns.map(c=>'<option value="'+esc(c.id)+'" '+(c.id===cur?'selected':'')+'>'+esc(c.provider+'/'+c.model+' · '+(c.costSource||''))+'</option>').join('')+'</select></div>');
+   +conns.map(c=>'<option value="'+esc(c.id)+'" '+(c.id===cur?'selected':'')+'>'+esc(c.provider+'/'+c.model+' · '+(c.costSource||'')+(c.health==='down'?' · DOWN':''))+'</option>').join('')+'</select></div>'
+   +(lab[1]?'<div class=mut style="font-size:12px;margin:2px 0 0">'+esc(lab[1])+'</div>':'')+'</div>');
   row.querySelector('select').onchange=async(e)=>{const r=await api('/api/assign',{slot:sl,connectionId:e.target.value||null});if(r.error){alert(r.error);return}S.state=r;render()};
   a.appendChild(row)});
  wrap.appendChild(a);
  const c=el('<div class="cardx"><h3>'+esc(t('models.connections'))+'</h3></div>');
  conns.forEach(cn=>{
+  const dot=cn.health==='down'?'<span title="'+esc(t('models.down'))+'" style="color:var(--warn)">●</span> ':cn.health==='ok'?'<span style="color:var(--ok)">●</span> ':'';
   const row=el('<div style="display:flex;gap:10px;align-items:center;padding:5px 0;border-bottom:1px solid var(--line)">'
-   +'<span style="font-size:13.5px">'+esc(cn.provider+'/'+cn.model)+'</span><span class=mut style="font-size:12px">'+esc(cn.costSource||'')+'</span>'
+   +dot+'<span style="font-size:13.5px">'+esc(cn.provider+'/'+cn.model)+'</span><span class=mut style="font-size:12px">'+esc(cn.costSource||'')+'</span>'
    +'<button class=ghost style="margin-left:auto;padding:4px 10px;font-size:12px">'+esc(t('models.remove'))+'</button></div>');
   row.querySelector('button').onclick=async()=>{const r=await api('/api/connection/remove',{id:cn.id});if(r.error){alert(r.error);return}S.state=r;render()};
   c.appendChild(row)});

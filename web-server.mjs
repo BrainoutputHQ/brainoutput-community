@@ -31,7 +31,7 @@ import { connectDriveSource, driveProviderOptions } from "./drive-sources.mjs";
 import { indexFiles, searchFiles } from "./worktwin.mjs";
 import { efficiencyReport } from "./efficiency.mjs";
 import { selectModel } from "./ce-core.mjs";
-import { CATALOG, LOCALES } from "./i18n.mjs";
+import { CATALOG, LOCALES, SLOT_LABELS } from "./i18n.mjs";
 import { SHELL_PAGE } from "./shell.mjs";
 import { newProject, listProjects, promoteConversation, projectBrief } from "./projects.mjs";
 import { newTask, newSubtask, setTaskStatus, reportMissionToTask } from "./tasks.mjs";
@@ -76,7 +76,20 @@ async function detectLocal() {
     const [host, port] = ep.split(":");
     try { const g = JSON.parse(await probe(host, Number(port) || 80, "/v1/models")); for (const m of (g.data || [])) models.push({ name: m.id, provider: host.replace(/[^a-zA-Z0-9]+/g, "-"), endpoint: `http://${ep}/v1/chat/completions`, contextSize: 32000 }); } catch {}
   }
-  return models;
+  // A model LISTED is not a model ANSWERING (found: every GB10 backend 503 while the gateway
+  // listed it). Health-mark each candidate with a real tiny completion, in parallel — the UI
+  // shows a down model as down instead of discovering it at launch.
+  const checks = models.map(async (m) => {
+    try {
+      const r = await fetch(m.endpoint, { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: m.name, messages: [{ role: "user", content: "ok" }], max_tokens: 2 }),
+        signal: AbortSignal.timeout(8000) });
+      if (!r.ok) return { ...m, health: "down" };
+      const j = await r.json().catch(() => ({}));
+      return { ...m, health: j.choices?.[0] ? "ok" : "down" };
+    } catch { return { ...m, health: "down" }; }
+  });
+  return Promise.all(checks);
 }
 const catalog = makeCatalog([]);
 const ctx = () => ({ agents: store.def.agents, assignments: store.def.modelAssignments, connections: store.def.modelConnections, catalog, departments: DEPARTMENT_TEMPLATES });
@@ -1247,7 +1260,9 @@ const server = http.createServer(async (req, res) => {
   const locale = LOCALES.includes(url.searchParams.get("lang")) ? url.searchParams.get("lang")
     : LOCALES.includes(store.def.settings?.locale) ? store.def.settings.locale : "en";
   const page = url.pathname === "/dashboard" ? PAGE
-    : SHELL_PAGE.replace("__BO_I18N__", JSON.stringify(CATALOG[locale])).replaceAll("__BO_LOCALE__", locale);
+    : SHELL_PAGE.replace("__BO_I18N__", JSON.stringify(CATALOG[locale]))
+        .replace("__BO_SLOTS__", JSON.stringify({ ...SLOT_LABELS.en, ...(SLOT_LABELS[locale] || {}) }))
+        .replaceAll("__BO_LOCALE__", locale);
   res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "no-referrer", "Content-Security-Policy": "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:" });
   res.end(page.replace("__BO_CSRF__", CSRF_TOKEN));

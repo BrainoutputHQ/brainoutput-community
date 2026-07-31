@@ -104,6 +104,7 @@ export const CATALOG = {
     "models.connections": "Connections",
     "models.unassigned": "— unassigned —",
     "models.remove": "remove",
+    "models.down": "this model is not answering right now",
     "run.download": "Download",
     "project.tasks": "Tasks",
     "project.addTask": "Add a task",
@@ -236,6 +237,7 @@ export const CATALOG = {
     "models.connections": "Connexions",
     "models.unassigned": "— non assigné —",
     "models.remove": "supprimer",
+    "models.down": "ce modèle ne répond pas pour l'instant",
     "run.download": "Télécharger",
     "project.tasks": "Tâches",
     "project.addTask": "Ajouter une tâche",
@@ -368,6 +370,7 @@ export const CATALOG = {
     "models.connections": "Verbindungen",
     "models.unassigned": "— nicht zugewiesen —",
     "models.remove": "entfernen",
+    "models.down": "dieses Modell antwortet gerade nicht",
     "run.download": "Herunterladen",
     "project.tasks": "Aufgaben",
     "project.addTask": "Aufgabe hinzufügen",
@@ -408,6 +411,67 @@ export function t(locale, key) {
   const loc = LOCALES.includes(locale) ? locale : "en";
   return CATALOG[loc][key] ?? CATALOG.en[key] ?? key;
 }
+
+/**
+ * Capability slots in PLAIN LANGUAGE (founder 2026-07-31: "reasoning-premium" is not
+ * comprehensible — no dashes, no jargon, every field explained). Unknown slots get a
+ * humanized fallback so nothing ever shows a raw dash-name.
+ */
+export const SLOT_LABELS = {
+  en: {
+    "reasoning-premium": ["Deep thinking (best)", "Hardest problems, most careful answers — slower and pricier."],
+    "reasoning-free": ["Deep thinking (free)", "Careful answers on a free model."],
+    "coding-premium": ["Coding (best)", "Software work with the strongest coding model you connected."],
+    "coding-free": ["Coding (free)", "Software work on a free or local coding model."],
+    "fast-cheap": ["Fast answers", "Quick everyday replies."],
+    "long-context": ["Long documents", "Reading very large files or long histories."],
+    "vision": ["Images", "Understanding pictures and screenshots."],
+    "voice": ["Voice", "Speech in and out."],
+    "embeddings": ["Search & memory", "Finding things in your documents and mail."],
+    "multilingual": ["Languages", "Replies in your customers' languages."],
+    "private-local": ["Private (local only)", "This work never leaves your machine."],
+    "high-trust-review": ["Final check", "A second look before anything important goes out."],
+  },
+  fr: {
+    "reasoning-premium": ["Réflexion approfondie (max)", "Problèmes difficiles, réponses très soignées — plus lent et plus coûteux."],
+    "reasoning-free": ["Réflexion approfondie (gratuit)", "Réponses soignées sur un modèle gratuit."],
+    "coding-premium": ["Code (max)", "Travail logiciel avec le meilleur modèle de code connecté."],
+    "coding-free": ["Code (gratuit)", "Travail logiciel sur un modèle gratuit ou local."],
+    "fast-cheap": ["Réponses rapides", "Réponses courtes du quotidien."],
+    "long-context": ["Longs documents", "Lire de très gros fichiers ou de longs historiques."],
+    "vision": ["Images", "Comprendre images et captures d'écran."],
+    "voice": ["Voix", "Parole entrante et sortante."],
+    "embeddings": ["Recherche & mémoire", "Retrouver l'information dans vos documents et mails."],
+    "multilingual": ["Langues", "Réponses dans la langue de vos clients."],
+    "private-local": ["Privé (local uniquement)", "Ce travail ne quitte jamais votre machine."],
+    "high-trust-review": ["Vérification finale", "Une relecture avant tout envoi important."],
+  },
+  de: {
+    "reasoning-premium": ["Tiefes Denken (best)", "Härteste Probleme, sorgfältigste Antworten — langsamer und teurer."],
+    "reasoning-free": ["Tiefes Denken (frei)", "Sorgfältige Antworten auf einem Gratismodell."],
+    "coding-premium": ["Programmieren (best)", "Softwarearbeit mit dem stärksten verbundenen Codemodell."],
+    "coding-free": ["Programmieren (frei)", "Softwarearbeit auf einem Gratis- oder lokalen Modell."],
+    "fast-cheap": ["Schnelle Antworten", "Kurze Alltagsantworten."],
+    "long-context": ["Lange Dokumente", "Sehr große Dateien oder lange Verläufe lesen."],
+    "vision": ["Bilder", "Bilder und Screenshots verstehen."],
+    "voice": ["Stimme", "Sprache rein und raus."],
+    "embeddings": ["Suche & Gedächtnis", "In Ihren Dokumenten und Mails finden."],
+    "multilingual": ["Sprachen", "Antworten in der Sprache Ihrer Kunden."],
+    "private-local": ["Privat (nur lokal)", "Diese Arbeit verlässt nie Ihren Rechner."],
+    "high-trust-review": ["Letzte Prüfung", "Ein zweiter Blick vor jedem wichtigen Versand."],
+  },
+};
+
+const humanize = (slot) => String(slot).split(/[-_]/).map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+
+/** [label, help] for a slot in plain language; humanized fallback for unknown slots. */
+export function slotLabel(locale, slot) {
+  const loc = LOCALES.includes(locale) ? locale : "en";
+  return SLOT_LABELS[loc]?.[slot] || SLOT_LABELS.en[slot] || [humanize(slot), ""];
+}
+
+/** Every slot the engine can emit — the UI test pins that ALL of them have real labels. */
+export const KNOWN_SLOTS = Object.keys(SLOT_LABELS.en);
 
 /** Keys present in English but missing from a locale — used by the completeness test. */
 export function missingKeys(locale) {

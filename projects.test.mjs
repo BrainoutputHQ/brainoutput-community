@@ -15,6 +15,22 @@ test("every launch locale has exactly the English key set, with no empty values"
   }
 });
 
+test("slot labels: every engine slot has a plain-language label in every locale, no dashes", async () => {
+  const { KNOWN_SLOTS, slotLabel, SLOT_LABELS } = await import("./i18n.mjs");
+  assert.ok(KNOWN_SLOTS.length >= 10);
+  for (const loc of LOCALES) {
+    for (const slot of KNOWN_SLOTS) {
+      const [label, help] = slotLabel(loc, slot);
+      assert.ok(label && !label.includes("-"), `${loc}:${slot} label must be plain, got '${label}'`);
+      assert.ok(help.length > 10, `${loc}:${slot} needs a real explanation`);
+    }
+    // locale parity: same slot set as English
+    assert.deepEqual(Object.keys(SLOT_LABELS[loc]).sort(), Object.keys(SLOT_LABELS.en).sort(), `${loc} slot set differs`);
+  }
+  // unknown slots never show a raw dash-name
+  assert.equal(slotLabel("en", "future-slot-x")[0].includes("-"), false);
+});
+
 test("t() falls back to English for unknown locales and to the key for unknown keys", () => {
   assert.equal(t("es", "shell.send"), "Send");           // es not a launch locale → en
   assert.equal(t("fr", "shell.send"), "Envoyer");

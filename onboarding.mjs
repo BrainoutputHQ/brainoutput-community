@@ -29,7 +29,8 @@ export function detectConnections({ localModels = [], byokKeys = {}, freeAvailab
   for (const m of localModels) {
     conns.push({ id: `local:${m.name}`, kind: "local", provider: m.provider || "ollama", model: m.name,
       endpoint: m.endpoint || "http://127.0.0.1:11434/v1/chat/completions", costSource: "local-compute", funder: "local",
-      contextSize: m.contextSize || null, vision: !!m.vision, multilingual: m.multilingual !== false, coding: m.coding !== false });
+      contextSize: m.contextSize || null, vision: !!m.vision, multilingual: m.multilingual !== false, coding: m.coding !== false,
+      ...(m.health ? { health: m.health } : {}) });
   }
   for (const [prov, env] of Object.entries(byokKeys)) {
     if (!env?.present) continue;
