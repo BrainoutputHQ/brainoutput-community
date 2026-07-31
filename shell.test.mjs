@@ -142,6 +142,27 @@ test("connect-free: health-checks candidates for real, connects the first health
   }
 });
 
+test("connect-runtime dedupes repeated clicks; connection/remove clears its assignments", async () => {
+  const body = { runtime: "opencode", authSource: "free", model: "(free coding model)" };
+  const first = await post("/api/connect-runtime", body);
+  assert.equal(first.status, 200, JSON.stringify(first.body).slice(0, 300));
+  const nAfterFirst = (first.body.connections || []).length;
+  const second = await post("/api/connect-runtime", body);
+  assert.equal(second.status, 200);
+  assert.equal(second.body.deduped, true, "second identical click dedupes");
+  assert.equal((second.body.connections || []).length, nAfterFirst, "no duplicate pile-up");
+
+  // Remove a connection: it disappears, and any assignment pointing at it becomes unassigned.
+  const victim = (second.body.connections || []).find((c) => c.runtime === "opencode");
+  assert.ok(victim);
+  const dead = await post("/api/connection/remove", { id: victim.id });
+  assert.equal(dead.status, 200);
+  assert.ok(!dead.body.connections.some((c) => c.id === victim.id));
+  assert.ok(!Object.values(dead.body.assignments || {}).includes(victim.id), "no dangling assignment");
+  const ghost = await post("/api/connection/remove", { id: victim.id });
+  assert.equal(ghost.status, 404);
+});
+
 test("a model that dies on the output budget gets ONE bigger-budget retry — and the thread says so", async () => {
   const plan = await post("/api/chat/send", { scope: "department", department: "technical", mode: "plan", text: "build the FLAKY-BUDGET widget" });
   const m = plan.body.mission;

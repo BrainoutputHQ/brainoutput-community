@@ -159,10 +159,27 @@ async function api(req, res, url) {
   if (url.pathname === "/api/connect-runtime") {
     try {
       const rec = runtimeConnection({ runtime: b.runtime, authSource: b.authSource, provider: b.provider, model: b.model, endpoint: b.endpoint, modelLocation: b.modelLocation });
+      // DEDUPE: clicking Connect twice must not pile up identical connections. An equivalent
+      // record (same runtime/auth/provider/model/endpoint) is returned, not duplicated.
+      const same = (store.def.modelConnections || []).find((c) => c.runtime === rec.runtime
+        && (c.authSource || null) === rec.authSource && (c.provider || null) === (rec.provider || rec.runtime)
+        && (c.model || null) === (rec.model || "(user-selected)") && (c.endpoint || "") === (b.endpoint || ""));
+      if (same) return json(res, { ...publicState(), deduped: true, connection: same });
       const conn = runtimeToConnection(rec, { id: uid("runtime"), endpoint: b.endpoint, apiKeyEnv: b.apiKeyEnv });
       store.setConnections([...(store.def.modelConnections || []), conn]).saveDefinition();
       return json(res, publicState());
     } catch (e) { return json(res, { error: e.message }, 400); }
+  }
+  if (url.pathname === "/api/connection/remove") {
+    // Remove a connection AND clear the slot assignments that referenced it — an assignment
+    // pointing at a deleted model must become honestly unconfigured, never a dangling id.
+    const id = b.id;
+    const existing = store.def.modelConnections || [];
+    if (!existing.some((c) => c.id === id)) return json(res, { error: `no connection '${id}'` }, 404);
+    store.setConnections(existing.filter((c) => c.id !== id));
+    const assignments = Object.fromEntries(Object.entries(store.def.modelAssignments || {}).filter(([, v]) => v !== id));
+    store.setAssignments(assignments).saveDefinition();
+    return json(res, publicState());
   }
   if (url.pathname === "/api/onboard") {
     // MERGE, never replace. The guided setup order is "1 · Connect a model" then "2 · Your
@@ -994,7 +1011,7 @@ button{margin-top:12px;width:100%;padding:10px;border:0;border-radius:6px;backgr
 const PAGE = `<!doctype html><html><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>BrainOutput Community</title>
 <style>
 :root{--bg:#0f1115;--card:#181b22;--fg:#e6e9ef;--mut:#8b93a7;--acc:#4ea1ff;--ok:#3ddc84;--warn:#ffb454;--line:#252a35}
-*{box-sizing:border-box}body{margin:0;font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--fg)}
+*{box-sizing:border-box}body{margin:0;font:15.5px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--fg)}
 header{display:flex;align-items:center;gap:16px;padding:12px 20px;border-bottom:1px solid var(--line);background:#12141a;position:sticky;top:0;z-index:5}
 header h1{font-size:16px;margin:0}.zero{margin-left:auto;background:#10331f;color:var(--ok);border:1px solid #1c5c36;padding:4px 12px;border-radius:20px;font-weight:600;font-size:13px}
 nav{display:flex;gap:4px;padding:8px 20px;border-bottom:1px solid var(--line);flex-wrap:wrap}nav button{background:none;border:1px solid transparent;color:var(--mut);padding:6px 12px;border-radius:6px;cursor:pointer;font-size:13px}
@@ -1034,7 +1051,7 @@ function nav(){const n=document.getElementById('nav');n.innerHTML='';const s=S.s
  }
  MAIN_TABS.forEach(([k,l])=>{const b=el('<button>'+l+'</button>');if(k===S.tab||(k==='settings'&&S.settingsOpen))b.className='on';
    b.onclick=()=>{if(k==='settings'){S.settingsOpen=true;S.tab=S.settingsTab||'connections'}else{S.settingsOpen=false;S.tab=k}render()};n.appendChild(b)});
- const sw=el('<button title="Regular: one model per agent. Advanced: per-stage models, budgets, privacy, limits.">'+(adv?'⚙ Advanced mode':'Regular mode')+'</button>');
+ const sw=el('<button title="Standard: one model per agent. Advanced: per-stage models, budgets, privacy, limits.">'+(adv?'⚙ Advanced mode':'Standard mode')+'</button>');
  sw.style.marginLeft='auto';sw.onclick=async()=>{await api('/api/settings',{mode:adv?'regular':'advanced'});await refresh();render()};n.appendChild(sw)}
 
 /** Settings sub-navigation, shown only inside Settings. */
@@ -1125,7 +1142,7 @@ const VIEWS={
   const opt=(sel)=>'<option value="">— use the slot default —</option>'+conns.map(c=>'<option value="'+c.id+'" '+(sel===c.id?'selected':'')+'>'+c.provider+'/'+c.model+' · '+(c.costSource||'')+'</option>').join('');
   const st=(a&&a.stageRuntimes)||{},adv=(a&&a.advanced)||{};
   const d=el('<div><div class=card><h2>⚙ Advanced — per-agent configuration</h2>'
-   +'<div class=mut>Give each execution stage its own model, runtime and provider. Set context budgets, privacy, cost limits and approval rules. Regular mode keeps one default model per agent and picks the smallest sufficient graph automatically.</div>'
+   +'<div class=mut>Give each execution stage its own model, runtime and provider. Set context budgets, privacy, cost limits and approval rules. Standard mode keeps one default model per agent and picks the smallest sufficient graph automatically.</div>'
    +'<label style="margin-top:10px">Agent</label><select id=ag>'+agents.map(x=>'<option value="'+x.id+'" '+(a&&x.id===a.id?'selected':'')+'>'+x.id+' ('+x.department+'/'+x.role+')</option>').join('')+'</select>'
    +(a?'<div class=row style="margin-top:12px">'
      +'<div><label>Conversation model</label><select id=s_conversation>'+opt(st.conversation)+'</select></div>'
@@ -1148,8 +1165,8 @@ const VIEWS={
   const T=(s.workTwins||[])[0];
   if(T){const st=(T.modelPolicy&&T.modelPolicy.stages)||{};const adv=(T.modelPolicy||{}).mode==='advanced';
    const tw=el('<div class=card><h2>⚙ Work Twin — '+T.name+'</h2>'
-    +'<div class=mut>Regular mode uses one model for the twin. Advanced gives each stage its own model.</div>'
-    +'<div style="margin:8px 0"><button class=act id=tpm>'+(adv?'Advanced (per-stage)':'Regular (one model)')+'</button></div>'
+    +'<div class=mut>Standard mode uses one model for the twin. Advanced gives each stage its own model.</div>'
+    +'<div style="margin:8px 0"><button class=act id=tpm>'+(adv?'Advanced (per-stage)':'Standard (one model)')+'</button></div>'
     +(adv?'<div class=row>'+['conversation','planning','drafting','reviewing','longContext'].map(k=>
       '<div><label>'+k+'</label><select id=tw_'+k+'><option value="">— default —</option>'
       +conns.map(c=>'<option value="'+c.id+'" '+(st[k]===c.id?'selected':'')+'>'+c.provider+'/'+c.model+'</option>').join('')

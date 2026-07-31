@@ -73,6 +73,7 @@ details summary{cursor:pointer}
  </div>
  <div class=foot>
   <select id=locale><option value="en">EN</option><option value="fr">FR</option><option value="de">DE</option></select>
+  <button class=ghost id=modelsbtn style="font-size:13px;padding:5px 10px"></button>
   <a href="/dashboard" style="color:var(--mut);font-size:13px;text-decoration:none" id=ldash></a>
  </div>
 </aside>
@@ -114,19 +115,21 @@ function sidebar(){
  document.getElementById('ladhoc').textContent=t('shell.adHoc');
  document.getElementById('ldash').textContent=t('shell.dashboard');
  document.getElementById('locale').value=LOCALE;
+ const mb=document.getElementById('modelsbtn');mb.textContent='⚙ '+t('models.title');
+ mb.onclick=()=>{S.showModels=!S.showModels;render()};
  const convs=s.conversations||[];
  const proj=document.getElementById('projects');proj.innerHTML='';
  (s.projects||[]).forEach(p=>{
   const n=convs.filter(c=>c.projectId===p.id).length;
   const b=el('<button class="pitem'+(S.projectId===p.id?' on':'')+'">'+esc(p.name)+'<span class=cnt>'+(n||'')+'</span></button>');
-  b.onclick=()=>{S.projectId=p.id;S.convId=null;render()};
+  b.onclick=()=>{S.projectId=p.id;S.convId=null;S.showModels=false;render()};
   proj.appendChild(b)});
  if(!(s.projects||[]).length)proj.appendChild(el('<div class=mut style="font-size:13px;padding:4px 6px">'+esc(t('shell.emptyProjects'))+'</div>'));
  const ad=document.getElementById('adhoc');ad.innerHTML='';
  convs.filter(c=>!c.projectId).slice().reverse().forEach(c=>{
   const label=c.title||(c.messages[0]?String(c.messages[0].text).slice(0,34):c.id);
   const b=el('<button class="pitem'+(S.convId===c.id&&!S.projectId?' on':'')+'">'+esc(label)+'</button>');
-  b.onclick=()=>{S.projectId=null;S.convId=c.id;render()};
+  b.onclick=()=>{S.projectId=null;S.convId=c.id;S.showModels=false;render()};
   ad.appendChild(b)});
  document.getElementById('newproj').onclick=async()=>{
   const name=prompt(t('shell.projectName'));if(!name||!name.trim())return;
@@ -262,6 +265,38 @@ function projectView(proj){
  return d;
 }
 
+// ── models: standard-mode visibility — see which LLM does what, change it, remove it ─────
+function modelsView(){
+ const s=S.state||{};
+ const conns=s.connections||[];
+ const slots=[...new Set((s.agents||[]).flatMap(a=>Object.values(a.capabilities||{})))];
+ const wrap=el('<div></div>');
+ const a=el('<div class="cardx"><h3>'+esc(t('models.assignments'))+'</h3><div class=mut style="font-size:12.5px;margin-bottom:8px">'+esc(t('models.hint'))+'</div></div>');
+ slots.forEach(sl=>{
+  const cur=(s.assignments||{})[sl];
+  const row=el('<div style="display:flex;gap:10px;align-items:center;padding:5px 0;border-bottom:1px solid var(--line)">'
+   +'<span class=mut style="min-width:170px;font-size:13px">'+esc(sl)+'</span>'
+   +'<select class=inp style="margin-top:0" data-slot="'+esc(sl)+'"><option value="">'+esc(t('models.unassigned'))+'</option>'
+   +conns.map(c=>'<option value="'+esc(c.id)+'" '+(c.id===cur?'selected':'')+'>'+esc(c.provider+'/'+c.model+' · '+(c.costSource||''))+'</option>').join('')+'</select></div>');
+  row.querySelector('select').onchange=async(e)=>{const r=await api('/api/assign',{slot:sl,connectionId:e.target.value||null});if(r.error){alert(r.error);return}S.state=r;render()};
+  a.appendChild(row)});
+ wrap.appendChild(a);
+ const c=el('<div class="cardx"><h3>'+esc(t('models.connections'))+'</h3></div>');
+ conns.forEach(cn=>{
+  const row=el('<div style="display:flex;gap:10px;align-items:center;padding:5px 0;border-bottom:1px solid var(--line)">'
+   +'<span style="font-size:13.5px">'+esc(cn.provider+'/'+cn.model)+'</span><span class=mut style="font-size:12px">'+esc(cn.costSource||'')+'</span>'
+   +'<button class=ghost style="margin-left:auto;padding:4px 10px;font-size:12px">'+esc(t('models.remove'))+'</button></div>');
+  row.querySelector('button').onclick=async()=>{const r=await api('/api/connection/remove',{id:cn.id});if(r.error){alert(r.error);return}S.state=r;render()};
+  c.appendChild(row)});
+ if(!conns.length)c.appendChild(el('<div class=mut style="font-size:13px">—</div>'));
+ const fb=el('<div style="margin-top:10px"><button class=ghost id=cf>'+esc(t('onboard.useFree'))+'</button> <span class=mut id=cfm style="font-size:12px"></span></div>');
+ fb.querySelector('#cf').onclick=async()=>{const fm=fb.querySelector('#cfm');fm.textContent=t('onboard.freeChecking');
+  const r=await api('/api/connect-free');fm.textContent=r.error?r.error:('✓ '+r.picked.model+' (free)');if(!r.error){S.state=r;render()}};
+ c.appendChild(fb);
+ wrap.appendChild(c);
+ return wrap;
+}
+
 // ── thread ───────────────────────────────────────────────────────────────────
 function bubble(m){
  const d=el('<div class="msg '+(m.role==='user'?'user':'bot')+'"><div class=who>'+(m.role==='user'?esc(t('shell.you')):esc(t('shell.brain')))+'</div>'
@@ -272,6 +307,7 @@ function bubble(m){
 }
 function thread(){
  const s=S.state||{};const box=document.getElementById('msgs');box.innerHTML='';
+ if(S.showModels){box.appendChild(modelsView());return}
  const conv=(s.conversations||[]).find(c=>c.id===S.convId);
  if(!conv){
   const proj=S.projectId?(s.projects||[]).find(p=>p.id===S.projectId):null;
