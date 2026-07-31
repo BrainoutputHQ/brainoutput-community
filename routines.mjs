@@ -3,7 +3,7 @@
 // A routine fires DEFINED work on a DUMB schedule — never an agent heartbeat. The clock
 // decides when; the router decides what (smallest graph, same as a chat launch). Results
 // land as cards in the routine's thread. Pure logic; zero-dep.
-export const ROUTINE_KINDS = ["regulation-watch", "daily-digest", "custom"];
+export const ROUTINE_KINDS = ["regulation-watch", "daily-digest", "self-diagnostic", "custom"];
 
 export const ROUTINE_TEMPLATES = [
   {
@@ -19,6 +19,14 @@ export const ROUTINE_TEMPLATES = [
     name: "Daily digest (meetings, mail, follow-ups)",
     schedule: { type: "daily", hour: 8 },
     department: null,
+    objective: "",
+    config: {},
+  },
+  {
+    kind: "self-diagnostic",
+    name: "Self-diagnostic (error-log watch)",
+    schedule: { type: "interval", minutes: 60 },
+    department: "technical",
     objective: "",
     config: {},
   },

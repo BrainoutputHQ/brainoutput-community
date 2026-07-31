@@ -476,10 +476,19 @@ function workView(){
  const has=k=>(s.routines||[]).some(r=>r.kind===k);
  const adds=el('<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">'
   +(has('regulation-watch')?'':'<button class=ghost data-add="regulation-watch">+ '+esc(t('work.addRegulation'))+'</button>')
-  +(has('daily-digest')?'':'<button class=ghost data-add="daily-digest">+ '+esc(t('work.addDigest'))+'</button>')+'</div>');
+  +(has('daily-digest')?'':'<button class=ghost data-add="daily-digest">+ '+esc(t('work.addDigest'))+'</button>')
+  +(has('self-diagnostic')?'':'<button class=ghost data-add="self-diagnostic">+ '+esc(t('work.addDiagnostic'))+'</button>')+'</div>');
  adds.querySelectorAll('[data-add]').forEach(b=>b.onclick=async()=>{const r=await api('/api/routine/add',{kind:b.dataset.add});if(r.error){alert(r.error);return}await refresh()});
  ro.appendChild(adds);
  wrap.appendChild(ro);
+
+ // Diagnostics: live view of the error log — one line per repeating bug pattern.
+ const pats=s.errorPatterns||[];
+ if(pats.length){
+  const dg=el('<div class="cardx"><h3>'+esc(t('work.diagnostics'))+'</h3></div>');
+  pats.forEach(p=>dg.appendChild(el('<div style="font-size:13px;padding:3px 0"><b>'+p.count+'×</b> <span class=mut>'+esc(p.key)+'</span></div>')));
+  wrap.appendChild(dg);
+ }
 
  // One search over mail + documents.
  if(T){

@@ -40,6 +40,7 @@ import { t as i18nT } from "./i18n.mjs";
 import { newRoutine, isDue, markFired, parseFeed, unseenItems, ROUTINE_TEMPLATES } from "./routines.mjs";
 import { buildPdf } from "./pdf.mjs";
 import { fetchSiteImages, urlFromMessages } from "./site-images.mjs";
+import { recordError, errorPatterns } from "./errorlog.mjs";
 /** Server-side chat strings in the user's locale (settings.locale). */
 const tChat = (key) => i18nT(store.def.settings?.locale || "en", key);
 
@@ -900,6 +901,7 @@ function chatMission(res, b) {
  */
 function launchFailed(res, m, spineTask, e) {
   const msg = String(e.message || e);
+  recordError(store, { source: "launch", message: msg, stack: e.stack });
   const failed = { ...m, status: "approved", lastError: msg };
   store.addMission(failed);
   if (spineTask) store.addTask(reportMissionToTask(store.runtime, spineTask.id, { missionId: m.id, ok: false, summary: msg.slice(0, 200), at: Date.now() }));
@@ -976,6 +978,7 @@ async function chatLaunch(res, b) {
       updateExec({});
     };
     const fail = (msg) => {
+      recordError(store, { source: "launch", message: msg });
       store.addMission({ ...m, status: "approved", lastError: msg });
       if (spineTask) store.addTask(reportMissionToTask(store.runtime, spineTask.id, { missionId: m.id, ok: false, summary: msg.slice(0, 200), at: Date.now() }));
       updateExec({ status: "failed" });
@@ -1099,12 +1102,26 @@ async function runRoutine(routine) {
     routinePost("Today", d.ok ? d.text : `Daily digest skipped: ${d.note}`);
     return;
   }
+  if (routine.kind === "self-diagnostic") {
+    // Read the error log: patterns new since the last run, and anything repeating (≥3).
+    // Report where the user can act — auto-patching production code is not on the table.
+    const patterns = errorPatterns(store.runtime.errors || [], { since: routine.lastRunAt || 0 });
+    const repeating = errorPatterns(store.runtime.errors || [], { minCount: 3 });
+    const seen = new Map();
+    const top = [...patterns, ...repeating].filter((p) => seen.has(p.key) ? false : (seen.set(p.key, 1), true)).slice(0, 5);
+    if (!top.length) return;   // nothing new or repeating → no noise
+    const lines = [`🩺 Self-diagnostic — ${new Date().toLocaleString()}`];
+    for (const p of top) lines.push(`\n• ${p.count}× ${p.key}\n  ${p.sample.slice(0, 140)}`);
+    lines.push(`\nTo investigate one, just say so in the chat — e.g. "investigate '${top[0].key.slice(0, 60)}'" — and I'll draft the mission.`);
+    routinePost("Diagnostics", lines.join("\n"));
+    return;
+  }
   if (routine.kind === "regulation-watch") {
     let items = [];
     const errors = [];
     for (const url of routine.config?.feeds || []) {
       try { items.push(...parseFeed(await fetchFeed(url))); }
-      catch (e) { errors.push(e.message); }
+      catch (e) { recordError(store, { source: "feed", message: e.message }); errors.push(e.message); }
     }
     const fresh = unseenItems(routine, items);
     const seen = new Set(routine.config?.seen || []);
@@ -1134,7 +1151,7 @@ async function runRoutine(routine) {
   try {
     const results = await executePlan(r.plan, { _all: { prompt: routine.objective } }, { maxTokens: 900, timeoutMs: 120000, boundPolicies: r.boundPolicies });
     routinePost(routine.name, results.map((x) => x.output).filter(Boolean).join("\n").slice(0, 2500) || "(no output)");
-  } catch (e) { routinePost(routine.name, `Routine failed: ${e.message}`); }
+  } catch (e) { recordError(store, { source: "routine", message: e.message }); routinePost(routine.name, `Routine failed: ${e.message}`); }
 }
 
 let routineTimer = null;
@@ -1142,7 +1159,7 @@ function startScheduler() {
   if (routineTimer) return;
   routineTimer = setInterval(() => {
     for (const r of (store.runtime.routines || []).filter((x) => isDue(x)))
-      runRoutine(r).catch((e) => console.error(`routine ${r.id}: ${e.message}`));
+      runRoutine(r).catch((e) => { recordError(store, { source: "scheduler", message: e.message }); console.error(`routine ${r.id}: ${e.message}`); });
   }, 60_000);
   routineTimer.unref();
 }
@@ -1155,6 +1172,7 @@ function publicState() {
     tasks: store.runtime.tasks, executions: store.runtime.executions, approvals: store.runtime.approvals,
     artifacts: store.runtime.artifacts || [],
     routines: store.runtime.routines || [],
+    errorPatterns: errorPatterns(store.runtime.errors || [], { minCount: 1 }).slice(0, 5),
     conversations: store.runtime.conversations || [], missions: store.runtime.missions || [],
     projects: listProjects(store.runtime),
     workTwins: (store.runtime.workTwins || []).map(publicTwin),
@@ -1204,7 +1222,7 @@ async function runTask(res, b) {
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
-  if (url.pathname.startsWith("/api/")) { try { await api(req, res, url); } catch (e) { json(res, { error: String(e.message || e) }, 500); } return; }
+  if (url.pathname.startsWith("/api/")) { try { await api(req, res, url); } catch (e) { recordError(store, { source: "api", message: e.message, stack: e.stack }); json(res, { error: String(e.message || e) }, 500); } return; }
   // Sign-in (hosted mode only). Constant-time compare; the token lands in an HttpOnly cookie.
   if (ACCESS_TOKEN && url.pathname === "/login" && req.method === "POST") {
     const body = await new Promise((r) => { let d = ""; req.on("data", (c) => (d += c)); req.on("end", () => r(d)); });

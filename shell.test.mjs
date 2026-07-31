@@ -299,6 +299,22 @@ test("cross-project memory: a project brief is in the knowledge base, and the wo
     `project knowledge is retrieved across projects — citations: ${(reply.meta?.citations || []).join(", ")}`);
 });
 
+test("self-diagnostic: the error log drives a report into the Diagnostics thread", async () => {
+  const add = await post("/api/routine/add", { kind: "self-diagnostic" });
+  assert.equal(add.status, 200);
+  // Force an error into the log (a doomed launch records one), then run the diagnostic.
+  await post("/api/chat/launch", { missionId: "ghost-mission" });
+  await post("/api/routine/run-now", { id: add.body.routine.id });
+  const conv = await until(async () => {
+    const st = await state();
+    const c = (st.conversations || []).find((x) => x.title === "Diagnostics");
+    return c?.messages?.length ? c : null;
+  }, 10000);
+  assert.match(conv.messages.at(-1).text, /Self-diagnostic/);
+  const st = await state();
+  assert.ok((st.errorPatterns || []).length >= 1, "errorPatterns exposed in state");
+});
+
 test("a build request in ASK mode auto-drafts a mission — the user never thinks about modes", async () => {
   const send = await post("/api/chat/send", { scope: "company", mode: "ask", text: "crée-moi un jeu snake en html" });
   assert.equal(send.status, 200, JSON.stringify(send.body));
