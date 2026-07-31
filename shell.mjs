@@ -184,13 +184,17 @@ function approvalCard(a){
  d.querySelector('#ar').onclick=async()=>{await api('/api/approval',{id:a.id,decision:'rejected'});await refresh()};
  return d;
 }
-/** A finished run is a card in the thread too: graph, who ran each stage, tokens, artifacts, files, logs. */
+/** A finished run is a card in the thread too: graph, who ran each stage, tokens, artifacts,
+ *  and the OUTPUT ITSELF — a produced site must be previewable, not just described in logs. */
+const extractHtml=(txt)=>{const m=String(txt||'').match(/\`\`\`html\s*([\s\S]*?)\`\`\`/);if(m)return m[1];
+ if(/<!doctype html|<html[\s>]/i.test(String(txt||'')))return txt;return null};
 function runCard(ex){
  const eff=ex.efficiency||{};
  const rows=(ex.graph||[]).map(g=>esc(g.node)+(g.model?' <span class=mut>['+esc(g.provider)+'/'+esc(g.model)+']</span>':'')).join(' → ');
  const artifacts=(eff.artifacts||[]);
  const files=(ex.codeFiles||[]);
  const logs=(ex.logs||[]).slice(0,30);
+ const outs=(ex.results||[]).map((r,i)=>({node:r.node||('output '+(i+1)),output:String(r.output||'')})).filter(r=>r.output.trim());
  const d=el('<div class="cardx"><h3>'+esc(t('run.title'))+' · '+esc(ex.department||'')+' · <span class=ok>'+esc(ex.status||'')+'</span></h3>'
   +'<div class=mut style="font-size:13px">'+rows+'</div>'
   +'<div class=mut style="font-size:13px;margin-top:4px">'+(eff.tokensTotal!=null?esc(eff.tokensTotal)+' '+esc(t('run.tokens')):'')
@@ -199,6 +203,17 @@ function runCard(ex){
   +(files.length?'<div style="margin-top:10px"><b style="font-size:13px">'+esc(t('run.files'))+'</b>'+files.map(f=>'<details style="margin-top:4px"><summary style="font-size:13px">'+esc(f.name)+'</summary><pre style="background:#0b0d11;border:1px solid var(--line);border-radius:8px;padding:10px;font-size:12px;overflow:auto;white-space:pre-wrap">'+esc(f.content)+'</pre></details>').join('')+'</div>':'')
   +(logs.length?'<details style="margin-top:10px"><summary style="font-size:13px">'+esc(t('run.logs'))+'</summary><pre style="background:#0b0d11;border:1px solid var(--line);border-radius:8px;padding:10px;font-size:12px;overflow:auto;white-space:pre-wrap">'+logs.map(esc).join('\\n')+'</pre></details>':'')
   +'</div>');
+ outs.forEach((r,i)=>{
+  const html=extractHtml(r.output);
+  const det=el('<details'+(html?' open':'')+' style="margin-top:10px"><summary style="font-size:13px">'+esc(r.node)+(html?' · html':'')+'</summary>'
+   +'<pre style="background:#0b0d11;border:1px solid var(--line);border-radius:8px;padding:10px;font-size:12px;overflow:auto;white-space:pre-wrap;max-height:320px">'+esc(r.output.slice(0,12000))+'</pre>'
+   +(html?'<div style="margin-top:6px"><button class=ghost data-pv>▶ '+esc(t('run.preview'))+'</button> <button class=ghost data-dl>↓ '+esc(t('run.download'))+'</button></div>':'')
+   +'</details>');
+  if(html){
+   det.querySelector('[data-pv]').onclick=()=>{const b=new Blob([html],{type:'text/html'});window.open(URL.createObjectURL(b),'_blank')};
+   det.querySelector('[data-dl]').onclick=()=>{const b=new Blob([html],{type:'text/html'});const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=(ex.department||'artifact')+'-'+(i+1)+'.html';a.click()};
+  }
+  d.appendChild(det)});
  return d;
 }
 
