@@ -263,6 +263,30 @@ test("a PDF mission produces a REAL downloadable PDF — never 'code that could 
   assert.equal(ghost.status, 404);
 });
 
+test("company website, project url, and chat deletion (work records stay)", async () => {
+  const bad = await post("/api/company", { website: "ftp://x" });
+  assert.equal(bad.status, 400);
+  const co = await post("/api/company", { website: "https://hotel-soleil.example" });
+  assert.equal(co.status, 200);
+  assert.equal(co.body.company.website, "https://hotel-soleil.example");
+
+  const p = await post("/api/project", { name: "brochure", url: "https://hotel-soleil.example/gallery" });
+  assert.equal(p.body.project.url, "https://hotel-soleil.example/gallery");
+  const cleared = await post("/api/project/url", { id: p.body.project.id, url: "" });
+  assert.equal(cleared.status, 200);
+
+  // Deleting a chat removes the thread but never the durable work records.
+  const send = await post("/api/chat/send", { scope: "company", mode: "ask", text: "delete me later" });
+  const convId = send.body.conversation.id;
+  const missionsBefore = (await state()).missions.length;
+  const del = await post("/api/conversation/delete", { id: convId });
+  assert.equal(del.status, 200);
+  assert.ok(!del.body.conversations.some((c) => c.id === convId));
+  assert.equal(del.body.missions.length, missionsBefore, "missions survive a deleted thread");
+  const ghost = await post("/api/conversation/delete", { id: convId });
+  assert.equal(ghost.status, 404);
+});
+
 test("a build request in ASK mode auto-drafts a mission — the user never thinks about modes", async () => {
   const send = await post("/api/chat/send", { scope: "company", mode: "ask", text: "crée-moi un jeu snake en html" });
   assert.equal(send.status, 200, JSON.stringify(send.body));

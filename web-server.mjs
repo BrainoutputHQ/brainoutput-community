@@ -39,6 +39,7 @@ import { pickFreeModel, freeConnection, FREE_PRIVACY_NOTE } from "./free-models.
 import { t as i18nT } from "./i18n.mjs";
 import { newRoutine, isDue, markFired, parseFeed, unseenItems, ROUTINE_TEMPLATES } from "./routines.mjs";
 import { buildPdf } from "./pdf.mjs";
+import { fetchSiteImages } from "./site-images.mjs";
 /** Server-side chat strings in the user's locale (settings.locale). */
 const tChat = (key) => i18nT(store.def.settings?.locale || "en", key);
 
@@ -220,6 +221,7 @@ async function api(req, res, url) {
       // Storing it as the name rendered "· a small software product studio" in the header.
       name: b.companyName || store.def.company?.name || "My Company",
       does: b.companyDoes || store.def.company?.does || "",
+      ...(b.website ? { website: String(b.website) } : {}),
     }).setDepartments(b.departments || []).setAgents(agents)
       .setConnections(connections).setAssignments(assignments).save();
 
@@ -246,10 +248,39 @@ async function api(req, res, url) {
   }
   if (url.pathname === "/api/project") {
     try {
-      const p = newProject({ name: b.name, at: Date.now() });
+      const p = { ...newProject({ name: b.name, at: Date.now() }), ...(b.url ? { url: String(b.url) } : {}) };
       store.addProject(p); store.saveRuntime();
       return json(res, { ...publicState(), project: p });
     } catch (e) { return json(res, { error: e.message }, 400); }
+  }
+  if (url.pathname === "/api/project/url") {
+    const p = (store.runtime.projects || []).find((x) => x.id === b.id && x.kind === "project");
+    if (!p) return json(res, { error: `no project '${b.id}'` }, 404);
+    const url = String(b.url || "").trim();
+    if (url && !/^https?:\/\//i.test(url)) return json(res, { error: "a project url must be http(s), or empty" }, 400);
+    store.addProject({ ...p, url: url || null, updatedAt: Date.now() }); store.saveRuntime();
+    return json(res, publicState());
+  }
+  if (url.pathname === "/api/company") {
+    const next = { ...(store.def.company || {}) };
+    if (b.name !== undefined) next.name = String(b.name).trim() || next.name;
+    if (b.does !== undefined) next.does = String(b.does);
+    if (b.website !== undefined) {
+      const w = String(b.website || "").trim();
+      if (w && !/^https?:\/\//i.test(w)) return json(res, { error: "the website must be http(s), or empty" }, 400);
+      next.website = w || null;
+    }
+    store.setCompany(next).saveDefinition();
+    return json(res, publicState());
+  }
+  if (url.pathname === "/api/conversation/delete") {
+    const conv = (store.runtime.conversations || []).find((c) => c.id === b.id);
+    if (!conv) return json(res, { error: `no conversation '${b.id}'` }, 404);
+    // Delete the THREAD only — mission records, executions and task results are the company's
+    // durable work history and stay. Deleting a chat must never destroy proof of work.
+    store.runtime.conversations = (store.runtime.conversations || []).filter((c) => c.id !== b.id);
+    store.saveRuntime();
+    return json(res, publicState());
   }
   if (url.pathname === "/api/conversation/promote") {
     try {
@@ -906,17 +937,29 @@ async function chatLaunch(res, b) {
     results: [], logs: [], status: "running", createdAt: Date.now() });
   store.saveRuntime();
 
-  // The executor receives the compact mission context — never the transcript.
-  const conv = getConversation(m.conversationId);
   // File deliverables get a real-file protocol: the model outputs a spec, we render the file
   // deterministically (pdf.mjs) — never "code that could make the file" as the deliverable.
   const wantsFile = /pdf|document|brochure|catalog|flyer/i.test(m.objective || "");
-  const uploadNames = (store.runtime.artifacts || []).filter((a) => a.kind === "upload" && /\.jpe?g$/i.test(a.name)).map((a) => a.name);
-  const fileInstruction = wantsFile
-    ? `\n\nThe deliverable is a DOCUMENT. Output ONLY a fenced file spec, nothing else:\n\`\`\`file:spec.json\n{"title":"…","pages":[{"heading":"…","lines":["…","…"],"images":["uploaded-file-name.jpg"]}]}\n\`\`\`\nAvailable uploaded images you may embed: ${uploadNames.join(", ") || "(none — leave images out)"}.`
-    : "";
-  const prompt = `${m.objective}\n\nConstraints: ${(m.constraints || []).join("; ") || "none"}\nAcceptance: ${(m.acceptanceCriteria || []).join("; ") || "none"}\n\nDo not ask for clarification. Make reasonable assumptions (state them in one line), then produce the COMPLETE deliverable — the full file or content itself, not a description or plan of it.${fileInstruction}`;
+  const conv = getConversation(m.conversationId);
   const run = async () => {
+    // Images: uploaded JPEGs first; else fetch from the project's or the company's website
+    // ("the chat knows where to get the pics from"). Registered as uploads for reuse.
+    let imageNames = (store.runtime.artifacts || []).filter((a) => a.kind === "upload" && /\.jpe?g$/i.test(a.name)).map((a) => a.name);
+    if (wantsFile && !imageNames.length) {
+      const proj = m.projectId ? (store.runtime.projects || []).find((x) => x.id === m.projectId) : null;
+      const site = proj?.url || store.def.company?.website;
+      if (site) {
+        try {
+          const got = await fetchSiteImages(site, { dir: join(store.dir, "uploads"), limit: 3 });
+          for (const g of got) store.addArtifact({ id: uid("upl"), kind: "upload", name: g.name, path: join("uploads", g.name), size: g.size, mime: "image/jpeg", projectId: m.projectId || null, createdAt: Date.now() });
+          if (got.length) { store.saveRuntime(); imageNames = got.map((g) => g.name); }
+        } catch {}
+      }
+    }
+    const fileInstruction = wantsFile
+      ? `\n\nThe deliverable is a DOCUMENT. Output ONLY a fenced file spec, nothing else:\n\`\`\`file:spec.json\n{"title":"…","pages":[{"heading":"…","lines":["…","…"],"images":["uploaded-file-name.jpg"]}]}\n\`\`\`\nAvailable uploaded images you may embed: ${imageNames.join(", ") || "(none — leave images out)"}.`
+      : "";
+    const prompt = `${m.objective}\n\nConstraints: ${(m.constraints || []).join("; ") || "none"}\nAcceptance: ${(m.acceptanceCriteria || []).join("; ") || "none"}\n\nDo not ask for clarification. Make reasonable assumptions (state them in one line), then produce the COMPLETE deliverable — the full file or content itself, not a description or plan of it.${fileInstruction}`;
     const updateExec = (patch) => { store.addExecution({ ...exec, ...patch }); store.saveRuntime(); };
     const onNodeDone = (result, i) => {
       exec.results.push(result);

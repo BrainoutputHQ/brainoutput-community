@@ -74,7 +74,14 @@ label{display:block;margin:10px 0 3px;color:var(--mut);font-size:13px}
 .deptpick input{width:auto;margin-right:6px}
 details summary{cursor:pointer}
 pre{background:var(--pre)!important}
-@media(max-width:760px){aside{display:none}}
+#mobilebar{display:none}
+@media(max-width:760px){
+ #mobilebar{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--line);background:var(--thead)}
+ #mobilebar button{background:none;border:1px solid var(--line);border-radius:8px;color:var(--fg);font-size:16px;padding:4px 10px;cursor:pointer}
+ aside{position:fixed;left:0;top:0;bottom:0;transform:translateX(-105%);transition:transform .2s ease;z-index:30;box-shadow:2px 0 12px rgba(0,0,0,.2)}
+ body.nav-open aside{transform:none}
+ #scrim{position:fixed;inset:0;background:rgba(15,17,20,.35);z-index:25}
+}
 </style></head><body>
 <aside>
  <div class=brand><span id=coname>🏢 BrainOutput</span><span class=tag id=tagline></span></div>
@@ -96,12 +103,14 @@ pre{background:var(--pre)!important}
  </div>
 </aside>
 <main>
+ <div id=mobilebar><button id=navtoggle>☰</button><span id=mconame style="font-weight:650"></span></div>
  <div id=thead></div>
  <div id=thread><div class=wrap id=msgs></div></div>
  <div id=composer><div class=wrap>
   <div id=cbox>
    <textarea id=msg rows=2></textarea>
    <div id=cbar>
+    <button class=ghost id=mic title="" style="padding:6px 10px;margin-right:8px">🎤</button>
     <button class=ghost id=attach title="" style="padding:6px 10px;margin-right:8px">📎</button>
     <input type=file id=file style="display:none">
     <div class=seg id=modes></div>
@@ -139,6 +148,16 @@ function sidebar(){
  document.getElementById('ladhoc').textContent=t('shell.adHoc');
  document.getElementById('locale').value=LOCALE;
  document.getElementById('coname').textContent='🏢 '+(s.company?.name||'BrainOutput');
+ document.getElementById('mconame').textContent=s.company?.name||'BrainOutput';
+ const nt=document.getElementById('navtoggle');
+ nt.onclick=()=>{
+  const open=document.body.classList.toggle('nav-open');
+  let scrim=document.getElementById('scrim');
+  if(open&&!scrim){scrim=el('<div id=scrim></div>');scrim.onclick=()=>{document.body.classList.remove('nav-open');scrim.remove()};document.body.appendChild(scrim)}
+  if(!open&&scrim)scrim.remove();
+ };
+ // navigating from the sidebar closes the mobile nav
+ document.querySelectorAll('aside .pitem,aside .vmenu button').forEach(b=>b.addEventListener('click',()=>{document.body.classList.remove('nav-open');document.getElementById('scrim')?.remove()}));
  // view menu + mode dropdown + theme toggle
  const vm=[['chat',t('nav.chat')],['work',t('nav.work')],['models',t('models.title')]];
  ['chat','work','models'].forEach((v,i)=>{const b=document.getElementById('vm-'+v);b.querySelector('span').textContent=vm[i][1];
@@ -163,7 +182,11 @@ function sidebar(){
   const label=c.title||(c.messages[0]?String(c.messages[0].text).slice(0,34):c.id);
   const b=el('<button class="pitem'+(S.convId===c.id&&!S.projectId?' on':'')+'">'+esc(label)+'</button>');
   b.onclick=()=>{S.projectId=null;S.convId=c.id;S.view='chat';render()};
-  ad.appendChild(b)});
+  ad.appendChild(b);
+  const del=el('<button class="delchat" title="'+esc(t('chat.delete'))+'" style="float:right;background:none;border:none;color:var(--mut);cursor:pointer;font-size:12px;padding:6px">✕</button>');
+  del.onclick=async(e)=>{e.stopPropagation();if(!confirm(t('chat.deleteConfirm')))return;
+   await api('/api/conversation/delete',{id:c.id});if(S.convId===c.id)S.convId=null;await refresh()};
+  b.appendChild(del)});
  document.getElementById('newproj').onclick=async()=>{
   const name=prompt(t('shell.projectName'));if(!name||!name.trim())return;
   const r=await api('/api/project',{name:name.trim()});if(r.error){alert(r.error);return}
@@ -237,7 +260,7 @@ function runCard(ex){
   +'<div class=mut style="font-size:13px;margin-top:4px">'+(eff.tokensTotal!=null?esc(eff.tokensTotal)+' '+esc(t('run.tokens')):'')
    +(eff.stagesSkipped&&eff.stagesSkipped.length?' · '+esc(t('run.skipped'))+': '+esc(eff.stagesSkipped.join(', ')):'')+'</div>'
   +(artifacts.length?'<div style="margin-top:10px"><b style="font-size:13px">'+esc(t('run.artifacts'))+'</b><div class=mut style="font-size:13px">'+artifacts.map(esc).join('<br>')+'</div></div>':'')
-  +(((S.state||{}).artifacts||[]).filter(a=>a.executionId===ex.id).map(a=>'<a href="/api/artifact/download?id='+esc(a.id)+'" style="display:inline-block;margin:8px 8px 0 0"><button class=ghost>↓ '+esc(a.name)+' ('+Math.round(a.size/1024)+' KB)</button></a>').join(''))
+  +(((S.state||{}).artifacts||[]).filter(a=>a.executionId===ex.id).map(a=>'<a href="/api/artifact/download?id='+esc(a.id)+'" target="_blank" title="'+esc(t('run.download'))+'" style="display:inline-flex;align-items:center;gap:6px;margin:8px 8px 0 0;padding:7px 12px;border:1px solid var(--acc);border-radius:10px;font-size:13px;text-decoration:none;color:var(--acc)"><span style="font-size:16px">📄</span><b>'+esc(a.name)+'</b><span class=mut>'+Math.round(a.size/1024)+' KB</span></a>').join(''))
   +(files.length?'<div style="margin-top:10px"><b style="font-size:13px">'+esc(t('run.files'))+'</b>'+files.map(f=>'<details style="margin-top:4px"><summary style="font-size:13px">'+esc(f.name)+'</summary><pre style="background:#0b0d11;border:1px solid var(--line);border-radius:8px;padding:10px;font-size:12px;overflow:auto;white-space:pre-wrap">'+esc(f.content)+'</pre></details>').join('')+'</div>':'')
   +(logs.length?'<details style="margin-top:10px"><summary style="font-size:13px">'+esc(t('run.logs'))+'</summary><pre style="background:#0b0d11;border:1px solid var(--line);border-radius:8px;padding:10px;font-size:12px;overflow:auto;white-space:pre-wrap">'+logs.map(esc).join('\\n')+'</pre></details>':'')
   +'</div>');
@@ -507,7 +530,9 @@ function onboarding(){
  if(ob.name)box.appendChild(obUser(ob.name));
  if(ob.name)box.appendChild(obSay(t('onboard.whatDoYouDo')));
  if(ob.does)box.appendChild(obUser(ob.does));
- if(ob.step==='name'||ob.step==='does')return;   // waiting for a typed answer (composer)
+ if(ob.does)box.appendChild(obSay(t('onboard.websiteQ')));
+ if(ob.website)box.appendChild(obUser(ob.website));
+ if(ob.step==='name'||ob.step==='does'||ob.step==='website')return;   // waiting for a typed answer (composer)
  if(ob.step==='models'){
   const d=el('<div class=cardx><div style="font-size:14px">'+esc(ob.models===null?t('shell.thinking'):(ob.models.length?t('onboard.modelsFound'):t('onboard.noModels')))+'</div>'
    +(ob.models&&ob.models.length?'<div class=mut style="font-size:13px;margin-top:6px">'+ob.models.map(m=>esc(m.provider+'/'+m.name)).join('<br>')+'</div>':'')
@@ -530,16 +555,20 @@ function onboarding(){
  d.querySelector('button').onclick=async()=>{
   const departments=[...d.querySelectorAll('input:checked')].map(i=>i.value);
   d.querySelector('#obmsg').textContent=t('onboard.working');
-  const r=await api('/api/onboard',{companyName:ob.name,companyDoes:ob.does,departments});
+  const r=await api('/api/onboard',{companyName:ob.name,companyDoes:ob.does,website:ob.website||undefined,departments});
   if(r.error){d.querySelector('#obmsg').textContent=r.error;return}
   S.ob=null;saveOb();await refresh()};
  box.appendChild(d);
 }
-/** A typed answer during onboarding: name → does → (models card handles the rest). */
+/** A typed answer during onboarding: name → does → website(optional) → (models card). */
 async function obAnswer(txt){
  const ob=S.ob;
  if(ob.step==='name'){ob.name=txt;ob.step='does';saveOb();render();return}
- if(ob.step==='does'){ob.does=txt;ob.step='models';ob.models=null;saveOb();render();
+ if(ob.step==='does'){ob.does=txt;ob.step='website';saveOb();render();return}
+ if(ob.step==='website'){
+  const v=txt.trim();
+  ob.website=/^(no|non|nein|skip|pass|na)$/i.test(v)?null:(v.includes('://')?v:'https://'+v);
+  ob.step='models';ob.models=null;saveOb();render();
   const r=await api('/api/detect');if(S.ob===ob&&ob.step==='models'){ob.models=r.detected||[];saveOb();render()}return}
 }
 
@@ -567,6 +596,26 @@ function composer(){
  msg.onkeydown=(e)=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();document.getElementById('send').click()}};
  // Attachments: upload the file first, reference it in the message.
  const at=document.getElementById('attach');at.title=t('upload.attach');
+ // Voice input: the browser's own speech recognition (no server, no key) — honest about support.
+ const mic=document.getElementById('mic');
+ const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+ if(!SR){mic.disabled=true;mic.title=t('voice.unsupported');mic.style.opacity=.4}
+ else{
+  mic.title=t('voice.talk');
+  let rec=null;
+  mic.onclick=()=>{
+   if(rec){rec.stop();return}
+   rec=new SR();
+   rec.lang={en:'en-US',fr:'fr-FR',de:'de-DE'}[LOCALE]||'en-US';
+   rec.interimResults=true;rec.continuous=false;
+   rec.onresult=(e)=>{const final=[...e.results].filter(r=>r.isFinal).map(r=>r[0].transcript).join(' ');
+    if(final){const msg=document.getElementById('msg');msg.value=(msg.value+' '+final).trim();msg.dispatchEvent(new Event('input'))}};
+   rec.onend=()=>{rec=null;mic.classList.remove('busy');document.getElementById('busy').textContent=''};
+   rec.onerror=()=>{rec=null;mic.classList.remove('busy');document.getElementById('busy').textContent=t('voice.unsupported')};
+   mic.classList.add('busy');document.getElementById('busy').textContent=t('voice.listening');
+   rec.start();
+  };
+ }
  const showAtts=()=>{document.getElementById('atts').innerHTML=(S.pendingAtts||[]).map(a=>'<span class=attach>📎 '+esc(a.name)+'</span>').join(' ')};
  at.onclick=()=>document.getElementById('file').click();
  document.getElementById('file').onchange=async(e)=>{
