@@ -25,7 +25,9 @@ before(async () => {
     req.on("end", () => { res.writeHead(200, { "Content-Type": "application/json" });
       if (d.includes("FLAKY-BUDGET") && flakySeen++ === 0)
         return res.end(JSON.stringify({ choices: [{ message: { content: "" }, finish_reason: "length" }] }));
-      res.end(JSON.stringify({ choices: [{ message: { content: "ok — done" } }] })); });
+      if (d.includes("CLARIFY-NOW"))
+        return res.end(JSON.stringify({ choices: [{ message: { content: "You haven't provided any context for me to analyze. Could you please clarify?" } }] }));
+      res.end(JSON.stringify({ choices: [{ message: { content: "ok — done. " + "Real work output follows: ".repeat(8) } }] })); });
   });
   await new Promise((r) => zenStub.listen(0, "127.0.0.1", r));
   zenPort = zenStub.address().port;
@@ -171,6 +173,25 @@ test("a model that dies on the output budget gets ONE bigger-budget retry — an
   const launch = await post("/api/chat/launch", { missionId: m.id, timeoutMs: 20000 });
   assert.equal(launch.status, 200, JSON.stringify(launch.body).slice(0, 300));
   assert.match(launch.body.conversation.messages.at(-1).text, /retry with a bigger output budget/);
+});
+
+test("a model that only asks for clarification does NOT get a 'Mission complete'", async () => {
+  // Route every slot to the stub free connection so the run hits our clarification stub
+  // (this machine also has live local models — without this, the worker may use those).
+  const st0 = (await (await fetch(`${BASE}/api/state`)).json());
+  const freeConn = (st0.connections || []).find((c) => c.kind === "opencode-free");
+  assert.ok(freeConn, "connect-free ran earlier in this file");
+  for (const slot of Object.keys(st0.assignments || {})) await post("/api/assign", { slot, connectionId: freeConn.id });
+
+  const plan = await post("/api/chat/send", { scope: "department", department: "technical", mode: "plan", text: "build the CLARIFY-NOW website" });
+  const m = plan.body.mission;
+  await post("/api/chat/mission", { missionId: m.id, action: "approve" });
+  const launch = await post("/api/chat/launch", { missionId: m.id, timeoutMs: 20000 });
+  assert.equal(launch.status, 500, "clarification-only output is a failure, never a completion");
+  assert.match(launch.body.error, /no work|clarification|rien produit|précisions|nichts produziert|Klärung/i);
+  // Mission goes back to approved for a relaunch; the spine records the honest failure.
+  const st = await post("/api/chat/send", { scope: "company", mode: "ask", text: "ping" });
+  assert.ok(st.status === 200);
 });
 
 test("a build request in ASK mode auto-drafts a mission — the user never thinks about modes", async () => {

@@ -845,7 +845,7 @@ async function chatLaunch(res, b) {
   // The executor receives the compact mission context — never the transcript.
   const conv = getConversation(m.conversationId);
   const cc = conv ? compactContext(conv, { query: m.objective, k: 3 }) : { pinned: [], relevant: [] };
-  const prompt = `${m.objective}\n\nConstraints: ${(m.constraints || []).join("; ") || "none"}\nAcceptance: ${(m.acceptanceCriteria || []).join("; ") || "none"}`;
+  const prompt = `${m.objective}\n\nConstraints: ${(m.constraints || []).join("; ") || "none"}\nAcceptance: ${(m.acceptanceCriteria || []).join("; ") || "none"}\n\nDo not ask for clarification. Make reasonable assumptions (state them in one line), then produce the COMPLETE deliverable — the full file or content itself, not a description or plan of it.`;
   let results = [];
   let retried = false;
   try { results = await executePlan(r.plan, { _all: { prompt } }, { maxTokens: b.maxTokens || 1500, boundPolicies: r.boundPolicies, task: m.task, timeoutMs: b.timeoutMs || 240000 }); }
@@ -858,6 +858,14 @@ async function chatLaunch(res, b) {
     try { results = await executePlan(r.plan, { _all: { prompt } }, { maxTokens: (b.maxTokens || 1500) * 2, boundPolicies: r.boundPolicies, task: m.task, timeoutMs: b.timeoutMs || 240000 }); }
     catch (e2) { return launchFailed(res, m, spineTask, e2); }
   }
+
+  // "Complete" must mean WORK. A model that answers with a clarification request (or near-nothing)
+  // produced no deliverable — report it as the failure it is, never as a done mission. Note a
+  // `completion:…` artifact marks any non-empty ANSWER; it is not work — only real files count.
+  const CLARIFY = /haven't provided|could you please clarif|can you provide|please provide|need more (info|context|detail)|pourriez-vous (préciser|fournir)|besoin de plus/i;
+  const isFileArtifact = (a) => a && !String(a).startsWith("completion:");
+  const producedWork = results.some((x) => isFileArtifact(x.artifact) || ((x.output || "").trim().length > 120 && !CLARIFY.test(x.output || "")));
+  if (!producedWork) return launchFailed(res, m, spineTask, new Error(tChat("chat.noWork")));
 
   const rep = costReport(results);
   const eff = efficiencyReport({ plan: r.plan, results, shape: r.shape });

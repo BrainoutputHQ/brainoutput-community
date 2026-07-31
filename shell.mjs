@@ -60,6 +60,12 @@ label{display:block;margin:10px 0 3px;color:var(--mut);font-size:13px}
 .seg button.on{background:var(--card2);color:var(--fg)}
 #send{margin-left:auto;width:38px;height:38px;border-radius:50%;background:var(--acc);color:#fff;border:none;font-size:17px;font-weight:700;cursor:pointer;display:grid;place-items:center}
 #send:disabled{background:var(--card2);color:var(--mut);cursor:default}
+#send.busy{animation:boPulse 1s ease-in-out infinite}
+@keyframes boPulse{50%{opacity:.35}}
+.think{display:inline-flex;gap:4px;padding:12px 16px;background:var(--card);border:1px solid var(--line);border-radius:14px}
+.think span{width:7px;height:7px;border-radius:50%;background:var(--mut);animation:boDot 1.2s infinite}
+.think span:nth-child(2){animation-delay:.2s}.think span:nth-child(3){animation-delay:.4s}
+@keyframes boDot{30%{opacity:.25}60%{opacity:1}}
 #busy{font-size:12.5px;color:var(--mut);margin:6px 4px 0;min-height:16px}
 .deptpick{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
 .deptpick label{background:var(--inp);border:1px solid var(--line);border-radius:18px;padding:7px 14px;color:var(--fg);font-size:13.5px;cursor:pointer;margin:0}
@@ -193,8 +199,9 @@ function missionCard(m){
   +'<button class=ghost id=mcan>'+esc(t('mission.cancel'))+'</button></div></div>');
  d.querySelector('#med').onclick=async()=>{const r=await api('/api/chat/mission',{missionId:m.id,action:'edit',patch:{objective:d.querySelector('#mo').value,department:d.querySelector('#mdp').value}});if(r.error){alert(r.error);return}await refresh()};
  d.querySelector('#mok').onclick=async()=>{const a=await api('/api/chat/mission',{missionId:m.id,action:'approve'});if(a.error){alert(a.error);return}
-  document.getElementById('busy').textContent=t('shell.thinking');
-  const r=await api('/api/chat/launch',{missionId:m.id});if(r.error){alert(r.error)}
+  thinking(true);
+  const r=await api('/api/chat/launch',{missionId:m.id});thinking(false);
+  if(r.error){alert(r.error)}
   await refresh();const th=document.getElementById('thread');th.scrollTop=th.scrollHeight};
  d.querySelector('#mcan').onclick=async()=>{await api('/api/chat/mission',{missionId:m.id,action:'cancel'});await refresh()};
  return d;
@@ -474,6 +481,17 @@ async function obAnswer(txt){
   const r=await api('/api/detect');if(S.ob===ob&&ob.step==='models'){ob.models=r.detected||[];saveOb();render()}return}
 }
 
+// A thinking indicator the user cannot miss: pulsing send button + animated bubble in the thread.
+function thinking(on){
+ const send=document.getElementById('send');
+ send.disabled=!!on;send.classList.toggle('busy',!!on);
+ document.getElementById('busy').textContent=on?t('shell.thinking'):'';
+ const old=document.getElementById('bo-think');if(old)old.remove();
+ if(on){const d=el('<div class="msg bot" id="bo-think"><div class=who>'+esc(t('shell.brain'))+'</div><div class=think><span></span><span></span><span></span></div></div>');
+  document.getElementById('msgs').appendChild(d);
+  const th=document.getElementById('thread');th.scrollTop=th.scrollHeight}
+}
+
 // ── composer + render ────────────────────────────────────────────────────────
 function composer(){
  const s=S.state||{};
@@ -489,9 +507,9 @@ function composer(){
  send.onclick=async()=>{
   const txt=msg.value.trim();if(!txt)return;
   if(!onboarded(S.state||{})){msg.value='';grow();await obAnswer(txt);return}
-  document.getElementById('busy').textContent=t('shell.thinking');
+  thinking(true);
   const r=await api('/api/chat/send',{conversationId:S.convId,scope:S.scope,department:S.dept||null,agentId:S.agent||null,mode:S.mode,text:txt,projectId:S.projectId});
-  document.getElementById('busy').textContent='';
+  thinking(false);
   if(r.error){alert(r.error);return}
   S.convId=r.conversation.id;msg.value='';grow();await refresh()};
  grow();
