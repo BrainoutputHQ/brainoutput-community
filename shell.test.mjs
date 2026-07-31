@@ -12,18 +12,28 @@ import { fileURLToPath } from "node:url";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PORT = 4333;
 const BASE = `http://127.0.0.1:${PORT}`;
-let srv, dir;
+let srv, dir, zenStub, zenPort;
 
 before(async () => {
   dir = mkdtempSync(join(tmpdir(), "bo-shell-"));
+  // A stub "OpenCode Zen" so /api/connect-free is tested without touching the real network.
+  const { createServer } = await import("node:http");
+  zenStub = createServer((req, res) => {
+    let d = ""; req.on("data", (c) => (d += c));
+    req.on("end", () => { res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ choices: [{ message: { content: "ok" } }] })); });
+  });
+  await new Promise((r) => zenStub.listen(0, "127.0.0.1", r));
+  zenPort = zenStub.address().port;
   srv = spawn(process.execPath, [join(HERE, "web-server.mjs")],
-    { env: { ...process.env, BO_CE_DATA: dir, BO_CE_WEB_PORT: String(PORT) }, stdio: "ignore" });
+    { env: { ...process.env, BO_CE_DATA: dir, BO_CE_WEB_PORT: String(PORT),
+      BO_CE_FREE_ENDPOINT: `http://127.0.0.1:${zenPort}/v1/chat/completions` }, stdio: "ignore" });
   for (let i = 0; i < 60; i++) {
     try { await fetch(`${BASE}/api/state`); return; } catch { await new Promise((r) => setTimeout(r, 250)); }
   }
   throw new Error("server did not start");
 });
-after(() => { srv?.kill(); rmSync(dir, { recursive: true, force: true }); });
+after(() => { srv?.kill(); zenStub?.close(); rmSync(dir, { recursive: true, force: true }); });
 
 const post = (path, body) => fetch(`${BASE}${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json().then((j) => ({ status: r.status, body: j })));
 
@@ -92,6 +102,29 @@ test("the embedded browser script parses (template-literal escaping can never bl
   const page = SHELL_PAGE.replace("__BO_I18N__", "{}").replaceAll("__BO_LOCALE__", "en").replace("__BO_CSRF__", "x");
   const js = page.split("<script>")[1].split("</scr" + "ipt>")[0];
   new vm.Script(js);   // throws on a syntax error — e.g. an unescaped newline inside a string
+});
+
+test("connect-free: health-checks candidates for real, connects the first healthy, fills only empty slots", async () => {
+  await post("/api/onboard", { companyName: "Free Co", companyDoes: "tests", departments: ["technical"] });
+  // This machine may have live local models that filled slots at onboard. Clear every slot but
+  // one first: connect-free must fill the cleared ones and NOT touch the explicit survivor.
+  const before = (await (await fetch(`${BASE}/api/state`)).json());
+  const slots = Object.keys(before.assignments || {});
+  const survivor = slots[0];
+  for (const slot of slots) if (slot !== survivor) await post("/api/assign", { slot, connectionId: null });
+
+  const r = await post("/api/connect-free", {});
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.picked.model, "deepseek-v4-flash-free");   // first candidate, stubbed healthy
+  assert.equal(r.body.picked.costSource, "free");
+  assert.match(r.body.privacyNote, /improve the model/);
+  const conn = r.body.connections.find((c) => c.kind === "opencode-free");
+  assert.ok(conn, "connection recorded");
+  assert.equal(conn.funder, "free");
+  for (const slot of slots) {
+    if (slot === survivor) assert.equal(r.body.assignments[slot], before.assignments[slot], "explicit assignment untouched");
+    else assert.equal(r.body.assignments[slot], conn.id, `cleared slot '${slot}' filled with the free connection`);
+  }
 });
 
 test("task spine API: manual tasks, subtasks, status flips — and missions report INTO tasks", async () => {

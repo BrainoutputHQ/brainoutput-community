@@ -35,6 +35,7 @@ import { CATALOG, LOCALES } from "./i18n.mjs";
 import { SHELL_PAGE } from "./shell.mjs";
 import { newProject, listProjects, promoteConversation } from "./projects.mjs";
 import { newTask, newSubtask, setTaskStatus, reportMissionToTask } from "./tasks.mjs";
+import { pickFreeModel, freeConnection, FREE_PRIVACY_NOTE } from "./free-models.mjs";
 
 const PORT = Number(process.env.BO_CE_WEB_PORT || 4177);
 // Hosting (the 7-day trial) means this dashboard is reachable beyond this machine — and it holds the
@@ -222,6 +223,27 @@ async function api(req, res, url) {
       store.addProject(r.project); store.addConversation(r.conversation); store.saveRuntime();
       return json(res, { ...publicState(), project: r.project, conversation: r.conversation });
     } catch (e) { return json(res, { error: e.message }, 400); }
+  }
+  if (url.pathname === "/api/connect-free") {
+    // Health-check the free candidates for REAL (never one hardcoded model), connect the first
+    // that answers, and fill only the capability slots the user has not already assigned.
+    const pick = await pickFreeModel();
+    if (!pick.model)
+      return json(res, { error: "no free model answered a real completion right now", tried: pick.tried }, 503);
+    const conn = freeConnection({ model: pick.model, endpoint: pick.endpoint });
+    const byId = new Map((store.def.modelConnections || []).map((c) => [c.id, c]));
+    byId.set(conn.id, conn);
+    const connections = [...byId.values()];
+    // The click is an EXPLICIT choice: fill every unassigned slot with the free connection
+    // (fitness would prefer a local model — right by default, wrong against an explicit choice).
+    // Slots the user already assigned are never touched.
+    const rec = recommendAssignments(store.def.agents || [], connections);
+    const existing = store.def.modelAssignments || {};
+    const emptySlots = rec.slotsUsed.filter((s) => !existing[s]);
+    const assignments = { ...Object.fromEntries(emptySlots.map((s) => [s, conn.id])), ...existing };
+    store.setConnections(connections).setAssignments(assignments).saveDefinition();
+    return json(res, { ...publicState(), picked: { model: pick.model, provider: conn.provider, costSource: "free" },
+      tried: pick.tried, privacyNote: FREE_PRIVACY_NOTE });
   }
   if (url.pathname === "/api/task/new") {
     try {

@@ -271,8 +271,17 @@ function onboarding(){
  if(ob.step===1){
   const d=el('<div class=cardx><div style="font-size:13px">'+esc(ob.models===null?t('shell.thinking'):(ob.models.length?t('onboard.modelsFound'):t('onboard.noModels')))+'</div>'
    +(ob.models&&ob.models.length?'<div class=mut style="font-size:12px;margin-top:6px">'+ob.models.map(m=>esc(m.provider+'/'+m.name)).join('<br>')+'</div>':'')
+   +'<div style="margin-top:10px"><button class=ghost id=free>'+esc(t('onboard.useFree'))+'</button> <span class=mut id=freemsg style="font-size:11px"></span></div>'
+   +'<div class=mut style="font-size:11px;margin-top:4px">'+esc(t('onboard.freePrivacy'))+'</div>'
    +(ob.models!==null?'<div style="margin-top:10px"><button class=act>'+esc(t('onboard.continue'))+'</button></div>':'')+'</div>');
-  const b=d.querySelector('button');if(b)b.onclick=()=>{ob.step=2;render()};
+  const fb=d.querySelector('#free');
+  fb.onclick=async()=>{
+   fb.disabled=true;const fm=d.querySelector('#freemsg');fm.textContent=t('onboard.freeChecking');
+   const r=await api('/api/connect-free');
+   if(r.error){fm.textContent=r.tried?t('onboard.freeNone'):r.error;fb.disabled=false;return}
+   fm.textContent='✓ '+r.picked.model+' (free)';
+   S.state=r;};
+  const b=d.querySelector('button.act');if(b)b.onclick=()=>{ob.step=2;render()};
   box.appendChild(d);return}
  const depts=['technical','customer-service','finance','sales','marketing','human-resources','legal-compliance','operations','data-research'];
  const d=el('<div class=cardx><div style="font-size:13px">'+esc(t('onboard.pickDepartments'))+'</div>'
