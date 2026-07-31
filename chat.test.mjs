@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import {
   CHAT_MODES, newConversation, addMessage, pin, resolveMention, rollSummary, retrieveRelevant,
   compactContext, draftMissionSpec, editMissionSpec, validateMissionSpec, approveMission, rejectMission,
-  modeAllows, missionComposer, reviewMission, saveAsWorkflow,
+  modeAllows, missionComposer, reviewMission, saveAsWorkflow, looksLikeWork,
 } from "./chat.mjs";
 
 const AGENTS = [{ id: "eng-architect", department: "technical", role: "architect" }, { id: "cs-agent", department: "customer-service", role: "support" }];
@@ -159,4 +159,13 @@ test("save-as-workflow strips the conversation-specific objective", () => {
   assert.equal(wf.name, "Weekly report");
   assert.equal(wf.task.summary, undefined);
   assert.equal(wf.department, "ops");
+});
+
+test("looksLikeWork: imperatives and 'X-moi' forms are work; questions are not", () => {
+  for (const s of ["crée-moi un démineur", "crée moi un jeu snake en html", "Create a landing page",
+    "build me a game", "fais un site vitrine", "write a slugify function", "erstelle eine Website"])
+    assert.equal(looksLikeWork(s), true, s);
+  for (const s of ["comment créer un compte ?", "how do I create a website?", "c'est quoi un démineur ?",
+    "what is a minesweeper", "pourquoi le build échoue ?"])
+    assert.equal(looksLikeWork(s), false, s);
 });

@@ -74,6 +74,7 @@ export const CATALOG = {
     "onboard.placeholder": "e.g. a small software product studio",
     "onboard.namePlaceholder": "e.g. Meridian Group",
     "error.generic": "Something went wrong",
+    "chat.draftedWork": "This looks like work, so I drafted a mission for {dept} — review it and approve below to launch.",
   },
   fr: {
     "app.tagline": "Vos modèles · vos clés",
@@ -144,6 +145,7 @@ export const CATALOG = {
     "onboard.placeholder": "ex. un petit studio de logiciels",
     "onboard.namePlaceholder": "ex. Groupe Méridien",
     "error.generic": "Une erreur est survenue",
+    "chat.draftedWork": "C'est du travail à faire — j'ai préparé une mission pour {dept}. Vérifiez-la et approuvez ci-dessous pour lancer.",
   },
   de: {
     "app.tagline": "Ihre Modelle · Ihre Schlüssel",
@@ -214,6 +216,7 @@ export const CATALOG = {
     "onboard.placeholder": "z.B. ein kleines Softwarestudio",
     "onboard.namePlaceholder": "z.B. Meridian Gruppe",
     "error.generic": "Etwas ist schiefgelaufen",
+    "chat.draftedWork": "Das sieht nach einer Aufgabe aus — ich habe eine Mission für {dept} vorbereitet. Prüfen und unten genehmigen.",
   },
 };
 

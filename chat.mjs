@@ -13,6 +13,19 @@ import { planGraph, selectPolicies } from "./ce-core.mjs";
 export const CHAT_SCOPES = ["work-twin", "company", "department", "agent"];
 export const CHAT_MODES = ["ask", "plan", "execute", "review"];
 
+/**
+ * Does this message ask for WORK to be produced (not a question)? Imperative verbs at the
+ * start ("crée", "build", "erstelle") or "X-moi" / "me X" forms — and NOT a question.
+ * Used to auto-draft a mission in Ask mode: a user should never have to think about modes.
+ */
+export function looksLikeWork(text = "") {
+  const s = String(text).trim();
+  if (!s || /\?\s*$/.test(s)) return false;
+  return /^(cr[ée]e?r?|créer|fais|faire|fabrique|build|make|create|write|implement|code|développe?|develop|génère|generate|erstelle?|baue?|schreibe|mach)\b/i.test(s)
+    || /(crée?|fais|fabrique|build|make|create|write|génère)[- ](moi|me|nous|uns)\b/i.test(s)
+    || /^(crée|fais|build|make|create)\s+(a|an|un|une|le|la|the|some|this)\b/i.test(s);
+}
+
 const tokenize = (s) => (String(s).toLowerCase().match(/[a-z0-9]+/g) || []).filter((w) => w.length > 2);
 
 // ── Conversation ────────────────────────────────────────────────────────────────────────────────

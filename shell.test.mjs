@@ -126,6 +126,28 @@ test("connect-free: health-checks candidates for real, connects the first health
     if (slot === survivor) assert.equal(r.body.assignments[slot], before.assignments[slot], "explicit assignment untouched");
     else assert.equal(r.body.assignments[slot], conn.id, `cleared slot '${slot}' filled with the free connection`);
   }
+
+  // A later click upgrades slots stuck on the OLD free pick; the local survivor stays put.
+  const r2 = await post("/api/connect-free", {});
+  assert.equal(r2.status, 200);
+  const conn2 = r2.body.connections.find((c) => c.id === `free-${r2.body.picked.model}`);
+  assert.ok(conn2);
+  for (const slot of slots) {
+    if (slot === survivor) assert.equal(r2.body.assignments[slot], before.assignments[slot], "local/BYOK choice still untouched");
+    else assert.equal(r2.body.assignments[slot], conn2.id, `slot '${slot}' upgraded to the new pick`);
+  }
+});
+
+test("a build request in ASK mode auto-drafts a mission — the user never thinks about modes", async () => {
+  const send = await post("/api/chat/send", { scope: "company", mode: "ask", text: "crée-moi un jeu snake en html" });
+  assert.equal(send.status, 200, JSON.stringify(send.body));
+  assert.ok(send.body.mission, "an ask that is work drafts a mission");
+  assert.match(send.body.conversation.messages.at(-1).text, /drafted a mission|préparé une mission|Mission für .* vorbereitet/);
+
+  // A genuine question does NOT get hijacked into planning.
+  const q = await post("/api/chat/send", { scope: "company", mode: "ask", text: "what is a minesweeper?" });
+  assert.equal(q.status, 200);
+  assert.equal(q.body.mission, null);
 });
 
 test("task spine API: manual tasks, subtasks, status flips — and missions report INTO tasks", async () => {

@@ -20,7 +20,7 @@ import { detectConnections, generateOrg, recommendAssignments, applyOverrides, c
 import { runtimeCards, runtimeConnection, runtimeToConnection } from "./runtimes.mjs";
 import { applyAdvancedAgentConfig } from "./onboarding.mjs";
 import { newConversation, addMessage, pin, resolveMention, rollSummary, compactContext, draftMissionSpec,
-  editMissionSpec, approveMission, rejectMission, modeAllows, missionComposer, reviewMission, saveAsWorkflow } from "./chat.mjs";
+  editMissionSpec, approveMission, rejectMission, modeAllows, missionComposer, reviewMission, saveAsWorkflow, looksLikeWork } from "./chat.mjs";
 import { connectRagSource, indexDocuments, searchRag } from "./rag.mjs";
 import { createWorkTwin, setMode as twinSetMode, connectWorkSource, grantTwinScope, twinPermission,
   indexMessages as twinIndex, retrieveForRequest, prioritySummary, unansweredThreads, extractCommitments,
@@ -36,6 +36,9 @@ import { SHELL_PAGE } from "./shell.mjs";
 import { newProject, listProjects, promoteConversation } from "./projects.mjs";
 import { newTask, newSubtask, setTaskStatus, reportMissionToTask } from "./tasks.mjs";
 import { pickFreeModel, freeConnection, FREE_PRIVACY_NOTE } from "./free-models.mjs";
+import { t as i18nT } from "./i18n.mjs";
+/** Server-side chat strings in the user's locale (settings.locale). */
+const tChat = (key) => i18nT(store.def.settings?.locale || "en", key);
 
 const PORT = Number(process.env.BO_CE_WEB_PORT || 4177);
 // Hosting (the 7-day trial) means this dashboard is reachable beyond this machine — and it holds the
@@ -234,16 +237,18 @@ async function api(req, res, url) {
     const byId = new Map((store.def.modelConnections || []).map((c) => [c.id, c]));
     byId.set(conn.id, conn);
     const connections = [...byId.values()];
-    // The click is an EXPLICIT choice: fill every unassigned slot with the free connection
-    // (fitness would prefer a local model — right by default, wrong against an explicit choice).
-    // Slots the user already assigned are never touched.
+    // The click is an EXPLICIT choice: fill every unassigned slot with the free connection,
+    // AND upgrade slots still pointing at an older opencode-free connection (a previous pick —
+    // e.g. a slow reasoning model — replaced by today's fastest healthy). Slots the user set to
+    // a local/BYOK model are never touched.
     const rec = recommendAssignments(store.def.agents || [], connections);
     const existing = store.def.modelAssignments || {};
-    const emptySlots = rec.slotsUsed.filter((s) => !existing[s]);
-    const assignments = { ...Object.fromEntries(emptySlots.map((s) => [s, conn.id])), ...existing };
+    const freeIds = new Set(connections.filter((c) => c.kind === "opencode-free").map((c) => c.id));
+    const fillSlots = rec.slotsUsed.filter((s) => !existing[s] || (freeIds.has(existing[s]) && existing[s] !== conn.id));
+    const assignments = { ...Object.fromEntries(fillSlots.map((s) => [s, conn.id])), ...Object.fromEntries(Object.entries(existing).filter(([s]) => !fillSlots.includes(s))) };
     store.setConnections(connections).setAssignments(assignments).saveDefinition();
     return json(res, { ...publicState(), picked: { model: pick.model, provider: conn.provider, costSource: "free" },
-      tried: pick.tried, privacyNote: FREE_PRIVACY_NOTE });
+      tried: pick.tried, upgradedSlots: fillSlots.filter((s) => existing[s]), privacyNote: FREE_PRIVACY_NOTE });
   }
   if (url.pathname === "/api/task/new") {
     try {
@@ -655,13 +660,30 @@ async function chatSend(res, b) {
         reply += `\n\n(permission: ${perm.scope} in ${t.mode} mode${perm.requiresApproval ? " · approval required" : ""})`;
       }
     }
+  } else if (mode === "ask" && looksLikeWork(b.text || "")) {
+    // Auto-plan: a build request in Ask mode is work, not chat — draft the mission directly
+    // (the user should never have to think about modes). Same draft path as Plan mode.
+    const agent = conv.agentId ? (store.def.agents || []).find((a) => a.id === conv.agentId) : null;
+    const dept = conv.department || agent?.department || (store.def.departments || [])[0] || null;
+    mission = draftMissionSpec(conv, {
+      department: dept,
+      agents: agent ? [agent.id] : (store.def.agents || []).filter((a) => a.department === dept).map((a) => a.id).slice(0, 1),
+      tools: agent?.tools || [], permissions: agent?.permissions || [], approvals: agent?.approvalThresholds || {},
+      policies: store.def.policies || {},
+    });
+    if (conv.projectId) mission = { ...mission, projectId: conv.projectId };
+    store.addMission(mission);
+    conv = { ...conv, missionId: mission.id };
+    reply = tChat("chat.draftedWork").replace("{dept}", mission.department);
   } else if (mode === "ask") {
-    // READ-ONLY: retrieve from company knowledge, then answer with the conversation model if available.
+    // READ-ONLY retrieval first; then answer GENERALLY — company knowledge enriches the answer
+    // when relevant, it is never a cage ("answer ONLY from context" made the model refuse
+    // perfectly normal questions). With no model: knowledge hits or the configure guidance.
     rag = searchRag([knowledgeSource()], b.text || "", { agent: { id: conv.agentId, department: conv.department }, topK: 3 });
     const ctx = compactContext(conv, { query: b.text || "", k: 3 });
     let modelError = null;
     if (model.connection && !model.needsConfiguration) {
-      const prompt = `Answer the question using ONLY the context. Be brief.\n\nContext:\n${rag.map((r) => `- ${r.text} (${r.citation})`).join("\n") || "(no matching company knowledge)"}\n\nPinned constraints: ${ctx.pinned.map((p) => p.text).join("; ") || "none"}\n\nQuestion: ${b.text}`;
+      const prompt = `Answer the user briefly and helpfully, in the user's language. Use the company context below when it is relevant; if it is not relevant, answer from your own knowledge.\n\nCompany context:\n${rag.map((r) => `- ${r.text} (${r.citation})`).join("\n") || "(none yet)"}\n\nPinned constraints: ${ctx.pinned.map((p) => p.text).join("; ") || "none"}\n\nUser: ${b.text}`;
       try {
         // 800 tokens: reasoning models (deepseek-flash & co.) think first — a small budget used
         // to be eaten entirely by reasoning and surfaced as "no model configured", which was a lie.
