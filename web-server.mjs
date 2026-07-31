@@ -33,7 +33,7 @@ import { efficiencyReport } from "./efficiency.mjs";
 import { selectModel } from "./ce-core.mjs";
 import { CATALOG, LOCALES } from "./i18n.mjs";
 import { SHELL_PAGE } from "./shell.mjs";
-import { newProject, listProjects, promoteConversation } from "./projects.mjs";
+import { newProject, listProjects, promoteConversation, projectBrief } from "./projects.mjs";
 import { newTask, newSubtask, setTaskStatus, reportMissionToTask } from "./tasks.mjs";
 import { pickFreeModel, freeConnection, FREE_PRIVACY_NOTE } from "./free-models.mjs";
 import { t as i18nT } from "./i18n.mjs";
@@ -568,7 +568,7 @@ async function twinAction(res, b) {
 // Company knowledge as a READ-ONLY RAG source, built from the user's own company definition.
 // Shared with the CLI (`bo ask`) via knowledge.mjs — one source, same citations.
 import { buildKnowledgeSource } from "./knowledge.mjs";
-function knowledgeSource() { return buildKnowledgeSource(store.def); }
+function knowledgeSource() { return buildKnowledgeSource(store.def, store.runtime); }
 
 /**
  * Resolve the model for a Work Twin STAGE (advanced policy first, else the company default).
@@ -963,7 +963,11 @@ async function chatLaunch(res, b) {
     const fileInstruction = wantsFile
       ? `\n\nThe deliverable is a DOCUMENT. Output ONLY a fenced file spec, nothing else:\n\`\`\`file:spec.json\n{"title":"…","pages":[{"heading":"…","lines":["…","…"],"images":["uploaded-file-name.jpg"]}]}\n\`\`\`\nAvailable uploaded images you may embed: ${imageNames.join(", ") || "(none — leave images out)"}.${siteText ? `\nAbout the business (from its own website — use THESE facts, never invent others): ${siteText}` : ""}`
       : "";
-    const prompt = `${m.objective}\n\nConstraints: ${(m.constraints || []).join("; ") || "none"}\nAcceptance: ${(m.acceptanceCriteria || []).join("; ") || "none"}\n\nDo not ask for clarification. Make reasonable assumptions (state them in one line), then produce the COMPLETE deliverable — the full file or content itself, not a description or plan of it.${fileInstruction}`;
+    // Cold-start contract: a worker in a project gets the project's compact brief — what
+    // shipped, what is open, the pinned decisions. Never the transcripts.
+    const brief = m.projectId ? projectBrief(store.runtime, m.projectId) : null;
+    const briefSection = brief ? `\n\nProject context (so you don't start cold):\n${brief}` : "";
+    const prompt = `${m.objective}\n\nConstraints: ${(m.constraints || []).join("; ") || "none"}\nAcceptance: ${(m.acceptanceCriteria || []).join("; ") || "none"}${briefSection}\n\nDo not ask for clarification. Make reasonable assumptions (state them in one line), then produce the COMPLETE deliverable — the full file or content itself, not a description or plan of it.${fileInstruction}`;
     const updateExec = (patch) => { store.addExecution({ ...exec, ...patch }); store.saveRuntime(); };
     const onNodeDone = (result, i) => {
       exec.results.push(result);

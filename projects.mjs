@@ -53,6 +53,27 @@ export function promoteConversation(runtime, { conversationId, projectId = null,
 }
 
 /**
+ * The compact brief a WORKER gets when it starts cold in a project: what the project is,
+ * what already shipped, what is open, and the pinned decisions. Transcripts never travel —
+ * this digest is the entire cross-run memory contract. Bounded; deterministic.
+ */
+export function projectBrief(runtime, projectId, { maxLen = 700 } = {}) {
+  const project = findProject(runtime, projectId);
+  if (!project) return null;
+  const digest = projectDigest(runtime, project.id);
+  const tasks = (runtime.tasks || []).filter((t) => t.projectId === project.id);
+  const done = tasks.filter((t) => t.status === "done" && t.result).slice(-3);
+  const open = tasks.filter((t) => t.status !== "done" && !t.parentId).slice(0, 5);
+  const pinned = (runtime.conversations || []).filter((c) => c.projectId === project.id)
+    .flatMap((c) => c.pinned || []).slice(-5);
+  const parts = [`project "${project.name}" — ${digest.missions} mission(s), ${digest.executions} run(s), ${digest.threads} conversation(s).`];
+  if (done.length) parts.push(`done: ${done.map((t) => `${t.title} → ${(t.result.summary || "").slice(0, 60)}`).join("; ")}`);
+  if (open.length) parts.push(`open: ${open.map((t) => t.title).join("; ")}`);
+  if (pinned.length) parts.push(`decisions: ${pinned.map((p) => p.text).join("; ")}`);
+  return parts.join("\n").slice(0, maxLen);
+}
+
+/**
  * The memory anchor for "remember projects as much as possible": a compact digest of
  * everything a project holds, so a worker resumes with full context and nothing is lost.
  */

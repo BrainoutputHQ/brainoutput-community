@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { LOCALES, CATALOG, t, missingKeys } from "./i18n.mjs";
 import { newProject, listProjects, findProject, projectThreads, adHocThreads,
-  promoteConversation, projectDigest, PROJECT_KIND } from "./projects.mjs";
+  promoteConversation, projectDigest, projectBrief, PROJECT_KIND } from "./projects.mjs";
 
 // ── i18n ──────────────────────────────────────────────────────────────────────
 
@@ -86,4 +86,20 @@ test("digest is the project's memory anchor: threads, missions, runs, artifacts,
   assert.equal(d.pendingApprovals, 1);
   assert.equal(d.lastActivity, 8);
   assert.equal(projectDigest(rt(), "ghost"), null);
+});
+
+test("projectBrief: the cold-start contract — shipped, open, decisions; bounded; never transcripts", () => {
+  const r = rt();
+  r.tasks = [
+    { id: "t1", projectId: "p1", title: "converter", status: "done", result: { ok: true, summary: "3 formats shipped" } },
+    { id: "t2", projectId: "p1", title: "stripe keys", status: "todo" },
+  ];
+  r.conversations.push({ id: "c9", projectId: "p1", pinned: [{ kind: "decision", text: "no Stripe until v2" }] });
+  const b = projectBrief(r, "p1");
+  assert.match(b, /project "pdf-saas"/);
+  assert.match(b, /converter → 3 formats shipped/);
+  assert.match(b, /open: stripe keys/);
+  assert.match(b, /no Stripe until v2/);
+  assert.ok(b.length <= 700);
+  assert.equal(projectBrief(r, "ghost"), null);
 });

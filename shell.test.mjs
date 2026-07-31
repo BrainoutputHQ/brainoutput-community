@@ -287,6 +287,18 @@ test("company website, project url, and chat deletion (work records stay)", asyn
   assert.equal(ghost.status, 404);
 });
 
+test("cross-project memory: a project brief is in the knowledge base, and the worker prompt carries it", async () => {
+  // A project with shipped work becomes retrievable company knowledge (ask across projects).
+  const p = await post("/api/project", { name: "memory-check" });
+  const pid = p.body.project.id;
+  const t = await post("/api/task/new", { title: "vlan decision", projectId: pid });
+  await post("/api/task/status", { id: t.body.task.id, status: "done" });
+  const ask = await post("/api/chat/send", { scope: "company", mode: "ask", text: "what is happening in memory-check?" });
+  const reply = ask.body.conversation.messages.at(-1);
+  assert.ok((reply.meta?.citations || []).some((c) => c.includes("project/")),
+    `project knowledge is retrieved across projects — citations: ${(reply.meta?.citations || []).join(", ")}`);
+});
+
 test("a build request in ASK mode auto-drafts a mission — the user never thinks about modes", async () => {
   const send = await post("/api/chat/send", { scope: "company", mode: "ask", text: "crée-moi un jeu snake en html" });
   assert.equal(send.status, 200, JSON.stringify(send.body));
