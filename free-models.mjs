@@ -54,12 +54,42 @@ export async function healthCheckFree(endpoint, model, { fetchImpl = fetch, time
 export async function pickFreeModel({ endpoint = process.env.BO_CE_FREE_ENDPOINT || ZEN_CHAT_ENDPOINT,
   candidates = FREE_CANDIDATES, fetchImpl = fetch } = {}) {
   const tried = await Promise.all(candidates.map((m) => healthCheckFree(endpoint, m, { fetchImpl })));
-  const healthy = tried.filter((h) => h.ok).sort((a, b) => a.ms - b.ms);
-  return { model: healthy[0]?.model || null, endpoint, tried, ms: healthy[0]?.ms ?? null };
+  const healthy = tried.filter((h) => h.ok);
+  // The product EXECUTES work — a chat-only model is a dead end for missions. Probe tool
+  // calling for real on the healthy candidates; tool-capable models rank first, then speed.
+  const probed = await Promise.all(healthy.map(async (h) => ({ ...h, ...(await toolProbeFree(endpoint, h.model, { fetchImpl })) })));
+  const ranked = probed.sort((a, b) => (b.tools === true) - (a.tools === true) || a.ms - b.ms);
+  const best = ranked[0];
+  const probedByModel = new Map(probed.map((p) => [p.model, p]));
+  return { model: best?.model || null, endpoint, tried: tried.map((h) => probedByModel.get(h.model) || h), ms: best?.ms ?? null, toolSupport: best?.tools ?? null };
+}
+
+/** A REAL tool-call probe: some free models 400 on `tools`, others answer but never call. */
+export async function toolProbeFree(endpoint, model, { fetchImpl = fetch, timeoutMs = 20000 } = {}) {
+  try {
+    const r = await fetchImpl(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: "user", content: "What time is it in Paris right now? Use the get_time tool." }],
+        tools: [{ type: "function", function: { name: "get_time",
+          description: "Get the current time in a city",
+          parameters: { type: "object", properties: { city: { type: "string" } }, required: ["city"] } } }],
+        tool_choice: "auto", max_tokens: 200,
+      }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!r.ok) return { tools: false, toolsReason: `HTTP ${r.status} (no tool support)` };
+    const j = await r.json();
+    const calls = j.choices?.[0]?.message?.tool_calls;
+    if (Array.isArray(calls) && calls.length > 0) return { tools: true };
+    return { tools: false, toolsReason: "answered without calling the tool" };
+  } catch (e) { return { tools: false, toolsReason: String(e.message || e) }; }
 }
 
 /** The ce-core connection for a picked free model. */
-export function freeConnection({ id, model, endpoint = ZEN_CHAT_ENDPOINT }) {
+export function freeConnection({ id, model, endpoint = ZEN_CHAT_ENDPOINT, toolSupport = null }) {
   if (!model) throw new Error("freeConnection needs a health-checked model");
   return {
     id: id || `free-${model}`,
@@ -70,5 +100,6 @@ export function freeConnection({ id, model, endpoint = ZEN_CHAT_ENDPOINT }) {
     costSource: "free",
     funder: "free",
     contextSize: 64000,
+    ...(toolSupport != null ? { toolSupport } : {}),
   };
 }

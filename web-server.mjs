@@ -250,7 +250,7 @@ async function api(req, res, url) {
     const pick = await pickFreeModel();
     if (!pick.model)
       return json(res, { error: "no free model answered a real completion right now", tried: pick.tried }, 503);
-    const conn = freeConnection({ model: pick.model, endpoint: pick.endpoint });
+    const conn = freeConnection({ model: pick.model, endpoint: pick.endpoint, toolSupport: pick.toolSupport });
     const byId = new Map((store.def.modelConnections || []).map((c) => [c.id, c]));
     byId.set(conn.id, conn);
     const connections = [...byId.values()];
@@ -264,7 +264,7 @@ async function api(req, res, url) {
     const fillSlots = rec.slotsUsed.filter((s) => !existing[s] || (freeIds.has(existing[s]) && existing[s] !== conn.id));
     const assignments = { ...Object.fromEntries(fillSlots.map((s) => [s, conn.id])), ...Object.fromEntries(Object.entries(existing).filter(([s]) => !fillSlots.includes(s))) };
     store.setConnections(connections).setAssignments(assignments).saveDefinition();
-    return json(res, { ...publicState(), picked: { model: pick.model, provider: conn.provider, costSource: "free" },
+    return json(res, { ...publicState(), picked: { model: pick.model, provider: conn.provider, costSource: "free", toolSupport: pick.toolSupport },
       tried: pick.tried, upgradedSlots: fillSlots.filter((s) => existing[s]), privacyNote: FREE_PRIVACY_NOTE });
   }
   if (url.pathname === "/api/task/new") {
