@@ -27,6 +27,8 @@ before(async () => {
         return res.end(JSON.stringify({ choices: [{ message: { content: "" }, finish_reason: "length" }] }));
       if (d.includes("CLARIFY-NOW"))
         return res.end(JSON.stringify({ choices: [{ message: { content: "You haven't provided any context for me to analyze. Could you please clarify?" } }] }));
+      if (d.includes("output the plan as a fenced block"))
+        return res.end(JSON.stringify({ choices: [{ message: { content: "Thinking through it.\n\n```tasks\n[{\"title\": \"research the options\"}, {\"title\": \"draft the first version\"}, {\"title\": \"verify with the user\"}]\n```" } }] }));
       if (d.includes("PDF-SPEC"))
         return res.end(JSON.stringify({ choices: [{ message: { content: "```file:spec.json\n" + JSON.stringify({ title: "Hotel Soleil — pictures", pages: [{ heading: "The hotel", lines: ["A real hotel brochure, generated as a real PDF file by the runtime — not as code that could make one. ".repeat(2)], images: [] }] }) + "\n```" } }] }));
       res.end(JSON.stringify({ choices: [{ message: { content: "ok — done. " + "Real work output follows: ".repeat(8) } }] })); });
@@ -604,4 +606,37 @@ test("google oauth: config seals the secret, start redirects with state, callbac
 
   const disc = await post("/api/oauth/google/disconnect", {});
   assert.equal(disc.body.google.configured, false);
+});
+
+test("plan → spine tasks: a goal mission decomposes into subtasks that flip done as workers report", async () => {
+  const p = await post("/api/project", { name: "plan-spine-proj" });
+  const pid = p.body.project.id;
+  const send = await post("/api/chat/send", { scope: "department", department: "technical", mode: "plan",
+    text: "set up the PLAN-SPINE customer portal", projectId: pid });
+  const m = send.body.mission;
+  assert.ok(m, JSON.stringify(send.body).slice(0, 200));
+  assert.ok(m.graph.nodes.includes("planner"), "a goal gets a planner");
+  assert.match(m.planPreview[0], /^Plan:/);
+  await post("/api/chat/mission", { missionId: m.id, action: "approve" });
+  const launch = await post("/api/chat/launch", { missionId: m.id, timeoutMs: 30000 });
+  assert.equal(launch.body.started, true);
+
+  const done = await until(async () => {
+    const st = await state();
+    const mm = (st.missions || []).find((x) => x.id === m.id);
+    if (mm?.status !== "done") return null;
+    const tasks = (st.tasks || []).filter((t) => t.projectId === pid);
+    const parent = tasks.find((t) => !t.parentId && t.missionId === m.id);
+    const subs = tasks.filter((t) => t.parentId);
+    return subs.length >= 2 && subs.every((s) => s.status === "done") ? { parent, subs, mm } : null;
+  }, 60000);
+  assert.ok(done.parent, "the mission task is on the spine");
+  assert.deepEqual(done.subs.map((s) => s.title), ["research the options", "draft the first version", "verify with the user"]);
+  assert.ok(done.subs.every((s) => s.result?.ok), "each subtask carries its worker's result");
+  const st = await state();
+  const exec = (st.executions || []).find((e) => e.missionId === m.id);
+  const graphNodes = (exec.graph || []).map((g) => g.node);
+  assert.ok(graphNodes.includes("worker-1") && graphNodes.includes("worker-3"), "the live graph shows per-task workers");
+  const conv = (st.conversations || []).find((c) => c.id === m.conversationId);
+  assert.match(conv.messages.at(-1).text, /Planned tasks: 3\/3 done/);
 });

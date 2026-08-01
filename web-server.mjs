@@ -32,6 +32,7 @@ import { createWorkTwin, setMode as twinSetMode, connectWorkSource, grantTwinSco
 import { connectMailSource, workSourceOptions, smtpSend } from "./mail-sources.mjs";
 import { draftConnectorSpec, connectorGuide, missingConfig, connectorBuildPlan } from "./connector-builder.mjs";
 import { LocalNodes, POLL_HOLD_MS } from "./local-bridge.mjs";
+import { PLAN_TASKS_INSTRUCTION, parsePlannedTasks } from "./plan-tasks.mjs";
 import { GoogleOAuth } from "./oauth-google.mjs";
 import { connectDriveSource, driveProviderOptions } from "./drive-sources.mjs";
 import { indexFiles, searchFiles } from "./worktwin.mjs";
@@ -1230,16 +1231,100 @@ async function chatLaunch(res, b) {
     };
     let results = [];
     let retried = false;
+    let decomposed = null;                          // plan → spine tasks bookkeeping
+    let planRest = r.plan;                          // nodes left after the planner (or the whole plan)
     try {
+      // PLAN → SPINE TASKS: a planner in a PROJECT mission decomposes the objective into real
+      // subtasks; workers execute them one by one and each report flips its task to done. This
+      // is the progress-you-can-watch path (focus (1)). Unusable plan → today's single flow.
+      const plannerNode = r.plan.find((n) => String(n.node).replace(/\d+$/, "") === "planner");
+      const workerNode = r.plan.find((n) => String(n.node).replace(/\d+$/, "") === "worker");
+      if (plannerNode && workerNode && m.projectId && spineTask) {
+        let pr;
+        try {
+          pr = await runNode(plannerNode, plannerNode.model, { prompt: prompt + PLAN_TASKS_INSTRUCTION },
+            { maxTokens: b.maxTokens || 1500, timeoutMs: b.timeoutMs || 240000, localCall: localNodeModelCall });
+        } catch (e) {
+          if (!/no content|budget/i.test(String(e.message || e))) throw e;
+          retried = true;
+          pr = await runNode(plannerNode, plannerNode.model, { prompt: prompt + PLAN_TASKS_INSTRUCTION },
+            { maxTokens: (b.maxTokens || 1500) * 2, timeoutMs: b.timeoutMs || 240000, localCall: localNodeModelCall });
+        }
+        results.push(pr);
+        exec.logs.push(execLogLine(pr));
+        if (exec.graph[0]) exec.graph[0] = { ...exec.graph[0], status: "done" };
+        const planned = parsePlannedTasks(pr.output);
+        if (planned.length >= 2) {
+          // Real subtasks on the spine + per-task worker graph entries (live progress).
+          decomposed = { subtasks: [] };
+          for (const t of planned) {
+            // Explicit unique id: newTask's default is millisecond-grained — several subtasks
+            // created in one ms would COLLIDE and only the last would survive.
+            const st = newSubtask(store.runtime, spineTask.id, { id: uid("task"), title: t.title, assignee: r.agent, status: "todo", at: Date.now() });
+            store.addTask(st);
+            decomposed.subtasks.push(st);
+          }
+          const wi = r.plan.findIndex((n) => n === workerNode);
+          exec.graph = [
+            ...exec.graph.slice(0, wi),
+            ...decomposed.subtasks.map((st, i) => ({ node: `worker-${i + 1}`, slot: workerNode.slot, model: workerNode.model?.model || null,
+              provider: workerNode.model?.provider || null, costSource: workerNode.model?.costSource || null, needsConfiguration: !!workerNode.model?.needsConfiguration, status: "pending" })),
+            ...exec.graph.slice(wi + 1),
+          ];
+          updateExec({});
+          planRest = r.plan.filter((n) => n !== plannerNode && n !== workerNode);
+        } else {
+          exec.logs.push("planner: no usable task list — running as one task");
+          planRest = r.plan.filter((n) => n !== plannerNode);
+          updateExec({});
+        }
+      }
+
+      // Per-task workers: each plan step executes and its task flips todo → in-progress → done.
+      if (decomposed) {
+        const wi = r.plan.findIndex((n) => n === workerNode);
+        const isCodingWorker = typeof workerNode.slot === "string" && workerNode.slot.startsWith("coding") && workerNode.model?.connection && opencodeAvailable();
+        const codeWs = join(store.dir, "workspaces", exec.id);
+        for (const [i, st] of decomposed.subtasks.entries()) {
+          store.addTask(setTaskStatus(store.runtime, st.id, "in-progress", { at: Date.now() }));
+          const wprompt = `${prompt}\n\nThe plan has ${decomposed.subtasks.length} parts. YOUR PART (task ${i + 1}/${decomposed.subtasks.length}): ${st.title}\nComplete ONLY your part, fully.`;
+          let out;
+          if (isCodingWorker) {
+            try {
+              const oc = await runOpenCode({ connection: workerNode.model.connection, workspace: codeWs,
+                timeoutMs: Math.min(b.timeoutMs || 240000, 240000), approvedRoots: [join(store.dir, "workspaces")],
+                prompt: `${wprompt}\nUse the write tool to create the file(s) with RELATIVE paths in the current directory, then stop.` });
+              const files = (oc.changedFiles || []).map((f) => { try { return { name: f, content: readFileSync(join(codeWs, f), "utf8").slice(0, 4000) }; } catch { return { name: f, content: "" }; } });
+              out = { node: `worker-${i + 1}`, executor: "opencode", model: oc.model, provider: oc.provider, costSource: oc.costSource, funder: oc.funder,
+                tokens: oc.tokens, tokenScope: oc.tokenScope, changedFiles: oc.changedFiles, files,
+                artifact: oc.changedFiles?.length ? `opencode:${oc.changedFiles.join(",")}` : null,
+                output: oc.changedFiles?.length ? `wrote ${oc.changedFiles.join(", ")}` : "(no files produced for this task)" };
+            } catch (e) {
+              const fb = await runNode(workerNode, workerNode.model, { prompt: wprompt }, { maxTokens: b.maxTokens || 1500, timeoutMs: b.timeoutMs || 240000, localCall: localNodeModelCall });
+              out = { ...fb, node: `worker-${i + 1}`, codingFallback: `coding runtime failed (${String(e.message || e).slice(0, 60)}) — delivered as text` };
+            }
+          } else {
+            out = await runNode(workerNode, workerNode.model, { prompt: wprompt }, { maxTokens: b.maxTokens || 1500, timeoutMs: b.timeoutMs || 240000, localCall: localNodeModelCall });
+            out = { ...out, node: `worker-${i + 1}` };
+          }
+          results.push(out);
+          exec.logs.push(execLogLine(out));
+          if (exec.graph[wi + i]) exec.graph[wi + i] = { ...exec.graph[wi + i], status: "done" };
+          updateExec({});
+          store.addTask(reportMissionToTask(store.runtime, st.id, { missionId: m.id, ok: !out.error,
+            summary: String(out.output || out.error || "").slice(0, 200), artifacts: out.artifact ? [out.artifact] : [], at: Date.now() }));
+        }
+      }
+
       // A CODING worker writes REAL FILES through the sandboxed OpenCode runner (isolated
       // workspace per execution) — a connector/build deliverable is never a text dump WHEN a
       // coding runtime exists. Without one (trials, minimal installs) the same work degrades to
       // the chat adapter WITH the note that no files were written — honest, never a silent hang.
       const canCode = opencodeAvailable();
-      const codingNodes = r.plan.filter((n) => typeof n.slot === "string" && n.slot.startsWith("coding") && n.model?.connection);
+      const codingNodes = planRest.filter((n) => typeof n.slot === "string" && n.slot.startsWith("coding") && n.model?.connection);
       if (codingNodes.length) {
         const codeWs = join(store.dir, "workspaces", exec.id);
-        for (const node of r.plan) {
+        for (const node of planRest) {
           const isCoding = codingNodes.includes(node);
           let out;
           if (isCoding && canCode) {
@@ -1264,14 +1349,25 @@ async function chatLaunch(res, b) {
           results.push(out);
           onNodeDone(out, results.length - 1);
         }
-      } else {
-        results = await executePlan(r.plan, { _all: { prompt } }, { maxTokens: b.maxTokens || 1500, boundPolicies: r.boundPolicies, task: m.task, timeoutMs: b.timeoutMs || 240000, onNodeDone, localCall: localNodeModelCall });
+      } else if (planRest.length) {
+        const off = results.length;
+        const rest = await executePlan(planRest, { _all: { prompt } }, { maxTokens: b.maxTokens || 1500, boundPolicies: r.boundPolicies, task: m.task, timeoutMs: b.timeoutMs || 240000,
+          onNodeDone: (res, i) => onNodeDone(res, off + i), localCall: localNodeModelCall });
+        results.push(...rest);
       }
     } catch (e) {
       if (!/no content|budget/i.test(String(e.message || e))) return fail(String(e.message || e));
       retried = true;
+      // Decomposition is NOT re-run (tasks already on the spine); unrun subtasks are marked
+      // blocked honestly, then the remaining stages retry with a bigger output budget.
+      if (decomposed)
+        for (const st of decomposed.subtasks.filter((x) => x.status === "todo"))
+          store.addTask(setTaskStatus(store.runtime, st.id, "blocked", { at: Date.now() }));
       try {
-        results = await executePlan(r.plan, { _all: { prompt } }, { maxTokens: (b.maxTokens || 1500) * 2, boundPolicies: r.boundPolicies, task: m.task, timeoutMs: b.timeoutMs || 240000, onNodeDone, localCall: localNodeModelCall });
+        const off = results.length;
+        const rest = await executePlan(planRest, { _all: { prompt } }, { maxTokens: (b.maxTokens || 1500) * 2, boundPolicies: r.boundPolicies, task: m.task, timeoutMs: b.timeoutMs || 240000,
+          onNodeDone: (res, i) => onNodeDone(res, off + i), localCall: localNodeModelCall });
+        results.push(...rest);
       } catch (e2) { return fail(String(e2.message || e2)); }
     }
 
@@ -1319,7 +1415,7 @@ async function chatLaunch(res, b) {
     const imageGenAvailable = !!(store.def.modelAssignments || {})["image-gen"];
     const gaps = unmetDeliverables(m.objective, eff.artifacts, { imageGenAvailable });
     const c2 = conv ? addMessage(conv, { role: "assistant", mode: "execute", at: Date.now(),
-      text: `Mission complete${retried ? " (after a retry with a bigger output budget)" : ""} — graph ${eff.graph}${eff.stagesSkipped.length ? `, stages not used: ${eff.stagesSkipped.join(", ")}` : ""}. ${review.allMet ? "Acceptance criteria met." : review.unmet.length ? `Unmet: ${review.unmet.join("; ")}` : ""}${deliverableGapNote(gaps)}`,
+      text: `Mission complete${retried ? " (after a retry with a bigger output budget)" : ""} — graph ${eff.graph}${eff.stagesSkipped.length ? `, stages not used: ${eff.stagesSkipped.join(", ")}` : ""}. ${review.allMet ? "Acceptance criteria met." : review.unmet.length ? `Unmet: ${review.unmet.join("; ")}` : ""}${decomposed ? ` Planned tasks: ${decomposed.subtasks.filter((s) => (store.runtime.tasks || []).find((t) => t.id === s.id)?.status === "done").length}/${decomposed.subtasks.length} done.` : ""}${deliverableGapNote(gaps)}`,
       meta: { executionId: exec.id, efficiency: eff } }) : null;
     if (c2) saveConversation(c2);
     store.saveRuntime();
