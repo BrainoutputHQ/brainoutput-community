@@ -165,7 +165,9 @@ const CSRF='__BO_CSRF__';
 const t=(k)=>T[k]||k;
 const S={state:null,convId:null,projectId:null,mode:'ask',scope:'company',dept:'',agent:'',ob:null,view:'chat'};
 const esc=(s)=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const el=(h)=>{const d=document.createElement('div');d.innerHTML=h;return d.firstElementChild};
+const el=(h)=>{const d=document.createElement('div');d.innerHTML=h;
+ if(d.childElementCount>1)console.error('el(): multi-root html — all but the first element are DROPPED:',String(h).slice(0,140));
+ return d.firstElementChild};
 // Consistent inline SVG line icons (stroke=currentColor, 24 grid) — no emoji as UI iconography.
 const ICONS={
  chat:'<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
@@ -495,7 +497,7 @@ function settingsView(){
  wrap.appendChild(UF.el);
  // The sources catalog lives in Settings (the menu stays lean); the sidebar keeps the rollup.
  wrap.appendChild(sourcesView());
- const MF=fold(t('models.assignments'),conns.length+' · '+(s.company? '' : '')+t('models.connections').toLowerCase());
+ const MF=fold(t('models.assignments'),conns.length+' '+t('models.connections').toLowerCase());
  const MB=MF.body;
  const a=el('<div style="margin-top:10px"><div class=mut style="font-size:12.5px;margin-bottom:8px">'+esc(t('models.hint'))+'</div></div>');
  slots.forEach(sl=>{
@@ -583,11 +585,12 @@ function googlePanel(c,g){
   return d;
  }
  if(!g.configured){
-  const f=el('<div style="font-size:12.5px" class=mut>'+esc(t('sources.googleHow'))+'</div>'
+  // NOTE: el() keeps the FIRST root element only — always one wrapper div here.
+  const f=el('<div><div style="font-size:12.5px" class=mut>'+esc(t('sources.googleHow'))+'</div>'
    +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px"><input class=inp id=gcid placeholder="client id — ….apps.googleusercontent.com" style="margin-top:0;flex:2;min-width:220px">'
    +'<input class=inp id=gsec type="password" placeholder="'+esc(t('sources.appKey'))+'" style="margin-top:0;flex:1;min-width:160px">'
    +'<button class=ghost style="font-size:12.5px">'+esc(t('settings.save'))+'</button></div>'
-   +'<div class=mut id=gmsg style="font-size:12px;margin-top:4px"></div>');
+   +'<div class=mut id=gmsg style="font-size:12px;margin-top:4px"></div></div>');
   f.querySelector('button').onclick=async()=>{
    const r=await api('/api/oauth/google/config',{clientId:f.querySelector('#gcid').value.trim(),clientSecret:f.querySelector('#gsec').value});
    f.querySelector('#gmsg').textContent=r.error||'✓';if(!r.error){S.state=r.state;await refresh()}};

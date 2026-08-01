@@ -75,3 +75,16 @@ test("a connector mission gets a planner, a reviewer, a coding worker — and a 
   assert.ok(!plain.graph.nodes.includes("planner"), "no planner theater for simple work");
   assert.ok(plain.planPreview.length >= 1, "every mission still shows its plan");
 });
+
+test("a GOAL ('assistant answering the phone automatically') gets a planner — not a bare approve button", () => {
+  let conv = newConversation({ scope: "company", id: "c9" });
+  conv = addMessage(conv, { role: "user", text: "need to have an assistant to answer the phone and messages automatically", mode: "plan", at: 1 });
+  const spec = draftMissionSpec(conv, { department: "technical" });
+  assert.equal(spec.task.complexity, "high");
+  assert.ok(spec.graph.nodes.includes("planner"), "the graph plans");
+  assert.match(spec.planPreview[0], /^Plan:/);
+  // a small clear task still stays lean
+  let c2 = newConversation({ scope: "company", id: "c10" });
+  c2 = addMessage(c2, { role: "user", text: "draft a refund reply in Spanish", mode: "plan", at: 1 });
+  assert.notEqual(draftMissionSpec(c2, { department: "operations" }).task.complexity, "high");
+});

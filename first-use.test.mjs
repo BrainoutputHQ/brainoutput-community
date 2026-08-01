@@ -93,7 +93,8 @@ test("scenario: public-facing work gets an independent reviewer stage by default
   const spec = draftMissionSpec(conv, { department: "marketing" });
   assert.equal(spec.task.requireReview, true, "the draft flags review for public-facing content");
   assert.ok(spec.graph.nodes.includes("reviewer"), "the drafted graph contains a reviewer");
-  assert.equal(spec.graph.shape, "worker-reviewer");
+  assert.ok(spec.graph.nodes.includes("planner"), "a campaign is a goal — it plans first");
+  assert.equal(spec.task.complexity, "high");
   // internal work stays lean — no reviewer theater for a refund-policy reply between colleagues
   let c2 = newConversation({ scope: "company", id: "c2" });
   c2 = addMessage(c2, { role: "user", text: "summarize our refund policy for the team wiki", mode: "plan", at: 1 });

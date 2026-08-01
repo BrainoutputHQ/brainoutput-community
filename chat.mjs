@@ -79,6 +79,15 @@ export const PUBLIC_FACING_RE = /instagram|ig post|social (media|post)|tweet|lin
  *  founder's first-use complaint was exact: "the system never plans, it asks straight to approve." */
 export const CONNECTOR_BUILD_RE = /\b(connector|integration|intégration|webhook)\b/i;
 
+/**
+ * A GOAL (vs a task): "need to have an assistant answering the phone automatically", "set up X
+ * end-to-end". Goals get a planner — the founder watched a phone-assistant goal draft as a single
+ * worker step with no plan, no reviews, no decisions. "Always plan" for anything substantial;
+ * small clear tasks stay single-worker (the efficiency story stands).
+ */
+export const GOAL_RE = /\b(need|want|would like|have) to\b|\bautomat|\bend[- ]to[- ]end\b|\bset ?up\b|\bdeploy\b|\binstall\b|\bbuild (me |us )?(a|an|the) (system|service|assistant|platform|app|tool|pipeline|bot)\b|\bil faut\b/i;
+export const isGoal = (text = "") => GOAL_RE.test(text) || String(text).length > 180;
+
 /** The deterministic plan shown BEFORE approval — what the run will actually do. */
 export function planStepsFor(spec) {
   if ((spec.task?.tags || []).includes("connector-builder"))
@@ -251,13 +260,14 @@ export function draftMissionSpec(conversation, {
   // Connector/integration builds: planner + reviewer + a CODING worker (real files in the
   // workspace), plus the acceptance criteria of a real deliverable when the user pinned none.
   const connectorBuild = CONNECTOR_BUILD_RE.test(obj);
+  const goal = isGoal(obj);                                   // substantial asks plan first
   const effTags = connectorBuild ? [...new Set([...tags, "connector-builder"])] : tags;
   if (connectorBuild && !criteria.length)
     criteria.push("connector module scaffolded as real files", "offline smoke test included",
       "read-only permissions by default", "guided credential setup with sealed secrets", "verification probe recorded");
   const task = {
     summary: obj, tags: effTags,
-    ...(complexity ? { complexity } : connectorBuild ? { complexity: "high" } : {}),
+    ...(complexity ? { complexity } : (connectorBuild || goal) ? { complexity: "high" } : {}),
     ...(risk ? { risk } : {}),
     ...(publicFacing || connectorBuild ? { requireReview: true } : {}),
     ...(connectorBuild ? { workerSlot: "coding-free" } : {}),
