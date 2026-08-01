@@ -160,15 +160,23 @@ export const SOURCE_CATALOG = [
   // The read-only Odoo client exists (odoo.mjs) but its reads are not wired into chat answers
   // yet — so it shows as "ready soon", NEVER as a connect button that would silently dead-end.
   { kind: "odoo", group: "apps", verified: false, needs: "odoo-wiring" },
+  // The guided add-app flow (connector-builder.mjs): any REST app, read-only, sealed credentials.
+  { kind: "custom-app", group: "apps", verified: true },
 ];
 
-/** Catalog + the twin's live accounts merged: per kind, who is connected. `twin` may be null. */
-export function sourceCatalog(twin = null) {
+/** Catalog + the twin's live accounts merged: per kind, who is connected. `twin` may be null.
+ *  `customConnectors` (the guided add-app records) surface as accounts of the custom-app kind. */
+export function sourceCatalog(twin = null, { customConnectors = [] } = {}) {
   const accounts = twin?.accounts || [];
   return SOURCE_CATALOG.map((entry) => ({
     ...entry,
-    accounts: accounts.filter((a) => a.kind === entry.kind)
-      .map((a) => ({ id: a.id, account: a.account, label: a.label, resources: a.resources || [], scope: a.scope })),
+    accounts: [
+      ...accounts.filter((a) => a.kind === entry.kind)
+        .map((a) => ({ id: a.id, account: a.account, label: a.label, resources: a.resources || [], scope: a.scope })),
+      ...(entry.kind === "custom-app"
+        ? customConnectors.map((c) => ({ id: c.id, account: c.name, label: c.label || c.name, resources: [c.status], scope: "read" }))
+        : []),
+    ],
   }));
 }
 
@@ -180,7 +188,7 @@ export function sourceCatalog(twin = null) {
 export const SOURCE_FAMILIES = [
   { family: "mail", icon: "✉️", kinds: ["imap", "local-mail", "google-workspace", "microsoft-365"] },
   { family: "files", icon: "📁", kinds: ["drive", "nextcloud", "google-drive", "onedrive", "sharepoint"] },
-  { family: "apps", icon: "📊", kinds: ["odoo"] },
+  { family: "apps", icon: "📊", kinds: ["odoo", "custom-app"] },
 ];
 export function familyStatus(catalog = []) {
   return SOURCE_FAMILIES.map((f) => {

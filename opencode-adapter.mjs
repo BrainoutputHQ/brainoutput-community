@@ -45,6 +45,9 @@ export function buildExecutorEnv(connection, iso) {
 // BO_OPENCODE_BIN if it lives elsewhere.
 const OPENCODE_BIN = process.env.BO_OPENCODE_BIN || join(HOME, ".opencode", "bin", "opencode");
 
+/** Is a coding runtime actually available? Coding missions degrade to chat delivery without one. */
+export function opencodeAvailable() { return existsSync(OPENCODE_BIN); }
+
 // Pure: turn a Community model connection into an isolated opencode config (no founder creds).
 // Rejects any connection that isn't user/free/local (defense in depth with ce-core.validateConnection).
 export function connectionToConfig(connection) {

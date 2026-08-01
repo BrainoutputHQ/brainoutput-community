@@ -74,6 +74,33 @@ export function inferDepartment(objective = "", departments = []) {
  */
 export const PUBLIC_FACING_RE = /instagram|ig post|social (media|post)|tweet|linkedin|facebook|tiktok|newsletter|press release|campaign|campagne|public|publish|blog post|customer (email|mail|reply)|promo(ption)?|ad(s| campaign)?\b|affisch|werbung|posted?\b/i;
 
+/** Building a connector/integration is multi-step engineering — it gets a PLANNER and a reviewer
+ *  by default, and its worker runs the coding slot so real files land in the workspace. The
+ *  founder's first-use complaint was exact: "the system never plans, it asks straight to approve." */
+export const CONNECTOR_BUILD_RE = /\b(connector|integration|intégration|webhook)\b/i;
+
+/** The deterministic plan shown BEFORE approval — what the run will actually do. */
+export function planStepsFor(spec) {
+  if ((spec.task?.tags || []).includes("connector-builder"))
+    return [
+      "Scaffold the connector module (config schema, read-only read function, error handling) as REAL FILES in the company workspace",
+      "Write an offline smoke test (mocked endpoint)",
+      "Register the connector read-only with its configuration schema",
+      "Guide the credential setup (sealed secrets) and run a live verification probe",
+    ];
+  const steps = [];
+  for (const n of spec.graph?.nodes || []) {
+    const kind = String(n).replace(/\d+$/, "");
+    if (kind === "planner") steps.push("Plan: decompose the objective into concrete steps");
+    else if (kind === "worker") steps.push("Work: produce the complete deliverable on the assigned model");
+    else if (kind === "reviewer") steps.push("Review: an independent stage validates the result against the acceptance criteria and bound policies");
+    else if (kind === "human-approval") steps.push("Gate: pause for your approval before anything acts");
+    else if (kind === "tool") steps.push("Tool: run the deterministic tool (no model)");
+  }
+  if (!steps.length) steps.push("Work: produce the complete deliverable");
+  return steps;
+}
+
 /** What the objective promised but the run could not produce. Honesty over "Mission complete". */
 export function unmetDeliverables(objective = "", artifacts = [], { imageGenAvailable = false } = {}) {
   const gaps = [];
@@ -221,11 +248,19 @@ export function draftMissionSpec(conversation, {
   // Public-facing work (social posts, campaigns, customer mail, published pages) carries an
   // independent reviewer by default — see PUBLIC_FACING_RE. An explicit `risk` still wins.
   const publicFacing = PUBLIC_FACING_RE.test(obj);
+  // Connector/integration builds: planner + reviewer + a CODING worker (real files in the
+  // workspace), plus the acceptance criteria of a real deliverable when the user pinned none.
+  const connectorBuild = CONNECTOR_BUILD_RE.test(obj);
+  const effTags = connectorBuild ? [...new Set([...tags, "connector-builder"])] : tags;
+  if (connectorBuild && !criteria.length)
+    criteria.push("connector module scaffolded as real files", "offline smoke test included",
+      "read-only permissions by default", "guided credential setup with sealed secrets", "verification probe recorded");
   const task = {
-    summary: obj, tags,
-    ...(complexity ? { complexity } : {}),
+    summary: obj, tags: effTags,
+    ...(complexity ? { complexity } : connectorBuild ? { complexity: "high" } : {}),
     ...(risk ? { risk } : {}),
-    ...(publicFacing ? { requireReview: true } : {}),
+    ...(publicFacing || connectorBuild ? { requireReview: true } : {}),
+    ...(connectorBuild ? { workerSlot: "coding-free" } : {}),
     policies: bound,
   };
   const graph = planGraph(task);
@@ -245,10 +280,13 @@ export function draftMissionSpec(conversation, {
     approvals: { ...approvals, ...(graph.nodes.some((n) => n.gate) ? { humanApprovalRequired: true } : {}) },
     artifacts: [], references: [],
     graph: { shape: graph.shape, nodes: graph.nodes.map((n) => n.node) },
+    // The plan you approve — shown in the mission card BEFORE launch (never just "approve something").
+    planPreview: [],
     policies: bound.map((p) => p.id).filter(Boolean),
     status: "draft",
     task,
   };
+  spec.planPreview = planStepsFor(spec);
   return refine ? refine(spec, compactContext(conversation, { query: obj })) : spec;
 }
 

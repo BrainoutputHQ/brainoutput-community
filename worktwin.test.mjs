@@ -319,7 +319,7 @@ test("the source catalog ALWAYS lists every kind — connected or not — with l
   assert.equal(cat.find((c) => c.kind === "nextcloud").accounts.length, 0, "unconnected kinds stay visible");
 });
 
-test("the sidebar family rollup matches the carousel display: Mail ✓ / Drive ✓ / Apps soon", () => {
+test("the sidebar family rollup matches the carousel display: Mail ✓ / Drive ✓ / Apps", () => {
   let t = createWorkTwin({ employee: EMP, name: "Alice" });
   t = connectWorkSource(t, { kind: "imap", account: "alice@acme.test" });
   t = connectWorkSource(t, { kind: "imap", account: "support@acme.test" });
@@ -331,8 +331,20 @@ test("the sidebar family rollup matches the carousel display: Mail ✓ / Drive �
   assert.equal(mail.connected, 2, "two mailboxes roll up under Mail");
   assert.equal(mail.icon, "✉️");
   assert.equal(fams[1].state, "connected");
-  assert.equal(fams[2].state, "soon", "apps family (Odoo) is never shown as connectable before its wiring lands");
+  assert.equal(fams[2].state, "available", "apps family is actionable via the guided custom-app flow");
   const empty = familyStatus(sourceCatalog(null));
-  assert.deepEqual(empty.map((f) => f.state), ["available", "available", "soon"],
-    "with nothing connected, mail+files show available (+) — always visible");
+  assert.deepEqual(empty.map((f) => f.state), ["available", "available", "available"],
+    "with nothing connected, all families show available (+) — always visible");
+});
+
+test("custom connectors (guided add-app) roll into the apps family as read-only accounts", () => {
+  const cat = sourceCatalog(null, { customConnectors: [
+    { id: "custom-lodgify", name: "Lodgify", label: "Lodgify (custom)", status: "ready" },
+  ] });
+  const customApp = cat.find((c) => c.kind === "custom-app");
+  assert.equal(customApp.accounts.length, 1);
+  assert.equal(customApp.accounts[0].label, "Lodgify (custom)");
+  assert.deepEqual(customApp.accounts[0].resources, ["ready"]);
+  const fams = familyStatus(cat);
+  assert.equal(fams.find((f) => f.family === "apps").state, "connected");
 });

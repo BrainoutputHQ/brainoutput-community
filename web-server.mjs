@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 import { Store } from "./store.mjs";
 import { routeTask, makeCatalog, costReport, executionSummary, validateCompanyConfig, PRIVACY_POSTURES } from "./ce-core.mjs";
 import { executePlan, runNode, execLogLine } from "./adapters.mjs";
-import { runOpenCode } from "./opencode-adapter.mjs";
+import { runOpenCode, opencodeAvailable } from "./opencode-adapter.mjs";
 import { DEPARTMENT_TEMPLATES } from "./departments.mjs";
 import { detectConnections, generateOrg, recommendAssignments, applyOverrides, confirmZeroFunded, renderAgentView } from "./onboarding.mjs";
 import { runtimeCards, runtimeConnection, runtimeToConnection } from "./runtimes.mjs";
@@ -30,6 +30,7 @@ import { createWorkTwin, setMode as twinSetMode, connectWorkSource, grantTwinSco
   withAudit, auditRecord, WORK_TWIN_MODES, publicTwin, setModelPolicy, modelForStage, TWIN_MODEL_STAGES,
   disconnectWorkSource, sourceCatalog, familyStatus } from "./worktwin.mjs";
 import { connectMailSource, workSourceOptions, smtpSend } from "./mail-sources.mjs";
+import { draftConnectorSpec, connectorGuide, missingConfig, connectorBuildPlan } from "./connector-builder.mjs";
 import { connectDriveSource, driveProviderOptions } from "./drive-sources.mjs";
 import { indexFiles, searchFiles } from "./worktwin.mjs";
 import { efficiencyReport } from "./efficiency.mjs";
@@ -408,6 +409,52 @@ async function api(req, res, url) {
   if (url.pathname === "/api/worktwin/options") return json(res, { options: workSourceOptions(), drives: driveProviderOptions(), modes: WORK_TWIN_MODES });
   if (url.pathname === "/api/worktwin/create") return twinCreate(res, b);
   if (url.pathname === "/api/worktwin/connect") return twinConnect(res, b);
+  // ── Custom app connectors (guided add-app flow) — spec first, secrets sealed, probe honest ──
+  if (url.pathname === "/api/connector/custom") {
+    try {
+      const spec = draftConnectorSpec({ name: b.name, baseUrl: b.baseUrl || null, auth: b.auth || "api-key", dataDescription: b.dataDescription || null });
+      const existing = store.runtime.customConnectors || [];
+      if (existing.some((c) => c.id === spec.id)) return json(res, { error: `'${spec.name}' is already added — configure it in the list below` }, 409);
+      const rec = { ...spec, createdAt: Date.now() };
+      store.runtime.customConnectors = [...existing, rec];
+      store.saveRuntime();
+      return json(res, { connector: publicCustomConnector(rec), guide: connectorGuide(spec), plan: connectorBuildPlan(spec), state: publicState() });
+    } catch (e) { return json(res, { error: e.message }, 400); }
+  }
+  if (url.pathname === "/api/connector/configure") {
+    const list = store.runtime.customConnectors || [];
+    const rec = list.find((c) => c.id === b.id);
+    if (!rec) return json(res, { error: `no custom connector '${b.id}'` }, 404);
+    const config = { ...(rec.config || {}), ...(b.config || {}) };
+    const secret = b.secret ? store.sealSecret(b.secret) : rec.secret || null;
+    const missing = missingConfig(rec, config, !!secret);
+    if (missing.length) return json(res, { error: `missing: ${missing.join(", ")}`, missing }, 400);
+    // Live verification probe — the result is reported EXACTLY (a rejected credential or an
+    // unreachable host is shown, never hidden behind a green "connected").
+    let probe = { ok: false, reason: "no baseUrl" };
+    if (config.baseUrl) {
+      try {
+        const headers = { accept: "application/json" };
+        if (b.secret && rec.secretFields[0]?.key === "apiKey") headers.authorization = `Bearer ${b.secret}`;
+        const r = await fetch(config.baseUrl.replace(/\/+$/, "") + "/", { headers, signal: AbortSignal.timeout(8000) });
+        probe = r.status === 401 || r.status === 403
+          ? { ok: false, httpStatus: r.status, reason: "credentials rejected by the API" }
+          : { ok: true, httpStatus: r.status, reason: r.status >= 400 ? `reachable (HTTP ${r.status} on the root path — normal for APIs without a root document)` : "reachable" };
+      } catch (e) { probe = { ok: false, reason: `unreachable: ${String(e.message || e).slice(0, 140)}` }; }
+    }
+    rec.config = config;
+    rec.secret = secret;
+    rec.probe = { ...probe, at: Date.now() };
+    rec.status = probe.ok ? "ready" : "config-error";
+    store.saveRuntime();
+    return json(res, { connector: publicCustomConnector(rec), probe, state: publicState() });
+  }
+  if (url.pathname === "/api/connector/custom-delete") {
+    const before = (store.runtime.customConnectors || []).length;
+    store.runtime.customConnectors = (store.runtime.customConnectors || []).filter((c) => c.id !== b.id);
+    store.saveRuntime();
+    return json(res, { removed: before - store.runtime.customConnectors.length, state: publicState() });
+  }
   if (url.pathname === "/api/worktwin/disconnect") {
     let t = getTwin(b.twinId);
     if (!t) return json(res, { error: "no Work Twin" }, 404);
@@ -440,6 +487,11 @@ const driveSpecFor = (acc) => connectDriveSource({
 const twins = () => store.runtime.workTwins || [];
 const getTwin = (id) => twins().find((t) => t.id === id) || twins()[0] || null;
 const saveTwin = (t) => { store.addWorkTwin(t); store.saveRuntime(); return t; };
+/** Public view of a custom connector: config + probe + status, NEVER the secret. */
+const publicCustomConnector = (c) => {
+  const { secret, ...safe } = c;
+  return { ...safe, hasSecret: !!secret };
+};
 
 function twinCreate(res, b) {
   if (!b.employee?.id) return json(res, { error: "an employee identity is required" }, 400);
@@ -1041,7 +1093,42 @@ async function chatLaunch(res, b) {
     let results = [];
     let retried = false;
     try {
-      results = await executePlan(r.plan, { _all: { prompt } }, { maxTokens: b.maxTokens || 1500, boundPolicies: r.boundPolicies, task: m.task, timeoutMs: b.timeoutMs || 240000, onNodeDone });
+      // A CODING worker writes REAL FILES through the sandboxed OpenCode runner (isolated
+      // workspace per execution) — a connector/build deliverable is never a text dump WHEN a
+      // coding runtime exists. Without one (trials, minimal installs) the same work degrades to
+      // the chat adapter WITH the note that no files were written — honest, never a silent hang.
+      const canCode = opencodeAvailable();
+      const codingNodes = r.plan.filter((n) => typeof n.slot === "string" && n.slot.startsWith("coding") && n.model?.connection);
+      if (codingNodes.length) {
+        const codeWs = join(store.dir, "workspaces", exec.id);
+        for (const node of r.plan) {
+          const isCoding = codingNodes.includes(node);
+          let out;
+          if (isCoding && canCode) {
+            try {
+              const oc = await runOpenCode({ connection: node.model.connection, workspace: codeWs,
+                timeoutMs: Math.min(b.timeoutMs || 240000, 240000),
+                approvedRoots: [join(store.dir, "workspaces")],
+                prompt: `${prompt}\nUse the write tool to create the file(s) with RELATIVE paths in the current directory, then stop.` });
+              const files = (oc.changedFiles || []).map((f) => { try { return { name: f, content: readFileSync(join(codeWs, f), "utf8").slice(0, 4000) }; } catch { return { name: f, content: "" }; } });
+              out = { node: node.node, executor: "opencode", model: oc.model, provider: oc.provider, costSource: oc.costSource, funder: oc.funder,
+                tokens: oc.tokens, tokenScope: oc.tokenScope, changedFiles: oc.changedFiles, files,
+                artifact: oc.changedFiles?.length ? `opencode:${oc.changedFiles.join(",")}` : null,
+                output: oc.changedFiles?.length ? `wrote ${oc.changedFiles.join(", ")}` : "(no files produced — try a stronger local/BYOK coding model)" };
+            } catch (e) {
+              const fb = await runNode(node, node.model, { prompt }, { maxTokens: b.maxTokens || 1500, timeoutMs: b.timeoutMs || 240000 });
+              out = { ...fb, codingFallback: `coding runtime failed (${String(e.message || e).slice(0, 80)}) — delivered as text` };
+            }
+          } else {
+            out = await runNode(node, node.model, { prompt }, { maxTokens: b.maxTokens || 1500, timeoutMs: b.timeoutMs || 240000 });
+            if (isCoding) out = { ...out, codingFallback: "no coding runtime here (install opencode to write files) — delivered as text" };
+          }
+          results.push(out);
+          onNodeDone(out, results.length - 1);
+        }
+      } else {
+        results = await executePlan(r.plan, { _all: { prompt } }, { maxTokens: b.maxTokens || 1500, boundPolicies: r.boundPolicies, task: m.task, timeoutMs: b.timeoutMs || 240000, onNodeDone });
+      }
     } catch (e) {
       if (!/no content|budget/i.test(String(e.message || e))) return fail(String(e.message || e));
       retried = true;
@@ -1076,7 +1163,8 @@ async function chatLaunch(res, b) {
     }
     // Logs stay SNIPPETS (exec.logs accumulated via execLogLine) — the run view renders full
     // outputs separately; writing them into logs too duplicated every deliverable in the thread.
-    updateExec({ results, costBySource: rep.byCostSource, efficiency: eff, status: "done" });
+    const codeFiles = results.flatMap((x) => x.files || []);
+    updateExec({ results, costBySource: rep.byCostSource, efficiency: eff, status: "done", ...(codeFiles.length ? { codeFiles } : {}) });
     const gates = r.plan.filter((n) => n.gate);
     for (const n of gates)
       store.addApproval({ id: uid("appr"), missionId: m.id, executionId: exec.id, kind: "action",
@@ -1234,9 +1322,10 @@ function publicState() {
     workTwins: (store.runtime.workTwins || []).map(publicTwin),
     // The connectable-source catalog, always present — connected kinds AND the ones not connected
     // yet, so the UI can show what the assistant COULD read (never a guess, never hidden).
-    sourceCatalog: sourceCatalog(getTwin()),
+    sourceCatalog: sourceCatalog(getTwin(), { customConnectors: store.runtime.customConnectors || [] }),
     // The sidebar rollup (✉️ Mail ✓ · 📁 Drive · 📊 Apps) — always visible, connected or not.
-    sourceFamilies: familyStatus(sourceCatalog(getTwin())),
+    sourceFamilies: familyStatus(sourceCatalog(getTwin(), { customConnectors: store.runtime.customConnectors || [] })),
+    customConnectors: (store.runtime.customConnectors || []).map(publicCustomConnector),
     brainoutputFundedTokens: funded };
 }
 

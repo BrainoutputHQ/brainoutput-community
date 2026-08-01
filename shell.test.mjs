@@ -35,7 +35,8 @@ before(async () => {
   zenPort = zenStub.address().port;
   srv = spawn(process.execPath, [join(HERE, "web-server.mjs")],
     { env: { ...process.env, BO_CE_DATA: dir, BO_CE_WEB_PORT: String(PORT),
-      BO_CE_FREE_ENDPOINT: `http://127.0.0.1:${zenPort}/v1/chat/completions` }, stdio: "ignore" });
+      BO_CE_FREE_ENDPOINT: `http://127.0.0.1:${zenPort}/v1/chat/completions`,
+      BO_OPENCODE_BIN: "/nonexistent-opencode" }, stdio: "ignore" });   // no coding runtime in tests → deterministic chat path
   for (let i = 0; i < 60; i++) {
     try { await fetch(`${BASE}/api/state`); return; } catch { await new Promise((r) => setTimeout(r, 250)); }
   }
@@ -372,13 +373,14 @@ test("sources: sidebar rollup always visible; the full catalog lives in Settings
 
   const st = await state();
   assert.ok(Array.isArray(st.sourceCatalog), "state carries the catalog");
-  assert.equal(st.sourceCatalog.length, 10);
+  assert.equal(st.sourceCatalog.length, 11);
   assert.ok(st.sourceCatalog.every((c) => Array.isArray(c.accounts) && typeof c.verified === "boolean"));
   assert.ok(st.sourceCatalog.some((c) => !c.verified), "OAuth-needing kinds are listed too, marked as such");
   // The sidebar rollup (the carousel display): Mail / Drive / Apps rows, always present.
   assert.ok(Array.isArray(st.sourceFamilies));
   assert.deepEqual(st.sourceFamilies.map((f) => f.family), ["mail", "files", "apps"]);
-  assert.equal(st.sourceFamilies.find((f) => f.family === "apps").state, "soon", "Odoo shows as soon — never a fake connect button");
+  assert.equal(st.sourceFamilies.find((f) => f.family === "apps").state, "available", "apps family is actionable via the guided custom-app flow");
+  assert.equal(st.sourceCatalog.find((c) => c.kind === "odoo").verified, false, "Odoo kind stays 'soon' — never a fake connect button");
   const shell2 = await (await fetch(`${BASE}/`)).text();
   assert.match(shell2, /id=sources/, "the sidebar Sources section is in the page");
 });
@@ -469,4 +471,46 @@ test("privacy posture: the setting round-trips and the page offers the choice", 
   assert.equal(priv.body.settings.privacy, "private");
   const back = await post("/api/settings", { privacy: "open" });
   assert.equal(back.body.settings.privacy, "open");
+});
+
+test("guided add-app: create → configure with live probe → listed → duplicate refused → deleted", async () => {
+  // a tiny PMS stub the probe can reach
+  const { createServer } = await import("node:http");
+  const pms = createServer((req, res) => {
+    if (req.headers.authorization === "Bearer bad") { res.writeHead(401).end(); return; }
+    res.writeHead(200, { "content-type": "application/json" }).end("{}");
+  });
+  await new Promise((r) => pms.listen(0, "127.0.0.1", r));
+  const baseUrl = `http://127.0.0.1:${pms.address().port}`;
+
+  const create = await post("/api/connector/custom", { name: "Lodgify", baseUrl, auth: "api-key" });
+  assert.equal(create.status, 200, JSON.stringify(create.body));
+  const cid = create.body.connector.id;
+  assert.equal(cid, "custom-lodgify");
+  assert.match(create.body.guide, /sealed/);
+  assert.equal(create.body.connector.status, "needs-config");
+  assert.equal(create.body.connector.hasSecret, false);
+  assert.equal(JSON.stringify(create.body.connector).includes("secret-value"), false, "secrets never echo");
+
+  const dup = await post("/api/connector/custom", { name: "Lodgify" });
+  assert.equal(dup.status, 409);
+
+  const bad = await post("/api/connector/configure", { id: cid, config: { baseUrl }, secret: "bad" });
+  assert.equal(bad.body.probe.ok, false);
+  assert.match(bad.body.probe.reason, /credentials rejected/);
+  assert.equal(bad.body.connector.status, "config-error", "a rejected key is SHOWN, never hidden");
+
+  const good = await post("/api/connector/configure", { id: cid, config: { baseUrl }, secret: "real-key" });
+  assert.equal(good.body.probe.ok, true);
+  assert.equal(good.body.connector.status, "ready");
+  const st = await state();
+  const custom = (st.customConnectors || []).find((c) => c.id === cid);
+  assert.ok(custom, "custom connector in state");
+  assert.equal(JSON.stringify(st.customConnectors).includes("real-key"), false, "the sealed key never leaves via state");
+  const appsRow = st.sourceCatalog.find((c) => c.kind === "custom-app");
+  assert.equal(appsRow.accounts.length, 1, "rolls into the Apps family");
+
+  const del = await post("/api/connector/custom-delete", { id: cid });
+  assert.equal(del.body.removed, 1);
+  pms.close();
 });

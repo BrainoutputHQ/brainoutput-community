@@ -316,10 +316,14 @@ function thead(){
 // ── cards ────────────────────────────────────────────────────────────────────
 function missionCard(m){
  const g=(m.graph&&m.graph.shape)||'';
+ const plan=(m.planPreview||[]);
  const d=el('<div class="cardx"><h3>'+esc(t('mission.objective'))+' · <span class=mut>'+esc(m.status)+'</span></h3>'
   +'<label>'+esc(t('mission.objective'))+'</label><input class=inp id=mo value="'+esc(m.objective||'')+'">'
   +'<label>'+esc(t('mission.department'))+'</label><input class=inp id=mdp value="'+esc(m.department||'')+'">'
+  // The PLAN you approve — always shown before launch; approving is never blind.
+  +(plan.length?'<div style="margin-top:10px"><b style="font-size:13px">'+esc(t('mission.plan'))+'</b><ol style="margin:6px 0 0;padding-left:22px;font-size:13.5px">'+plan.map((s)=>'<li>'+esc(s)+'</li>').join('')+'</ol></div>':'')
   +'<div class=mut style="font-size:13px;margin-top:8px">'+esc(t('mission.graph'))+': '+esc(g)+' · '+esc((m.graph&&m.graph.nodes||[]).join(' → '))+' · '+esc(t('mission.approvalGates'))+': '+esc(Object.keys(m.approvals||{}).join(', ')||'—')+'</div>'
+  +(m.acceptanceCriteria&&m.acceptanceCriteria.length?'<div class=mut style="font-size:12.5px;margin-top:4px">'+esc(t('mission.criteria'))+': '+esc(m.acceptanceCriteria.join(' · '))+'</div>':'')
   +'<div style="margin-top:12px"><button class=act id=mok>'+esc(t('mission.approveLaunch'))+'</button> '
   +'<button class=ghost id=med>'+esc(t('mission.edit'))+'</button> '
   +'<button class=ghost id=mcan>'+esc(t('mission.cancel'))+'</button></div></div>');
@@ -515,6 +519,12 @@ async function disconnectSource(accountId){
  if(r.error){alert(r.error);return}
  S.state=r.state;await refresh();
 }
+async function deleteCustomApp(id){
+ if(!confirm(t('sources.disconnectConfirm')))return;
+ const r=await api('/api/connector/custom-delete',{id});
+ if(r.error){alert(r.error);return}
+ S.state=r.state;await refresh();
+}
 function sourcesView(){
  const s=S.state||{};
  const T=(s.workTwins||[])[0];
@@ -549,10 +559,44 @@ function sourcesView(){
     const ar=el('<div style="display:flex;gap:8px;align-items:center;font-size:13px;margin-top:5px;padding:5px 8px;background:var(--card2);border-radius:8px">'
      +'<span>✓ '+esc(a.label||a.account)+'</span><span class=mut style="font-size:12px">'+esc((a.resources||[]).join(', '))+' · '+esc(a.scope||'read')+'</span>'
      +'<button class=ghost style="margin-left:auto;padding:3px 10px;font-size:12px">'+esc(t('sources.disconnect'))+'</button></div>');
-    ar.querySelector('button').onclick=()=>disconnectSource(a.id);
+    ar.querySelector('button').onclick=()=>c.kind==='custom-app'?deleteCustomApp(a.id):disconnectSource(a.id);
     row.appendChild(ar)});
    const bar=el('<div style="margin-top:7px"></div>');
-   if(c.verified){
+   if(c.kind==='custom-app'){
+    // The guided add-app flow: name → base URL → auth → sealed key → live probe. Never a prompt()
+    // chain, never an unverified "connected".
+    const b=el('<button class=ghost style="font-size:12.5px;padding:5px 12px">+ '+esc(t('sources.addCustomApp'))+'</button>');
+    b.onclick=()=>{
+     const f=el('<div style="margin-top:8px;padding:10px;border:1px solid var(--line);border-radius:10px">'
+      +'<input class=inp id=an placeholder="'+esc(t('sources.appName'))+'" style="margin-top:0">'
+      +'<input class=inp id=au placeholder="API base URL — https://api.example.com/v2">'
+      +'<select class=inp id=aa><option value="api-key">API key</option><option value="oauth">OAuth</option><option value="none">'+esc(t('sources.noAuth'))+'</option></select>'
+      +'<input class=inp id=ak type="password" placeholder="'+esc(t('sources.appKey'))+'">'
+      +'<div style="margin-top:8px"><button class=act style="font-size:13px;padding:6px 14px">'+esc(t('sources.connect'))+'</button> <span class=mut id=amsg style="font-size:12px"></span></div>'
+      +'<pre id=aguide class=mut style="font-size:12px;white-space:pre-wrap;display:none;margin-top:8px"></pre></div>');
+     b.replaceWith(f);
+     f.querySelector('button').onclick=async()=>{
+      const msg=f.querySelector('#amsg');
+      const name=f.querySelector('#an').value.trim(),baseUrl=f.querySelector('#au').value.trim();
+      const auth=f.querySelector('#aa').value,secret=f.querySelector('#ak').value;
+      if(!name){msg.textContent=t('sources.appName')+'?';return}
+      msg.textContent='…';
+      const c1=await api('/api/connector/custom',{name,baseUrl:baseUrl||null,auth});
+      if(c1.error){msg.textContent=c1.error;return}
+      const cid=c1.connector.id;
+      let last=c1;
+      if(baseUrl||secret){
+       last=await api('/api/connector/configure',{id:cid,config:{baseUrl},secret:secret||undefined});
+       if(last.error){msg.textContent=last.error;return}
+      }
+      const g=f.querySelector('#aguide');g.style.display='block';g.textContent=c1.guide;
+      msg.textContent=last.probe?(last.probe.ok?'✓ '+last.probe.reason:'⚠ '+last.probe.reason):'✓';
+      S.state=last.state;await refresh();
+     };
+    };
+    bar.appendChild(b);
+   }
+   else if(c.verified){
     const b=el('<button class=ghost style="font-size:12.5px;padding:5px 12px">'+(c.accounts.length?'+ '+esc(t('sources.addAnother')):esc(t('sources.connect')))+'</button>');
     if(!T)b.disabled=true,b.style.opacity=.5;
     b.onclick=()=>connectSource(c.kind);
