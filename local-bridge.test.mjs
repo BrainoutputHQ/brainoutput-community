@@ -98,3 +98,14 @@ test("the executor's model verbs talk to local ollama only (stubbed here)", asyn
   assert.equal(r.tokenScope, "total");
   assert.ok(calls.every((u) => u.startsWith("http://127.0.0.1:11434")), "nothing leaves the machine");
 });
+
+test("grants survive Windows paths (separators + drive-letter case)", () => {
+  const n = nodes();
+  const { code } = n.issueCode({ now: NOW });
+  const { nodeId } = n.redeemCode(code, { grants: ["C:\\Users\\me\\docs"], now: NOW });
+  assert.equal(n.pathAllowed(nodeId, "C:\\Users\\me\\docs\\rates.xlsx"), true, "backslash child path allowed");
+  assert.equal(n.pathAllowed(nodeId, "c:\\users\\me\\docs\\rates.xlsx"), true, "drive-letter case ignored");
+  assert.equal(n.pathAllowed(nodeId, "C:\\Users\\me\\docs"), true, "the root itself allowed");
+  assert.equal(n.pathAllowed(nodeId, "C:\\Users\\me\\other\\x.txt"), false, "sibling tree refused");
+  assert.equal(n.pathAllowed(nodeId, "C:/Users/me/docs2/x"), false, "prefix-similar sibling refused");
+});

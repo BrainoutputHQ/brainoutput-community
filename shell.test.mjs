@@ -560,3 +560,13 @@ test("local bridge endpoints: pair (public, code-authed) → online → models �
   assert.equal(dead.status, 401, "a revoked node's credential dies immediately");
   rmSync(dir, { recursive: true, force: true });
 });
+
+test("settings sections are FOLDED by default (details.fold, no open attribute) with status subtitles", async () => {
+  const shell = await (await fetch(`${BASE}/`)).text();
+  assert.match(shell, /details\.fold/, "fold styles exist");
+  assert.match(shell, /function fold\(/, "the fold helper exists");
+  const folds = shell.match(/<details class="fold"(?![^>]*open)/g) || [];
+  assert.ok(shell.includes("fold(t('settings.company')"), "company folds");
+  assert.ok(shell.includes("fold(t('sources.computer')"), "this-computer folds");
+  assert.ok(!shell.includes('class="fold" open'), "nothing but the opt-in opens by default");
+});

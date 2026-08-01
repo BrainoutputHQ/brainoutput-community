@@ -20,6 +20,11 @@ import { resolve, relative, isAbsolute, join, extname } from "node:path";
 const sha = (s) => createHash("sha256").update(String(s)).digest("hex");
 const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";      // no ambiguous 0/O/1/I/L
 
+/** Path comparison that survives Windows: unify separators, lowercase (the node re-checks with
+ *  native semantics — the server-side test is a pre-filter, strictness lives at the executor). */
+export const normPath = (p) =>
+  String(p || "").replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "");
+
 export const BRIDGE_VERBS = ["list-models", "complete", "list-files", "read-file"];
 export const PAIR_CODE_TTL_MS = 10 * 60 * 1000;
 export const POLL_HOLD_MS = 25000;
@@ -85,12 +90,12 @@ export class LocalNodes {
         online: this.online(n.id, { now }), lastSeenAt: n.lastSeenAt }));
   }
 
-  /** Grant enforcement — a file path is allowed only INSIDE a granted root. */
+  /** Grant enforcement — a file path is allowed only INSIDE a granted root (separator/case-safe). */
   pathAllowed(nodeId, path) {
     const n = this.nodes.get(nodeId);
     if (!n) return false;
-    const p = String(path || "");
-    return n.grants.some((g) => p === g || p.startsWith(g.replace(/\/+$/, "") + "/"));
+    const p = normPath(path);
+    return n.grants.some((g) => { const ng = normPath(g); return p === ng || p.startsWith(ng + "/"); });
   }
 
   /**

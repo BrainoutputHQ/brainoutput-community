@@ -92,6 +92,13 @@ label{display:block;margin:10px 0 3px;color:var(--mut);font-size:13px}
 .deptpick label{background:var(--inp);border:1px solid var(--line);border-radius:18px;padding:7px 14px;color:var(--fg);font-size:13.5px;cursor:pointer;margin:0}
 .deptpick input{width:auto;margin-right:6px}
 details summary{cursor:pointer}
+details.fold{background:var(--card);border:1px solid var(--line);border-radius:14px;margin:4px 0 14px;box-shadow:var(--shadow)}
+details.fold>summary{list-style:none;padding:14px 18px;font-size:14px;font-weight:650;color:var(--fg);display:flex;align-items:center;gap:8px}
+details.fold>summary::-webkit-details-marker{display:none}
+details.fold>summary::after{content:"▸";margin-left:auto;color:var(--mut);transition:transform .15s}
+details.fold[open]>summary::after{transform:rotate(90deg)}
+details.fold>summary .sub{color:var(--mut);font-weight:400;font-size:12.5px}
+details.fold>.fb{padding:4px 18px 16px;border-top:1px solid var(--line)}
 .pill{display:inline-block;padding:2px 9px;border-radius:11px;border:1px solid var(--line);font-size:11.5px;font-weight:600}
 .pill.ok{color:var(--ok);border-color:var(--ok)}
 .pill.dormant{color:var(--mut)}
@@ -174,6 +181,11 @@ const ICONS={
 };
 const I=(n,sz=15)=>'<svg width="'+sz+'" height="'+sz+'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'+(ICONS[n]||'')+'</svg>';
 const FAMILY_ICON={mail:'mail',files:'drive',apps:'apps'};
+/** A foldable settings section — folded by default, with a status subtitle in the summary line. */
+function fold(title, sub, { open = false } = {}) {
+ const d=el('<details class="fold"'+(open?' open':'')+'><summary>'+esc(title)+(sub?'<span class=sub>'+esc(sub)+'</span>':'')+'</summary><div class=fb></div></details>');
+ return { el: d, body: d.querySelector('.fb') };
+}
 // Theme: LIGHT is the default (business look); the toggle persists a dark choice.
 try{if(localStorage.getItem('bo_theme')==='dark')document.body.classList.add('dark')}catch{}
 const toggleTheme=()=>{const d=document.body.classList.toggle('dark');try{localStorage.setItem('bo_theme',d?'dark':'light')}catch{}};
@@ -443,17 +455,20 @@ function settingsView(){
  const slots=[...new Set((s.agents||[]).flatMap(a=>Object.values(a.capabilities||{})))];
  const wrap=el('<div></div>');
  // Company identity — including the website the Brain fetches pictures and context from.
- const co=el('<div class="cardx"><h3>'+esc(t('settings.company'))+'</h3>'
-  +'<label>'+esc(t('settings.name'))+'</label><input class=inp id=cn value="'+esc(s.company?.name||'')+'">'
+ const CO=fold(t('settings.company'),s.company?.name||null,{open:true});
+ const co=CO.body;
+ co.innerHTML='<div style="margin-top:10px"><label>'+esc(t('settings.name'))+'</label><input class=inp id=cn value="'+esc(s.company?.name||'')+'">'
   +'<label>'+esc(t('settings.website'))+'</label><input class=inp id=cw value="'+esc(s.company?.website||'')+'" placeholder="https://…">'
-  +'<div style="margin-top:10px"><button class=act id=csave>'+esc(t('settings.save'))+'</button> <span class=mut id=cmsg style="font-size:12px"></span></div></div>');
+  +'<div style="margin-top:10px"><button class=act id=csave>'+esc(t('settings.save'))+'</button> <span class=mut id=cmsg style="font-size:12px"></span></div></div>';
  co.querySelector('#csave').onclick=async()=>{
   const r=await api('/api/company',{name:co.querySelector('#cn').value,website:co.querySelector('#cw').value});
   co.querySelector('#cmsg').textContent=r.error||'✓';if(!r.error){S.state=r;render()}};
- wrap.appendChild(co);
+ wrap.appendChild(CO.el);
  // The sources catalog lives in Settings (the menu stays lean); the sidebar keeps the rollup.
  wrap.appendChild(sourcesView());
- const a=el('<div class="cardx"><h3>'+esc(t('models.assignments'))+'</h3><div class=mut style="font-size:12.5px;margin-bottom:8px">'+esc(t('models.hint'))+'</div></div>');
+ const MF=fold(t('models.assignments'),conns.length+' · '+(s.company? '' : '')+t('models.connections').toLowerCase());
+ const MB=MF.body;
+ const a=el('<div style="margin-top:10px"><div class=mut style="font-size:12.5px;margin-bottom:8px">'+esc(t('models.hint'))+'</div></div>');
  slots.forEach(sl=>{
   const cur=(s.assignments||{})[sl];
   const lab=T_SLOTS[sl]||[sl.replace(/[-_]/g,' '),''];
@@ -465,8 +480,10 @@ function settingsView(){
    +(lab[1]?'<div class=mut style="font-size:12px;margin:2px 0 0">'+esc(lab[1])+'</div>':'')+'</div>');
   row.querySelector('select').onchange=async(e)=>{const r=await api('/api/assign',{slot:sl,connectionId:e.target.value||null});if(r.error){alert(r.error);return}S.state=r;render()};
   a.appendChild(row)});
- wrap.appendChild(a);
- const c=el('<div class="cardx"><h3>'+esc(t('models.connections'))+'</h3></div>');
+ MB.appendChild(a);
+ const cHead=el('<div style="font-weight:650;font-size:13.5px;margin-top:14px">'+esc(t('models.connections'))+'</div>');
+ MB.appendChild(cHead);
+ const c=el('<div></div>');
  conns.forEach(cn=>{
   const dot=cn.health==='down'?'<span title="'+esc(t('models.down'))+'" style="color:var(--warn)">●</span> ':cn.health==='ok'?'<span style="color:var(--ok)">●</span> ':'';
   const row=el('<div style="display:flex;gap:10px;align-items:center;padding:5px 0;border-bottom:1px solid var(--line)">'
@@ -479,18 +496,20 @@ function settingsView(){
  fb.querySelector('#cf').onclick=async()=>{const fm=fb.querySelector('#cfm');fm.textContent=t('onboard.freeChecking');
   const r=await api('/api/connect-free');fm.textContent=r.error?r.error:('✓ '+r.picked.model+' (free)');if(!r.error){S.state=r;render()}};
  c.appendChild(fb);
- wrap.appendChild(c);
+ MB.appendChild(c);
+ wrap.appendChild(MF.el);
  // Privacy posture — the one-line choice: full private (local models only) or more open (free cloud
  // models allowed where you assigned them). Fail-closed at routing, never a silent cloud call.
  const posture=(s.settings||{}).privacy||'open';
- const pv=el('<div class="cardx"><h3>'+esc(t('settings.privacy'))+'</h3>'
-  +'<div class=mut style="font-size:12.5px;margin-bottom:8px">'+esc(t('settings.privacyHint'))+'</div>'
+ const PV=fold(t('settings.privacy'),t('settings.privacy.'+posture));
+ const pv=PV.body;
+ pv.innerHTML='<div style="margin-top:10px"><div class=mut style="font-size:12.5px;margin-bottom:8px">'+esc(t('settings.privacyHint'))+'</div>'
   +'<div style="display:flex;gap:8px;flex-wrap:wrap">'
   +['open','private'].map(p=>'<button class="'+(posture===p?'act':'ghost')+'" data-pv="'+p+'" style="font-size:13px">'+esc(t('settings.privacy.'+p))+'</button>').join('')
-  +'</div><div class=mut id=pvmsg style="font-size:12px;margin-top:6px">'+esc(t('settings.privacy.'+posture+'.desc'))+'</div></div>');
+  +'</div><div class=mut id=pvmsg style="font-size:12px;margin-top:6px">'+esc(t('settings.privacy.'+posture+'.desc'))+'</div></div>';
  pv.querySelectorAll('[data-pv]').forEach(b=>b.onclick=async()=>{
   const r=await api('/api/settings',{privacy:b.dataset.pv});if(r.error){alert(r.error);return}S.state=r;render()});
- wrap.appendChild(pv);
+ wrap.appendChild(PV.el);
  return wrap;
 }
 
@@ -530,9 +549,7 @@ function sourcesView(){
  const T=(s.workTwins||[])[0];
  const catalog=s.sourceCatalog||[];
  const wrap=el('<div></div>');
- const head=el('<div class="cardx"><h3>'+esc(t('sources.title'))+'</h3>'
-  +'<div class=mut style="font-size:13.5px">'+esc(t('sources.intro'))+'</div></div>');
- wrap.appendChild(head);
+ wrap.appendChild(el('<div class=mut style="font-size:12.5px;margin:2px 4px 10px">'+esc(t('sources.intro'))+'</div>'));
  if(!T){
   const d=el('<div class="cardx"><h3>'+esc(t('sources.firstStep'))+'</h3>'
    +'<div class=mut style="font-size:13px;margin-bottom:8px">'+esc(t('work.noTwin'))+'</div>'
@@ -547,7 +564,9 @@ function sourcesView(){
  }
  const groups=[['mail',t('sources.groupMail')],['files',t('sources.groupFiles')],['apps',t('sources.groupApps')]];
  for(const [g,label] of groups){
-  const card=el('<div class="cardx"><h3>'+esc(label)+'</h3></div>');
+  const nConn=catalog.filter(c=>c.group===g).reduce((n,c)=>n+c.accounts.length,0);
+  const F=fold(label,nConn?nConn+' '+t('sources.connected'):t('sources.notConnected'));
+  const card=F.body;
   catalog.filter(c=>c.group===g).forEach(c=>{
    const row=el('<div style="padding:9px 0;border-bottom:1px solid var(--line)"></div>');
    const state=c.accounts.length
@@ -606,7 +625,7 @@ function sourcesView(){
    }
    row.appendChild(bar);
    card.appendChild(row)});
-  wrap.appendChild(card);
+  wrap.appendChild(F.el);
  }
  if(T){
   const sync=el('<div class="cardx"><div style="display:flex;gap:8px;align-items:center;font-size:13px">'
@@ -619,8 +638,10 @@ function sourcesView(){
  // This computer — the local bridge. Pair a device with a short code; its LOCAL models become
  // assignable connections and its GRANTED folders can be indexed. Outbound-only, revocable.
  const nodes=s.localNodes||[];
- const cc=el('<div class="cardx"><h3>'+esc(t('sources.computer'))+'</h3>'
-  +'<div class=mut style="font-size:12.5px;margin-bottom:8px">'+esc(t('sources.computerHint'))+'</div></div>');
+ const nOn=nodes.filter(n=>n.online).length;
+ const CF=fold(t('sources.computer'),nodes.length?nOn+'/'+nodes.length+' '+t('sources.online'):null);
+ const cc=CF.body;
+ cc.appendChild(el('<div class=mut style="font-size:12.5px;margin-bottom:8px;margin-top:10px">'+esc(t('sources.computerHint'))+'</div>'));
  const pb=el('<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button class=ghost style="font-size:12.5px">'+esc(t('sources.pairDevice'))+'</button>'
   +'<span id=pcode style="font-size:15px;font-weight:700;letter-spacing:.08em"></span><span class=mut id=phelp style="font-size:12px"></span></div>');
  pb.querySelector('button').onclick=async()=>{
@@ -654,7 +675,7 @@ function sourcesView(){
    row.appendChild(gl);
   }
   cc.appendChild(row)});
- wrap.appendChild(cc);
+ wrap.appendChild(CF.el);
  return wrap;
 }
 
