@@ -139,3 +139,15 @@ test("retrieval spans mail AND documents, still capped at k", async () => {
     assert.ok(hits.some((h) => h.name), "a document hit");
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
+
+test("a local drive connects with `dir` (the connect flow's word) as well as roots", async () => {
+  const d = mkdtempSync(join(tmpdir(), "bo-drive-dir-"));
+  try {
+    writeFileSync(join(d, "notes.txt"), "the lakeside renovation plan");
+    const src = localDriveSource({ account: "alice", dir: d });
+    const files = await src.listFiles({ limit: 5 });
+    assert.equal(files.length, 1, "dir alone must index — the connect flow sends dir, not roots");
+    assert.equal(files[0].name, "notes.txt");
+    assert.match(files[0].snippet, /lakeside/);
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});

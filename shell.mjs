@@ -73,6 +73,9 @@ label{display:block;margin:10px 0 3px;color:var(--mut);font-size:13px}
 .deptpick label{background:var(--inp);border:1px solid var(--line);border-radius:18px;padding:7px 14px;color:var(--fg);font-size:13.5px;cursor:pointer;margin:0}
 .deptpick input{width:auto;margin-right:6px}
 details summary{cursor:pointer}
+.pill{display:inline-block;padding:2px 9px;border-radius:11px;border:1px solid var(--line);font-size:11.5px;font-weight:600}
+.pill.ok{color:var(--ok);border-color:var(--ok)}
+.pill.dormant{color:var(--mut)}
 pre{background:var(--pre)!important}
 #mobilebar{display:none}
 @media(max-width:760px){
@@ -89,6 +92,7 @@ pre{background:var(--pre)!important}
   <div class=vmenu>
    <button id=vm-chat>💬 <span></span></button>
    <button id=vm-work>🗂 <span></span></button>
+   <button id=vm-sources>🔌 <span></span></button>
    <button id=vm-settings>⚙ <span></span></button>
   </div>
   <input id=qsearch class=inp style="margin:4px 0 8px;width:100%" placeholder="">
@@ -161,8 +165,8 @@ function sidebar(){
  // navigating from the sidebar closes the mobile nav
  document.querySelectorAll('aside .pitem,aside .vmenu button').forEach(b=>b.addEventListener('click',()=>{document.body.classList.remove('nav-open');document.getElementById('scrim')?.remove()}));
  // view menu + mode dropdown + theme toggle
- const vm=[['chat',t('nav.chat')],['work',t('nav.work')],['settings',t('nav.settings')]];
- ['chat','work','settings'].forEach((v,i)=>{const b=document.getElementById('vm-'+v);b.querySelector('span').textContent=vm[i][1];
+ const vm=[['chat',t('nav.chat')],['work',t('nav.work')],['sources',t('nav.sources')],['settings',t('nav.settings')]];
+ ['chat','work','sources','settings'].forEach((v,i)=>{const b=document.getElementById('vm-'+v);if(!b)return;b.querySelector('span').textContent=vm[i][1];
   b.className=S.view===v?'on':'';b.onclick=()=>{S.view=v;render()}});
  const tb=document.getElementById('themebtn');tb.textContent=document.body.classList.contains('dark')?'☀':'☾';
  tb.onclick=toggleTheme;
@@ -401,6 +405,91 @@ function settingsView(){
  return wrap;
 }
 
+// ── sources: the always-visible catalog of what the assistant CAN read ───────
+// Connected or not, every kind is listed with what it unlocks — a user should never have to
+// guess what could be connected to get more company insight out of the chatbot.
+async function connectSource(kind){
+ const T=((S.state||{}).workTwins||[])[0];
+ if(!T){alert(t('sources.needTwin'));return}
+ const src={kind,account:T.employee.email};
+ if(kind==='imap'){const hp=prompt('IMAP host:port (mail.example.com:993)');if(!hp)return;const[h,p]=hp.split(':');
+  src.host=h;src.port=Number(p||993);src.user=prompt('IMAP user (email)')||T.employee.email;src.account=src.user;
+  src.password=prompt('IMAP password')||'';src.tls=(Number(p)||993)!==143}
+ if(kind==='local-mail'){const d=prompt(t('work.mailPath'));if(!d)return;/mbox$/i.test(d)?src.mbox=d:src.dir=d;src.account=d}
+ if(kind==='drive'){const d=prompt(t('work.drivePath'));if(!d)return;src.dir=d;src.account=d}
+ if(kind==='nextcloud'){const u=prompt('Nextcloud WebDAV URL (https://cloud.example/remote.php/dav/files/you)');if(!u)return;
+  src.baseUrl=u;src.user=prompt('Nextcloud user')||'';src.password=prompt('Nextcloud app password')||'';src.account=u}
+ const r=await api('/api/worktwin/connect',{twinId:T.id,source:src});
+ if(r.error){alert(r.error);return}
+ await refresh();
+}
+async function disconnectSource(accountId){
+ if(!confirm(t('sources.disconnectConfirm')))return;
+ const T=((S.state||{}).workTwins||[])[0];
+ const r=await api('/api/worktwin/disconnect',{twinId:T&&T.id,accountId});
+ if(r.error){alert(r.error);return}
+ S.state=r.state;await refresh();
+}
+function sourcesView(){
+ const s=S.state||{};
+ const T=(s.workTwins||[])[0];
+ const catalog=s.sourceCatalog||[];
+ const wrap=el('<div></div>');
+ const head=el('<div class="cardx"><h3>'+esc(t('sources.title'))+'</h3>'
+  +'<div class=mut style="font-size:13.5px">'+esc(t('sources.intro'))+'</div></div>');
+ wrap.appendChild(head);
+ if(!T){
+  const d=el('<div class="cardx"><h3>'+esc(t('sources.firstStep'))+'</h3>'
+   +'<div class=mut style="font-size:13px;margin-bottom:8px">'+esc(t('work.noTwin'))+'</div>'
+   +'<div class=row style="display:flex;gap:8px"><input class=inp id=wn placeholder="'+esc(t('work.yourName'))+'" style="margin-top:0"><input class=inp id=we placeholder="you@company.com" style="margin-top:0"></div>'
+   +'<div style="margin-top:8px"><button class=act>'+esc(t('work.createAlter'))+'</button> <span class=mut id=wmsg style="font-size:12px"></span></div></div>');
+  d.querySelector('button').onclick=async()=>{
+   const nm=d.querySelector('#wn').value.trim(),em=d.querySelector('#we').value.trim();
+   if(!em){d.querySelector('#wmsg').textContent='email?';return}
+   const r=await api('/api/worktwin/create',{employee:{id:em.split('@')[0],name:nm||em,email:em}});
+   d.querySelector('#wmsg').textContent=r.error||'✓';if(!r.error){S.state=r.state;render()}};
+  wrap.appendChild(d);
+ }
+ const groups=[['mail',t('sources.groupMail')],['files',t('sources.groupFiles')]];
+ for(const [g,label] of groups){
+  const card=el('<div class="cardx"><h3>'+esc(label)+'</h3></div>');
+  catalog.filter(c=>c.group===g).forEach(c=>{
+   const row=el('<div style="padding:9px 0;border-bottom:1px solid var(--line)"></div>');
+   const state=c.accounts.length
+    ?'<span class="pill ok" style="font-size:11.5px">'+esc(t('sources.connected'))+'</span>'
+    :'<span class="pill dormant" style="font-size:11.5px">'+esc(t('sources.notConnected'))+'</span>';
+   row.appendChild(el('<div style="display:flex;gap:8px;align-items:center"><b style="font-size:14px">'+esc(t('sources.kind.'+c.kind))+'</b>'+state+'</div>'));
+   row.appendChild(el('<div class=mut style="font-size:12.5px;margin-top:2px">'+esc(t('sources.benefit.'+c.kind))+'</div>'));
+   c.accounts.forEach(a=>{
+    const ar=el('<div style="display:flex;gap:8px;align-items:center;font-size:13px;margin-top:5px;padding:5px 8px;background:var(--card2);border-radius:8px">'
+     +'<span>✓ '+esc(a.label||a.account)+'</span><span class=mut style="font-size:12px">'+esc((a.resources||[]).join(', '))+' · '+esc(a.scope||'read')+'</span>'
+     +'<button class=ghost style="margin-left:auto;padding:3px 10px;font-size:12px">'+esc(t('sources.disconnect'))+'</button></div>');
+    ar.querySelector('button').onclick=()=>disconnectSource(a.id);
+    row.appendChild(ar)});
+   const bar=el('<div style="margin-top:7px"></div>');
+   if(c.verified){
+    const b=el('<button class=ghost style="font-size:12.5px;padding:5px 12px">'+(c.accounts.length?'+ '+esc(t('sources.addAnother')):esc(t('sources.connect')))+'</button>');
+    if(!T)b.disabled=true,b.style.opacity=.5;
+    b.onclick=()=>connectSource(c.kind);
+    bar.appendChild(b);
+   }else{
+    bar.appendChild(el('<span class=mut style="font-size:12px">'+esc(t('sources.needsOAuth'))+'</span>'));
+   }
+   row.appendChild(bar);
+   card.appendChild(row)});
+  wrap.appendChild(card);
+ }
+ if(T){
+  const sync=el('<div class="cardx"><div style="display:flex;gap:8px;align-items:center;font-size:13px">'
+   +'<span class=mut>'+esc(T.name)+' · '+(T.indexSize||0)+' '+esc(t('work.indexed'))+'</span>'
+   +'<button class=ghost id=sync style="margin-left:auto">'+esc(t('work.sync'))+'</button><span class=mut id=smsg style="font-size:12px"></span></div></div>');
+  sync.querySelector('#sync').onclick=async()=>{const m=sync.querySelector('#smsg');m.textContent='…';
+   const r=await api('/api/worktwin/sync',{twinId:T.id,limit:50});m.textContent=r.error?r.error:('✓ '+r.indexed);await refresh()};
+  wrap.appendChild(sync);
+ }
+ return wrap;
+}
+
 // ── work: the intranet — planner + your sources (mail/drives) + one search over all of it ──
 function workView(){
  const s=S.state||{};
@@ -423,44 +512,18 @@ function workView(){
   pl.appendChild(row)});
  wrap.appendChild(pl);
 
- // Sources: the mail/drives your Alter reads — list, sync, add.
+ // Sources live in their own menu now (the catalog shows what COULD be connected, not just what
+ // is). Work keeps a one-line summary that routes there.
  const T=(s.workTwins||[])[0];
+ const cat=s.sourceCatalog||[];
+ const connectedN=cat.reduce((n,c)=>n+c.accounts.length,0);
  const sc=el('<div class="cardx"><h3>'+esc(t('work.sources'))+'</h3></div>');
- if(!T){
-  const d=el('<div><div class=mut style="font-size:13px;margin-bottom:8px">'+esc(t('work.noTwin'))+'</div>'
-   +'<div class=row style="display:flex;gap:8px"><input class=inp id=wn placeholder="'+esc(t('work.yourName'))+'" style="margin-top:0"><input class=inp id=we placeholder="you@company.com" style="margin-top:0"></div>'
-   +'<div style="margin-top:8px"><button class=act>'+esc(t('work.createAlter'))+'</button> <span class=mut id=wmsg style="font-size:12px"></span></div></div>');
-  d.querySelector('button').onclick=async()=>{
-   const nm=d.querySelector('#wn').value.trim(),em=d.querySelector('#we').value.trim();
-   if(!em){d.querySelector('#wmsg').textContent='email?';return}
-   const r=await api('/api/worktwin/create',{employee:{id:em.split('@')[0],name:nm||em,email:em}});
-   d.querySelector('#wmsg').textContent=r.error||'✓';if(!r.error){S.state=r.state;render()}};
-  sc.appendChild(d);
- } else {
-  const acc=T.accounts||[];
-  sc.appendChild(el('<div class=mut style="font-size:13px;margin-bottom:8px">'+esc(T.name)+' · '+(T.indexSize||0)+' '+(t('work.indexed'))+'</div>'));
-  if(acc.length)acc.forEach(a=>sc.appendChild(el('<div style="font-size:13px;padding:3px 0">• '+esc(a.kind)+' ('+esc(a.account)+') · '+esc((a.resources||[]).join(', '))+'</div>')));
-  const bar=el('<div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
-   +'<button class=ghost id=sync>'+esc(t('work.sync'))+'</button><span class=mut id=smsg style="font-size:12px"></span>'
-   +'<select id=sk style="margin-left:auto">'
-   +'<option value="">+ '+esc(t('work.addSource'))+'</option>'
-   +'<option value="imap">IMAP (mail)</option><option value="local-mail">Local mail (Maildir/mbox)</option><option value="drive">Local folder (drive)</option></select></div>');
-  bar.querySelector('#sync').onclick=async()=>{const m=bar.querySelector('#smsg');m.textContent='…';
-   const r=await api('/api/worktwin/sync',{twinId:T.id,limit:50});
-   m.textContent=r.error?r.error:('✓ '+r.indexed);
-   await refresh()};
-  bar.querySelector('#sk').onchange=async(e)=>{
-   const kind=e.target.value;if(!kind)return;
-   const src={kind,account:T.employee.email};
-   if(kind==='imap'){const hp=prompt('IMAP host:port (mail.example.com:993)');if(!hp)return;const[h,p]=hp.split(':');
-    src.host=h;src.port=Number(p||993);src.user=T.employee.email;src.password=prompt('IMAP password')||'';src.tls=(Number(p)||993)!==143}
-   if(kind==='local-mail'){const d=prompt(t('work.mailPath'));if(!d)return;/mbox$/i.test(d)?src.mbox=d:src.dir=d}
-   if(kind==='drive'){const d=prompt(t('work.drivePath'));if(!d)return;src.dir=d}
-   const r=await api('/api/worktwin/connect',{twinId:T.id,source:src});
-   if(r.error)alert(r.error);
-   await refresh()};
-  sc.appendChild(bar);
- }
+ const sum=el('<div style="display:flex;gap:8px;align-items:center;font-size:13.5px">'
+  +(T?'<span>'+esc(T.name)+' · <b>'+connectedN+'</b> '+esc(t('sources.connectedCount'))+' · '+(T.indexSize||0)+' '+esc(t('work.indexed'))+'</span>'
+    :'<span class=mut>'+esc(t('work.noTwin'))+'</span>')
+  +'<button class=ghost style="margin-left:auto">'+esc(t('sources.manage'))+' →</button></div>');
+ sum.querySelector('button').onclick=()=>{S.view='sources';render()};
+ sc.appendChild(sum);
  wrap.appendChild(sc);
 
  // Routines: scheduled work (regulation watch, daily digest) — the company moves on its own.
@@ -541,6 +604,7 @@ function thread(){
  const s=S.state||{};const box=document.getElementById('msgs');box.innerHTML='';
  if(S.view==='settings'){box.appendChild(settingsView());return}
  if(S.view==='work'){box.appendChild(workView());return}
+ if(S.view==='sources'){box.appendChild(sourcesView());return}
  if(!tourSeen())box.appendChild(tourCard());
  const conv=(s.conversations||[]).find(c=>c.id===S.convId);
  if(!conv){

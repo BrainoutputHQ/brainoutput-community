@@ -39,7 +39,10 @@ export function normalizeFile(raw, { accountId, folder = null } = {}) {
 // ── local folder (VERIFIED) ─────────────────────────────────────────────────────────────────────
 
 /** A folder on this machine. Nothing leaves the device; only `roots` are ever read. */
-export function localDriveSource({ account = "local", roots = [], maxDepth = 4, snippetChars = 400 } = {}) {
+export function localDriveSource({ account = "local", roots = [], dir = null, maxDepth = 4, snippetChars = 400 } = {}) {
+  // The connect flow speaks `dir` (one folder); the walker works on `roots`. Accept both — a
+  // connected folder that indexed ZERO files because of the mismatch was a silent dead source.
+  roots = roots.length ? roots : dir ? [dir] : [];
   const accountId = `drive:${account}`;
   const walk = (root, dir, depth, out) => {
     if (depth > maxDepth) return out;

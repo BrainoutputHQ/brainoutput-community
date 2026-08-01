@@ -26,7 +26,8 @@ import { connectRagSource, indexDocuments, searchRag } from "./rag.mjs";
 import { createWorkTwin, setMode as twinSetMode, connectWorkSource, grantTwinScope, twinPermission,
   indexMessages as twinIndex, retrieveForRequest, prioritySummary, unansweredThreads, extractCommitments,
   meetingBrief, followUpSuggestions, draftReply, sendDraft, emailToMission, taskPacket, recordDelegation,
-  withAudit, auditRecord, WORK_TWIN_MODES, publicTwin, setModelPolicy, modelForStage, TWIN_MODEL_STAGES } from "./worktwin.mjs";
+  withAudit, auditRecord, WORK_TWIN_MODES, publicTwin, setModelPolicy, modelForStage, TWIN_MODEL_STAGES,
+  disconnectWorkSource, sourceCatalog } from "./worktwin.mjs";
 import { connectMailSource, workSourceOptions, smtpSend } from "./mail-sources.mjs";
 import { connectDriveSource, driveProviderOptions } from "./drive-sources.mjs";
 import { indexFiles, searchFiles } from "./worktwin.mjs";
@@ -399,6 +400,12 @@ async function api(req, res, url) {
   if (url.pathname === "/api/worktwin/options") return json(res, { options: workSourceOptions(), drives: driveProviderOptions(), modes: WORK_TWIN_MODES });
   if (url.pathname === "/api/worktwin/create") return twinCreate(res, b);
   if (url.pathname === "/api/worktwin/connect") return twinConnect(res, b);
+  if (url.pathname === "/api/worktwin/disconnect") {
+    let t = getTwin(b.twinId);
+    if (!t) return json(res, { error: "no Work Twin" }, 404);
+    try { t = disconnectWorkSource(t, b.accountId); saveTwin(t); return json(res, { twin: publicTwin(t), state: publicState() }); }
+    catch (e) { return json(res, { error: e.message }, 400); }
+  }
   if (url.pathname === "/api/worktwin/mode") return twinMode(res, b);
   if (url.pathname === "/api/worktwin/grant") return twinGrant(res, b);
   if (url.pathname === "/api/worktwin/model-policy") {
@@ -1217,6 +1224,9 @@ function publicState() {
     conversations: store.runtime.conversations || [], missions: store.runtime.missions || [],
     projects: listProjects(store.runtime),
     workTwins: (store.runtime.workTwins || []).map(publicTwin),
+    // The connectable-source catalog, always present — connected kinds AND the ones not connected
+    // yet, so the UI can show what the assistant COULD read (never a guess, never hidden).
+    sourceCatalog: sourceCatalog(getTwin()),
     brainoutputFundedTokens: funded };
 }
 

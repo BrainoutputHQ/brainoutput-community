@@ -4,7 +4,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -362,4 +362,47 @@ test("task spine API: manual tasks, subtasks, status flips — and missions repo
   });
   assert.ok(["done", "blocked"].includes(reported.status));
   assert.equal(typeof reported.result.ok, "boolean");
+});
+
+test("sources: the menu and the always-visible catalog exist — connected or not", async () => {
+  const shell = await (await fetch(`${BASE}/`)).text();
+  assert.match(shell, /vm-sources/, "the Sources menu entry is in the page");
+  assert.match(shell, /sources\.kind\.imap|sources\\?\.kind/, "catalog kind labels are wired");
+
+  const st = await state();
+  assert.ok(Array.isArray(st.sourceCatalog), "state carries the catalog");
+  assert.equal(st.sourceCatalog.length, 9);
+  assert.ok(st.sourceCatalog.every((c) => Array.isArray(c.accounts) && typeof c.verified === "boolean"));
+  assert.ok(st.sourceCatalog.some((c) => !c.verified), "OAuth-needing kinds are listed too, marked as such");
+});
+
+test("sources: connect a folder, see it connected (and INDEXED), reject duplicates, disconnect", async () => {
+  const twin = await post("/api/worktwin/create", { employee: { id: "bob", name: "Bob", email: "bob@acme.test" } });
+  assert.equal(twin.status, 200);
+
+  const dir = mkdtempSync(join(tmpdir(), "bo-shell-src-"));
+  writeFileSync(join(dir, "rates.txt"), "August promotion: -30% on lake rooms");
+  const connect = await post("/api/worktwin/connect", { twinId: twin.body.twin.id,
+    source: { kind: "drive", provider: "local", account: dir, dir } });
+  assert.equal(connect.status, 200, JSON.stringify(connect.body));
+  assert.ok(connect.body.sampled >= 1, "the folder is actually read at connect time (dir→roots fix)");
+
+  let st = await state();
+  const drive = st.sourceCatalog.find((c) => c.kind === "drive");
+  assert.equal(drive.accounts.length, 1);
+  assert.equal(drive.accounts[0].account, dir);
+  assert.equal(st.sourceCatalog.find((c) => c.kind === "imap").accounts.length, 0, "other kinds stay visible, unconnected");
+
+  const dup = await post("/api/worktwin/connect", { twinId: twin.body.twin.id,
+    source: { kind: "drive", provider: "local", account: dir, dir } });
+  assert.equal(dup.status, 400);
+  assert.match(dup.body.error, /already connected/);
+
+  const off = await post("/api/worktwin/disconnect", { twinId: twin.body.twin.id, accountId: `drive:${dir}` });
+  assert.equal(off.status, 200);
+  st = await state();
+  assert.equal(st.sourceCatalog.find((c) => c.kind === "drive").accounts.length, 0, "disconnect returns the kind to not-connected");
+  const ghost = await post("/api/worktwin/disconnect", { twinId: twin.body.twin.id, accountId: `drive:${dir}` });
+  assert.equal(ghost.status, 400);
+  rmSync(dir, { recursive: true, force: true });
 });

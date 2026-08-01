@@ -7,6 +7,7 @@ import {
   twinPermission, auditRecord, draftAttribution, indexMessages, retrieveForRequest,
   prioritySummary, unansweredThreads, extractCommitments, meetingBrief, followUpSuggestions,
   draftReply, sendDraft, emailToMission, taskPacket, onConnectorEvent, sleep,
+  disconnectWorkSource, sourceCatalog, SOURCE_CATALOG,
 } from "./worktwin.mjs";
 import { newConnector, grantScope } from "./connectors.mjs";
 
@@ -280,4 +281,40 @@ test("Work Twin model policy: regular uses one model, advanced separates the sta
   assert.throws(() => setModelPolicy(t, { mode: "weird" }), /unknown model policy mode/);
   // switching back to regular clears the per-stage map
   assert.deepEqual(setModelPolicy(t, { mode: "regular" }).modelPolicy.stages, {});
+});
+
+test("several accounts per kind are fine — the SAME account twice is rejected", () => {
+  let t = createWorkTwin({ employee: EMP, name: "Alice" });
+  t = connectWorkSource(t, { kind: "imap", account: "alice@acme.test", config: { host: "mail.acme.test" } });
+  t = connectWorkSource(t, { kind: "imap", account: "support@acme.test", config: { host: "mail.acme.test" } });
+  t = connectWorkSource(t, { kind: "drive", account: "/data/contracts", config: { dir: "/data/contracts" }, resources: ["contracts"] });
+  assert.equal(t.accounts.length, 3, "two mailboxes + a folder coexist");
+  assert.throws(() => connectWorkSource(t, { kind: "imap", account: "alice@acme.test" }), /already connected/);
+  assert.equal(t.accounts.length, 3, "a rejected duplicate changes nothing");
+});
+
+test("disconnect removes exactly that account and its resources", () => {
+  let t = createWorkTwin({ employee: EMP, name: "Alice" });
+  t = connectWorkSource(t, { kind: "imap", account: "alice@acme.test", resources: ["INBOX"] });
+  t = connectWorkSource(t, { kind: "drive", account: "/data/contracts", resources: ["contracts"] });
+  t = disconnectWorkSource(t, "imap:alice@acme.test");
+  assert.deepEqual(t.accounts.map((a) => a.id), ["drive:/data/contracts"]);
+  assert.deepEqual(t.resources, ["contracts"], "the mailbox's resources leave with it");
+  assert.throws(() => disconnectWorkSource(t, "imap:alice@acme.test"), /no connected source/);
+});
+
+test("the source catalog ALWAYS lists every kind — connected or not — with live status", () => {
+  const empty = sourceCatalog(null);
+  assert.equal(empty.length, SOURCE_CATALOG.length);
+  assert.ok(empty.every((c) => c.accounts.length === 0), "nothing connected without a twin");
+  assert.ok(empty.some((c) => c.group === "mail") && empty.some((c) => c.group === "files"));
+  assert.ok(empty.every((c) => typeof c.verified === "boolean"), "every kind says whether it works today");
+  let t = createWorkTwin({ employee: EMP, name: "Alice" });
+  t = connectWorkSource(t, { kind: "imap", account: "alice@acme.test", resources: ["INBOX"] });
+  t = connectWorkSource(t, { kind: "imap", account: "support@acme.test", resources: ["INBOX"] });
+  const cat = sourceCatalog(t);
+  const imap = cat.find((c) => c.kind === "imap");
+  assert.equal(imap.accounts.length, 2, "both mailboxes show under one kind");
+  assert.deepEqual(imap.accounts.map((a) => a.account), ["alice@acme.test", "support@acme.test"]);
+  assert.equal(cat.find((c) => c.kind === "nextcloud").accounts.length, 0, "unconnected kinds stay visible");
 });

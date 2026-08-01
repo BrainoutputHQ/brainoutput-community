@@ -111,12 +111,16 @@ export function setMode(twin, mode) {
   return { ...twin, mode };
 }
 
-/** Connect a work source. ALWAYS lands in mirror-safe state: read-only, no elevated grants. */
+/** Connect a work source. ALWAYS lands in mirror-safe state: read-only, no elevated grants.
+ *  SEVERAL accounts per kind are fine (two mailboxes, three folders) — the SAME account twice is not. */
 export function connectWorkSource(twin, { kind, account, label = null, resources = [], connector = null, config = {}, secret = null } = {}) {
   if (!WORK_SOURCE_KINDS.includes(kind)) throw new Error(`unknown work source '${kind}'`);
   if (!account) throw new Error("work source: an account identifier is required");
+  const id = `${kind}:${account}`;
+  if ((twin.accounts || []).some((a) => a.id === id))
+    throw new Error(`'${account}' is already connected as ${kind} — connect a different account, or disconnect it first`);
   const acc = {
-    id: `${kind}:${account}`, kind, account, label: label || account,
+    id, kind, account, label: label || account,
     resources: [...resources],       // permitted folders/labels/mailboxes/channels
     scope: "read",                   // new connections default to READ-ONLY (Mirror)
     connector,                       // optional connectors.mjs connector for elevated actions
@@ -127,6 +131,42 @@ export function connectWorkSource(twin, { kind, account, label = null, resources
     connectedAt: null,
   };
   return { ...twin, accounts: [...twin.accounts, acc], resources: [...twin.resources, ...resources] };
+}
+
+/** Disconnect one connected account by its id (`kind:account`). Its resources leave with it. */
+export function disconnectWorkSource(twin, accountId) {
+  const acc = (twin.accounts || []).find((a) => a.id === accountId);
+  if (!acc) throw new Error(`no connected source '${accountId}'`);
+  const accounts = twin.accounts.filter((a) => a.id !== accountId);
+  return { ...twin, accounts, resources: accounts.flatMap((a) => a.resources) };
+}
+
+/**
+ * THE SOURCE CATALOG — everything connectable, connected or not. The product rule behind it: a
+ * user should never have to GUESS what the assistant could read; the menu shows every kind with
+ * its state. `verified` = works today without extra credentials; the rest need the customer's own
+ * OAuth app credentials and say so instead of failing late.
+ */
+export const SOURCE_CATALOG = [
+  { kind: "imap", group: "mail", verified: true },
+  { kind: "local-mail", group: "mail", verified: true },
+  { kind: "google-workspace", group: "mail", verified: false, needs: "oauth-google" },
+  { kind: "microsoft-365", group: "mail", verified: false, needs: "oauth-microsoft" },
+  { kind: "drive", group: "files", verified: true },              // a folder on this machine
+  { kind: "nextcloud", group: "files", verified: true },
+  { kind: "google-drive", group: "files", verified: false, needs: "oauth-google" },
+  { kind: "onedrive", group: "files", verified: false, needs: "oauth-microsoft" },
+  { kind: "sharepoint", group: "files", verified: false, needs: "oauth-microsoft" },
+];
+
+/** Catalog + the twin's live accounts merged: per kind, who is connected. `twin` may be null. */
+export function sourceCatalog(twin = null) {
+  const accounts = twin?.accounts || [];
+  return SOURCE_CATALOG.map((entry) => ({
+    ...entry,
+    accounts: accounts.filter((a) => a.kind === entry.kind)
+      .map((a) => ({ id: a.id, account: a.account, label: a.label, resources: a.resources || [], scope: a.scope })),
+  }));
 }
 
 /** Grant an elevated scope explicitly (beyond the mode ceiling). Sensitive is always human-approved. */
