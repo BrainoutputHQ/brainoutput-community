@@ -36,7 +36,7 @@ const [cmd, ...rest] = process.argv.slice(2);
 const run = (script, args = []) => spawn(process.execPath, [join(HERE, script), ...args], { stdio: "inherit" });
 
 function probe(host, port, path) {
-  return new Promise((res) => { const r = request({ host, port, path, timeout: 2000 }, (x) => { let d = ""; x.on("data", (c) => (d += c)); x.on("end", () => res(d)); }); r.on("error", () => res("")); r.on("timeout", () => { r.destroy(); res(""); }); r.end(); });
+  return new Promise((res) => { const r = request({ host, port, path, timeout: 2000 }, (x) => { x.setEncoding("utf8"); let d = ""; x.on("data", (c) => (d += c)); x.on("end", () => res(d)); }); r.on("error", () => res("")); r.on("timeout", () => { r.destroy(); res(""); }); r.end(); });
 }
 
 async function doctor() {

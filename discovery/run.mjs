@@ -10,8 +10,8 @@ import { COMMANDS, parseArgs } from "./cli.mjs";
 const exec = (cmd, args = []) => new Promise((resolve) => {
   const p = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
   let stdout = "", stderr = "";
-  p.stdout.on("data", (c) => (stdout += c));
-  p.stderr.on("data", (c) => (stderr += c));
+  p.stdout.setEncoding("utf8"); p.stdout.on("data", (c) => (stdout += c));
+  p.stderr.setEncoding("utf8"); p.stderr.on("data", (c) => (stderr += c));
   p.on("close", (code) => resolve({ stdout, stderr, code }));
   p.on("error", (e) => resolve({ stdout: "", stderr: e.message, code: 127 }));
 });

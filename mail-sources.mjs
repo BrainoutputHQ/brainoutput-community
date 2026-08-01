@@ -152,7 +152,7 @@ export function caldavCalendarSource({ account, url, user = null, password = nul
       const xml = await new Promise((resolve, reject) => {
         const req = lib.request(u, { method: "REPORT", timeout: timeoutMs,
           headers: { "Content-Type": "application/xml", Depth: "1", "Content-Length": Buffer.byteLength(body), ...auth } },
-          (res) => { let d = ""; res.on("data", (c) => (d += c));
+          (res) => { res.setEncoding("utf8"); let d = ""; res.on("data", (c) => (d += c));
             res.on("end", () => (res.statusCode < 400 ? resolve(d) : reject(new Error(`caldav ${res.statusCode}`)))); });
         req.on("error", reject); req.on("timeout", () => req.destroy(new Error("caldav: timeout")));
         req.write(body); req.end();

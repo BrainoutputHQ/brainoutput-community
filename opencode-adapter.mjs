@@ -126,8 +126,8 @@ export function runOpenCode({ connection, prompt, workspace, effort, isoBase, ti
     // and hangs at init. stdout/stderr are captured.
     const p = spawn(OPENCODE_BIN, args, { cwd: ws, env, stdio: ["ignore", "pipe", "pipe"] });
     const timer = setTimeout(() => p.kill("SIGKILL"), timeoutMs);
-    p.stdout.on("data", (d) => (out += d));
-    p.stderr.on("data", (d) => (err += d));
+    p.stdout.setEncoding("utf8"); p.stdout.on("data", (d) => (out += d));
+    p.stderr.setEncoding("utf8"); p.stderr.on("data", (d) => (err += d));
     p.on("close", (code) => {
       clearTimeout(timer);
       const log = err + out;

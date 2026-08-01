@@ -18,7 +18,7 @@ const arg = (k) => { const i = process.argv.indexOf(k); return i > 0 ? process.a
 function probeOllama() {
   return new Promise((resolve) => {
     const req = request({ host: "127.0.0.1", port: 11434, path: "/api/tags", timeout: 3000 }, (res) => {
-      let d = ""; res.on("data", (c) => (d += c));
+      res.setEncoding("utf8"); let d = ""; res.on("data", (c) => (d += c));
       res.on("end", () => {
         try {
           const models = (JSON.parse(d).models || []).map((m) => ({

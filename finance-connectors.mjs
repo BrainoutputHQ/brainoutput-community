@@ -24,6 +24,7 @@ export const VALUE_MOVING = new Set(["place-order", "cancel-order", "trade", "wi
 function httpsJson({ host, path, method = "GET", headers = {}, body = null, timeoutMs = 15000 }) {
   return new Promise((resolve, reject) => {
     const req = https.request({ host, path, method, timeout: timeoutMs, headers }, (res) => {
+      res.setEncoding("utf8");
       let d = "";
       res.on("data", (c) => (d += c));
       res.on("end", () => { try { const j = d ? JSON.parse(d) : {}; res.statusCode < 400 ? resolve(j) : reject(new Error(j.message || j.error_message || `HTTP ${res.statusCode}`)); } catch (e) { reject(e); } });

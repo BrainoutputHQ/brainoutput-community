@@ -29,7 +29,7 @@ async function run() {
   // ── 2. STUB local model (stands in for Ollama / an OpenAI-compatible endpoint) ──────────────────
   const port = await new Promise((res) => {
     server = http.createServer((req, resp) => {
-      let b = ""; req.on("data", (d) => (b += d));
+      req.setEncoding("utf8"); let b = ""; req.on("data", (d) => (b += d));
       req.on("end", () => { resp.writeHead(200, { "Content-Type": "application/json" });
         resp.end(JSON.stringify({ choices: [{ message: { content: "Hi — I'm your local model. To reset your password, use the link on the sign-in page." } }], usage: { total_tokens: 14 } })); });
     });

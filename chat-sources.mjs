@@ -33,6 +33,7 @@ function graphJson({ host = GRAPH, path, token, method = "GET", body = null }) {
         ...(payload ? { "content-type": "application/json", "content-length": Buffer.byteLength(payload) } : {}),
       } },
       (res) => {
+        res.setEncoding("utf8");
         let d = "";
         res.on("data", (c) => (d += c));
         res.on("end", () => {

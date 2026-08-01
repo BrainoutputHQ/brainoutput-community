@@ -34,7 +34,7 @@ console.log(`preflight: company config OK (${pre.errors.length} errors, ${pre.wa
 // substitute by role and SAY SO — never silently, and never a hidden failure.
 const installedModels = await new Promise((resolve) => {
   const req = httpRequest({ host: "127.0.0.1", port: 11434, path: "/api/tags", timeout: 2000 }, (res) => {
-    let d = ""; res.on("data", (c) => (d += c));
+    res.setEncoding("utf8"); let d = ""; res.on("data", (c) => (d += c));
     res.on("end", () => { try { resolve((JSON.parse(d).models || []).map((m) => m.name)); } catch { resolve([]); } });
   });
   req.on("error", () => resolve([])); req.on("timeout", () => { req.destroy(); resolve([]); }); req.end();

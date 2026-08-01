@@ -161,6 +161,7 @@ function graph({ path, method = "GET", form = null, requestImpl = null }) {
       { host: GRAPH_HOST, path: `/${GRAPH_VERSION}${path}`, method,
         headers: body ? { "content-type": "application/x-www-form-urlencoded", "content-length": Buffer.byteLength(body) } : {} },
       (res) => {
+        res.setEncoding("utf8");
         let d = "";
         res.on("data", (c) => (d += c));
         res.on("end", () => {
@@ -311,6 +312,7 @@ function linkedinRequest({ path, method = "POST", body, token, version, requestI
       "linkedin-version": version,
       ...(payload ? { "content-type": "application/json", "content-length": Buffer.byteLength(payload) } : {}),
     } }, (res) => {
+      res.setEncoding("utf8");
       let d = "";
       res.on("data", (c) => (d += c));
       res.on("end", () => {

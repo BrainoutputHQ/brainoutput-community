@@ -87,7 +87,7 @@ function davRequest({ url, method = "PROPFIND", headers = {}, body = "", timeout
   const lib = u.protocol === "https:" ? https : http;
   return new Promise((resolve, reject) => {
     const req = lib.request(u, { method, timeout: timeoutMs, headers: { "Content-Type": "application/xml", ...headers } },
-      (res) => { let d = ""; res.on("data", (c) => (d += c));
+      (res) => { res.setEncoding("utf8"); let d = ""; res.on("data", (c) => (d += c));
         res.on("end", () => (res.statusCode < 400 ? resolve({ status: res.statusCode, body: d })
           : reject(new Error(`webdav ${method} ${res.statusCode}`)))); });
     req.on("error", reject); req.on("timeout", () => req.destroy(new Error("webdav: timeout")));
