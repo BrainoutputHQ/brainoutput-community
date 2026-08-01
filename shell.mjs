@@ -277,20 +277,33 @@ function sidebar(){
  document.getElementById('locale').onchange=async(e)=>{await api('/api/settings',{locale:e.target.value});location.reload()};
 }
 
-// ── thread header: scope controls + promote ─────────────────────────────────
+// ── thread header: title + ONE "who answers" selector + promote ─────────────
+// Was three interdependent dropdowns (scope → department → agent) that changed meaning under the
+// user's feet. Now a single flat selector: the company, your Alter, or one department/agent.
 function thead(){
  const s=S.state||{};const h=document.getElementById('thead');h.innerHTML='';
  if(!onboarded(s)){h.appendChild(el('<span class=title>🏢 BrainOutput</span>'));return}
  const conv=(s.conversations||[]).find(c=>c.id===S.convId);
  const proj=conv&&conv.projectId?(s.projects||[]).find(p=>p.id===conv.projectId):null;
  h.appendChild(el('<span class=title>'+esc(proj?proj.name:(conv?(conv.title||(conv.messages[0]?String(conv.messages[0].text).slice(0,40):'')):'🏢 BrainOutput'))+'</span>'));
- const sc=el('<select><option value="company">'+esc(t('scope.company'))+'</option><option value="work-twin">'+esc(t('scope.work-twin'))+'</option><option value="department">'+esc(t('scope.department'))+'</option><option value="agent">'+esc(t('scope.agent'))+'</option></select>');
- sc.value=S.scope;sc.onchange=()=>{S.scope=sc.value;render()};h.appendChild(sc);
- if(S.scope==='department'){const dp=el('<select><option value="">—</option>'+(s.departments||[]).map(d=>'<option '+(S.dept===d?'selected':'')+'>'+esc(d)+'</option>').join('')+'</select>');
-  dp.onchange=()=>{S.dept=dp.value};h.appendChild(dp)}
- if(S.scope==='agent'){const ag=el('<select><option value="">—</option>'+(s.agents||[]).map(a=>'<option value="'+esc(a.id)+'" '+(S.agent===a.id?'selected':'')+'>'+esc(a.id)+'</option>').join('')+'</select>');
-  ag.onchange=()=>{S.agent=ag.value};h.appendChild(ag)}
- if(conv){const pr=el('<select style="margin-left:auto"><option value="">'+esc(t('shell.promote'))+'</option>'+(s.projects||[]).map(p=>'<option value="'+p.id+'">'+esc(p.name)+'</option>').join('')+'<option value="__new">+ '+esc(t('shell.newProject'))+'</option></select>');
+ // The single "talking to" selector. Value encoding: company | twin | dept:<name> | agent:<id>.
+ const cur=S.scope==='department'&&S.dept?'dept:'+S.dept:S.scope==='agent'&&S.agent?'agent:'+S.agent:S.scope==='work-twin'?'twin':'company';
+ const sel=el('<select id=talkto title="'+esc(t('thead.hint'))+'">'
+  +'<option value="company">'+esc(t('scope.company'))+'</option>'
+  +'<option value="twin">'+esc(t('scope.work-twin'))+'</option>'
+  +((s.departments||[]).length?'<optgroup label="'+esc(t('thead.departments'))+'">'+(s.departments||[]).map(d=>'<option value="dept:'+esc(d)+'">'+esc(d)+'</option>').join('')+'</optgroup>':'')
+  +((s.agents||[]).length?'<optgroup label="'+esc(t('thead.agents'))+'">'+(s.agents||[]).map(a=>'<option value="agent:'+esc(a.id)+'">'+esc(a.id)+'</option>').join('')+'</optgroup>':'')
+  +'</select>');
+ sel.value=cur;
+ sel.onchange=()=>{const v=sel.value;
+  if(v==='twin'){S.scope='work-twin';S.dept='';S.agent=''}
+  else if(v.startsWith('dept:')){S.scope='department';S.dept=v.slice(5);S.agent=''}
+  else if(v.startsWith('agent:')){S.scope='agent';S.agent=v.slice(6);S.dept=''}
+  else{S.scope='company';S.dept='';S.agent=''}
+  render()};
+ h.appendChild(el('<span class=mut style="font-size:12px">'+esc(t('thead.to'))+'</span>'));
+ h.appendChild(sel);
+ if(conv){const pr=el('<select style="margin-left:auto" title="'+esc(t('shell.promoteHint'))+'"><option value="">'+esc(t('shell.promote'))+'</option>'+(s.projects||[]).map(p=>'<option value="'+p.id+'">'+esc(p.name)+'</option>').join('')+'<option value="__new">+ '+esc(t('shell.newProject'))+'</option></select>');
   pr.onchange=async()=>{if(!pr.value)return;
    const body={conversationId:conv.id};
    if(pr.value==='__new'){const name=prompt(t('shell.projectName'));if(!name)return;body.newProjectName=name.trim()}
@@ -754,7 +767,7 @@ function thinking(on){
 function composer(){
  const s=S.state||{};
  const md=document.getElementById('modes');md.innerHTML='';
- ['ask','plan','execute','review'].forEach(m=>{const b=el('<button'+(S.mode===m?' class=on':'')+'>'+esc(t('mode.'+m))+'</button>');
+ ['ask','plan','execute','review'].forEach(m=>{const b=el('<button'+(S.mode===m?' class=on':'')+' title="'+esc(t('mode.tip.'+m))+'">'+esc(t('mode.'+m))+'</button>');
   b.onclick=()=>{S.mode=m;composer()};md.appendChild(b)});
  md.style.display=onboarded(s)?'flex':'none';
  const msg=document.getElementById('msg');msg.placeholder=t('composer.'+S.mode)||t('shell.composer');

@@ -441,3 +441,11 @@ test("brand: the logo icon ships, is served publicly, and the pages link it", as
   const login = await fetch(`${BASE}/assets/brand/logo/icon-dark-192.png`);
   assert.equal(login.status, 200, "serves without auth (the login page needs the favicon)");
 });
+
+test("the thread header is ONE flat 'talking to' selector — no cascading scope dropdowns", async () => {
+  const shell = await (await fetch(`${BASE}/`)).text();
+  assert.match(shell, /id=talkto/, "a single selector picks who answers");
+  assert.match(shell, /optgroup label/, "departments and agents are optgroups inside it");
+  assert.match(shell, /thead\.hint/, "an inline explanation exists");
+  assert.match(shell, /mode\.tip\.ask/, "composer modes explain themselves");
+});
