@@ -413,3 +413,12 @@ test("sources: connect a folder, see it connected (and INDEXED), reject duplicat
   assert.equal(ghost.status, 400);
   rmSync(dir, { recursive: true, force: true });
 });
+
+test("sidebar: consistent SVG line icons (no emoji iconography) + visible section separation", async () => {
+  const shell = await (await fetch(`${BASE}/`)).text();
+  assert.match(shell, /stroke="currentColor"/, "inline SVG icons render in brand-agnostic currentColor");
+  assert.doesNotMatch(shell, /vm-chat">💬|vm-work">🗂|vm-settings">⚙/, "no emoji in the view menu");
+  assert.match(shell, /ICONS=\{/, "the icon set is defined once");
+  assert.match(shell, /\.shead\{[^}]*border-top:1px solid/, "sections are separated by a rule line");
+  assert.match(shell, /\.pitem svg\{[^}]*margin-right/, "row icons align consistently");
+});

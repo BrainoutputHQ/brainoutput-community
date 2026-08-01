@@ -21,9 +21,13 @@ aside select{background:var(--inp);border:1px solid var(--line);color:var(--fg);
 .vmenu{display:flex;gap:4px;padding:2px 2px 8px;border-bottom:1px solid var(--line);margin-bottom:6px}
 .vmenu button{flex:1;background:none;border:1px solid transparent;color:var(--mut);border-radius:9px;padding:7px 4px;cursor:pointer;font-size:12.5px;font-weight:600}
 .vmenu button.on{background:var(--card2);color:var(--fg);border-color:var(--line)}
-.shead{color:var(--mut);font-size:11.5px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;margin:14px 6px 8px;display:flex;align-items:center}
+.shead{color:var(--mut);font-size:11.5px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;margin:18px 6px 8px;display:flex;align-items:center;gap:7px;padding-top:14px;border-top:1px solid var(--line)}
+.scroll>.shead:first-of-type{border-top:none;padding-top:0;margin-top:10px}
+.shead svg{opacity:.7}
 .shead button{margin-left:auto;background:none;border:1px solid var(--line);color:var(--mut);border-radius:8px;font-size:12px;padding:3px 10px;cursor:pointer}
 .shead button:hover{color:var(--fg);border-color:var(--acc)}
+.pitem svg{vertical-align:-2.5px;margin-right:9px;opacity:.8}
+.vmenu button svg{vertical-align:-2px;margin-right:5px}
 .pitem{display:block;width:100%;text-align:left;background:none;border:1px solid transparent;border-radius:10px;padding:9px 12px;color:var(--fg);cursor:pointer;font-size:14px;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .pitem:hover{background:var(--card2)}.pitem.on{background:var(--card2);border-color:var(--line)}
 .pitem .cnt{float:right;color:var(--mut);font-size:12px}
@@ -90,9 +94,9 @@ pre{background:var(--pre)!important}
  <div class=brand><span id=coname>🏢 BrainOutput</span><span class=tag id=tagline></span></div>
  <div class=scroll>
   <div class=vmenu>
-   <button id=vm-chat>💬 <span></span></button>
-   <button id=vm-work>🗂 <span></span></button>
-   <button id=vm-settings>⚙ <span></span></button>
+   <button id=vm-chat><i class=ic></i><span></span></button>
+   <button id=vm-work><i class=ic></i><span></span></button>
+   <button id=vm-settings><i class=ic></i><span></span></button>
   </div>
   <input id=qsearch class=inp style="margin:4px 0 8px;width:100%" placeholder="">
   <div class=shead><span id=lprojects></span><button id=newproj>+ <span id=lnewproj></span></button></div>
@@ -136,6 +140,19 @@ const t=(k)=>T[k]||k;
 const S={state:null,convId:null,projectId:null,mode:'ask',scope:'company',dept:'',agent:'',ob:null,view:'chat'};
 const esc=(s)=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const el=(h)=>{const d=document.createElement('div');d.innerHTML=h;return d.firstElementChild};
+// Consistent inline SVG line icons (stroke=currentColor, 24 grid) — no emoji as UI iconography.
+const ICONS={
+ chat:'<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+ work:'<rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/>',
+ settings:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
+ folder:'<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>',
+ database:'<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4.03 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/>',
+ mail:'<path d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/><path d="M22 6l-10 7L2 6"/>',
+ drive:'<path d="M22 12H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><path d="M6 16h.01"/><path d="M10 16h.01"/>',
+ apps:'<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/>',
+};
+const I=(n,sz=15)=>'<svg width="'+sz+'" height="'+sz+'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'+(ICONS[n]||'')+'</svg>';
+const FAMILY_ICON={mail:'mail',files:'drive',apps:'apps'};
 // Theme: LIGHT is the default (business look); the toggle persists a dark choice.
 try{if(localStorage.getItem('bo_theme')==='dark')document.body.classList.add('dark')}catch{}
 const toggleTheme=()=>{const d=document.body.classList.toggle('dark');try{localStorage.setItem('bo_theme',d?'dark':'light')}catch{}};
@@ -150,10 +167,10 @@ const saveOb=()=>{try{S.ob?localStorage.setItem('bo_ob',JSON.stringify(S.ob)):lo
 function sidebar(){
  const s=S.state||{};
  document.getElementById('tagline').textContent=t('app.tagline');
- document.getElementById('lprojects').textContent=t('shell.projects');
+ document.getElementById('lprojects').innerHTML=I('folder',12)+esc(t('shell.projects'));
  document.getElementById('lnewproj').textContent=t('shell.newProject');
- document.getElementById('ladhoc').textContent=t('shell.adHoc');
- document.getElementById('lsources').textContent=t('nav.sources');
+ document.getElementById('ladhoc').innerHTML=I('chat',12)+esc(t('shell.adHoc'));
+ document.getElementById('lsources').innerHTML=I('database',12)+esc(t('nav.sources'));
  document.getElementById('locale').value=LOCALE;
  document.getElementById('coname').textContent='🏢 '+(s.company?.name||'BrainOutput');
  document.getElementById('mconame').textContent=s.company?.name||'BrainOutput';
@@ -166,9 +183,10 @@ function sidebar(){
  };
  // navigating from the sidebar closes the mobile nav
  document.querySelectorAll('aside .pitem,aside .vmenu button').forEach(b=>b.addEventListener('click',()=>{document.body.classList.remove('nav-open');document.getElementById('scrim')?.remove()}));
- // view menu + mode dropdown + theme toggle
- const vm=[['chat',t('nav.chat')],['work',t('nav.work')],['settings',t('nav.settings')]];
- ['chat','work','settings'].forEach((v,i)=>{const b=document.getElementById('vm-'+v);if(!b)return;b.querySelector('span').textContent=vm[i][1];
+ // view menu + mode dropdown + theme toggle — icons are inline SVG, never emoji
+ const vm=[['chat',t('nav.chat'),'chat'],['work',t('nav.work'),'work'],['settings',t('nav.settings'),'settings']];
+ ['chat','work','settings'].forEach((v,i)=>{const b=document.getElementById('vm-'+v);if(!b)return;
+  b.querySelector('.ic').innerHTML=I(vm[i][2],14);b.querySelector('span').textContent=vm[i][1];
   b.className=S.view===v?'on':'';b.onclick=()=>{S.view=v;render()}});
  const tb=document.getElementById('themebtn');tb.textContent=document.body.classList.contains('dark')?'☀':'☾';
  tb.onclick=toggleTheme;
@@ -188,7 +206,7 @@ function sidebar(){
   const chip=f.state==='connected'?'<span class=cnt>✓'+(f.connected>1?' '+f.connected:'')+'</span>'
    :f.state==='available'?'<span class=cnt>+</span>'
    :'<span class=cnt>'+esc(t('sources.soon'))+'</span>';
-  const b=el('<button class="pitem">'+esc(f.icon)+' '+esc(t('sources.family.'+f.family))+chip+'</button>');
+  const b=el('<button class="pitem">'+I(FAMILY_ICON[f.family]||'apps')+esc(t('sources.family.'+f.family))+chip+'</button>');
   b.onclick=()=>{S.view='settings';render()};       // the catalog lives in Settings
   srcBox.appendChild(b)});
  document.querySelectorAll('aside .shead').forEach(h=>h.style.display=searching?'none':'flex');
@@ -210,14 +228,14 @@ function sidebar(){
  const proj=document.getElementById('projects');proj.innerHTML='';
  (s.projects||[]).forEach(p=>{
   const n=convs.filter(c=>c.projectId===p.id).length;
-  const b=el('<button class="pitem'+(S.projectId===p.id?' on':'')+'">'+esc(p.name)+(runningPids.has(p.id)?'<span class=wdot></span>':'')+'<span class=cnt>'+(n||'')+'</span></button>');
+  const b=el('<button class="pitem'+(S.projectId===p.id?' on':'')+'">'+I('folder')+esc(p.name)+(runningPids.has(p.id)?'<span class=wdot></span>':'')+'<span class=cnt>'+(n||'')+'</span></button>');
   b.onclick=()=>{S.projectId=p.id;S.convId=null;S.view='chat';render()};
   proj.appendChild(b)});
  if(!(s.projects||[]).length)proj.appendChild(el('<div class=mut style="font-size:13px;padding:4px 6px">'+esc(t('shell.emptyProjects'))+'</div>'));
  const ad=document.getElementById('adhoc');ad.innerHTML='';
  convs.filter(c=>!c.projectId).slice().reverse().slice(0,20).forEach(c=>{
   const label=c.title||(c.messages[0]?String(c.messages[0].text).slice(0,34):c.id);
-  const b=el('<button class="pitem'+(S.convId===c.id&&!S.projectId?' on':'')+'">'+esc(label)+'</button>');
+  const b=el('<button class="pitem'+(S.convId===c.id&&!S.projectId?' on':'')+'">'+I('chat')+esc(label)+'</button>');
   b.onclick=()=>{S.projectId=null;S.convId=c.id;S.view='chat';render()};
   ad.appendChild(b);
   const del=el('<button class="delchat" title="'+esc(t('chat.delete'))+'" style="float:right;background:none;border:none;color:var(--mut);cursor:pointer;font-size:12px;padding:6px">✕</button>');
