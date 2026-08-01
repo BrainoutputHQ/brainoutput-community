@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+<title>BrainOutput favicon</title>
+<rect width="512" height="512" rx="104" fill="#FFFFFF"/>
+<g transform="translate(32 18) scale(3.7)">
+<g fill="none" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M47 18
+           C35 18 28 25 28 36
+           C18 37 12 45 13 55
+           C5 61 5 74 13 80
+           C9 91 16 101 27 102
+           C28 115 39 123 51 119
+           C58 117 63 111 63 103
+           L63 31
+           C63 23 57 18 47 18Z"
+        stroke="#071D49" stroke-width="6"/>
+  <path d="M30 39 C37 34 44 37 47 43
+           M25 59 C34 54 43 58 47 66
+           M27 83 C36 78 45 82 49 90
+           M38 104 C44 101 49 103 52 108"
+        stroke="#071D49" stroke-width="5"/>
+  <path d="M66 34 H78 L88 24
+           M66 50 H82 L96 36
+           M66 66 H98
+           M66 82 H82 L96 96
+           M66 98 H76 V110"
+        stroke="#1677FF" stroke-width="6"/>
+  <circle cx="91" cy="21" r="5" stroke="#1677FF" stroke-width="5"/>
+  <circle cx="101" cy="33" r="5" stroke="#1677FF" stroke-width="5"/>
+  <circle cx="104" cy="66" r="5" stroke="#1677FF" stroke-width="5"/>
+  <circle cx="101" cy="99" r="5" stroke="#1677FF" stroke-width="5"/>
+  <circle cx="76" cy="115" r="5" stroke="#1677FF" stroke-width="5"/>
+</g></g>
+</svg>

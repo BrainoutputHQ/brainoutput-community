@@ -8,6 +8,7 @@
 // conversation. Zero-dep inline page; the multi-tab dashboard stays at /dashboard as the
 // advanced surface. All UI strings come from the embedded locale catalog (i18n.mjs).
 export const SHELL_PAGE = `<!doctype html><html lang="__BO_LOCALE__"><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>BrainOutput</title>
+<link rel="icon" type="image/svg+xml" href="/assets/brand/logo/brainoutput-favicon.svg">
 <link rel="icon" type="image/png" sizes="32x32" href="/assets/brand/logo/icon-light-32.png">
 <link rel="apple-touch-icon" href="/assets/brand/logo/icon-light-180.png">
 <style>

@@ -449,3 +449,12 @@ test("the thread header is ONE flat 'talking to' selector — no cascading scope
   assert.match(shell, /thead\.hint/, "an inline explanation exists");
   assert.match(shell, /mode\.tip\.ask/, "composer modes explain themselves");
 });
+
+test("brand: the SVG masters serve as first-choice favicon", async () => {
+  const shell = await (await fetch(`${BASE}/`)).text();
+  assert.match(shell, /type="image\/svg\+xml" href="\/assets\/brand\/logo\/brainoutput-favicon\.svg"/);
+  const svg = await fetch(`${BASE}/assets/brand/logo/brainoutput-favicon.svg`);
+  assert.equal(svg.status, 200);
+  assert.equal(svg.headers.get("content-type"), "image/svg+xml");
+  assert.match(await svg.text(), /<title>BrainOutput favicon<\/title>/);
+});
