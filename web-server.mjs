@@ -1338,7 +1338,6 @@ server.listen(PORT, HOST, () => {
 });
 
 const LOGIN_PAGE = `<!doctype html><html><head><meta charset=utf-8><title>BrainOutput — sign in</title>
-<link rel="icon" type="image/svg+xml" href="/assets/brand/logo/brainoutput-favicon.svg">
 <link rel="icon" type="image/png" sizes="32x32" href="/assets/brand/logo/icon-light-32.png">
 <style>body{font:15px/1.6 -apple-system,Segoe UI,Roboto,sans-serif;background:#0d1117;color:#e6edf3;display:grid;place-items:center;height:100vh;margin:0}
 form{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:28px;min-width:340px}
@@ -1353,7 +1352,6 @@ button{margin-top:12px;width:100%;padding:10px;border:0;border-radius:6px;backgr
 
 // ── single-page dashboard (inline, zero-dep) ────────────────────────────────────────────────────
 const PAGE = `<!doctype html><html><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>BrainOutput Community</title>
-<link rel="icon" type="image/svg+xml" href="/assets/brand/logo/brainoutput-favicon.svg">
 <link rel="icon" type="image/png" sizes="32x32" href="/assets/brand/logo/icon-light-32.png">
 <style>
 :root{--bg:#0f1115;--card:#181b22;--fg:#e6e9ef;--mut:#8b93a7;--acc:#4ea1ff;--ok:#3ddc84;--warn:#ffb454;--line:#252a35}

@@ -450,11 +450,11 @@ test("the thread header is ONE flat 'talking to' selector — no cascading scope
   assert.match(shell, /mode\.tip\.ask/, "composer modes explain themselves");
 });
 
-test("brand: the SVG masters serve as first-choice favicon", async () => {
+test("brand: the B monogram tiles serve as the favicon (PNG first choice)", async () => {
   const shell = await (await fetch(`${BASE}/`)).text();
-  assert.match(shell, /type="image\/svg\+xml" href="\/assets\/brand\/logo\/brainoutput-favicon\.svg"/);
-  const svg = await fetch(`${BASE}/assets/brand/logo/brainoutput-favicon.svg`);
-  assert.equal(svg.status, 200);
-  assert.equal(svg.headers.get("content-type"), "image/svg+xml");
-  assert.match(await svg.text(), /<title>BrainOutput favicon<\/title>/);
+  assert.match(shell, /rel="icon" type="image\/png" sizes="32x32" href="\/assets\/brand\/logo\/icon-light-32\.png"/);
+  assert.doesNotMatch(shell, /brainoutput-favicon\.svg/, "the superseded brain/circuit SVG is no longer the favicon");
+  const icon = await fetch(`${BASE}/assets/brand/logo/icon-light-32.png`);
+  assert.equal(icon.status, 200);
+  assert.equal(icon.headers.get("content-type"), "image/png");
 });

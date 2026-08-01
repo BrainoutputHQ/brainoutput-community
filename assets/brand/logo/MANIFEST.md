@@ -27,3 +27,11 @@ Rules:
   name in bold text with "Output" in the brand blue — never as a rasterized image. Alt: "BrainOutput".
 - Provenance: founder's "BrainOutput Logo Bundle" (ChatGPT share, 2026-08-01); SVGs regenerated
   verbatim from the bundle's embedded generator (symbol + templates + colors).
+
+## Current mark (2026-08-01, second bundle)
+
+The brand mark is now the **"B" monogram** (brain hemispheres forming the B's stem, circuit traces
+its bowls). Dark tile is the MAIN variant (glow on navy); bright tile for light contexts. The
+icon-light/dark PNGs in this folder ARE the B monogram. The earlier brain/circuit SVG lockups
+(`brainoutput-*.svg`) are SUPERSEDED — kept for reference only, not linked anywhere. A vector
+master of the B is pending from the designer; do not trace it.
