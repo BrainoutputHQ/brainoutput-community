@@ -18,6 +18,7 @@ export function efficiencyReport({ plan = [], results = [], shape = null, durati
     provider: r.provider || null,
     costSource: r.costSource || (r.gate ? "human-approval" : r.deterministic ? "deterministic-tool" : null),
     tokens: r.tokens || 0,
+    tokenScope: r.tokenScope || (r.tokens ? "total" : "unknown"),   // what the provider actually measured
     deterministic: !!r.deterministic,
     artifact: r.artifact || (Array.isArray(r.changedFiles) && r.changedFiles.length ? r.changedFiles.join(", ") : null),
   }));
@@ -27,6 +28,11 @@ export function efficiencyReport({ plan = [], results = [], shape = null, durati
 
   const managementCalls = results.filter((r) => /ceo|manager|management|relay/i.test(String(r.node))).length;
   const artifacts = perStage.map((p) => p.artifact).filter(Boolean);
+  // "total" only when every token-bearing stage reported full usage; a stage with output-only
+  // accounting makes the sum partial — displaying it as a grand total would undercount silently.
+  const measured = perStage.filter((p) => p.tokens > 0);
+  const tokensScope = !measured.length ? "unknown"
+    : measured.some((p) => p.tokenScope === "output-only") ? "partial" : "total";
 
   return {
     graph: shape,
@@ -34,6 +40,7 @@ export function efficiencyReport({ plan = [], results = [], shape = null, durati
     stagesSkipped,                                    // measured: which optional stages the graph did NOT use
     perStage,
     tokensTotal: perStage.reduce((s, p) => s + p.tokens, 0),
+    tokensScope,                                      // "total" | "partial" (output-only stages) | "unknown"
     byCostSource,
     managementCalls,                                  // factual: 0 in a direct-to-worker graph
     directToWorker: managementCalls === 0,
@@ -46,7 +53,8 @@ export function efficiencyReport({ plan = [], results = [], shape = null, durati
 
 /** One-line, values-only summary for a CLI/dashboard row (measured fields only). */
 export function efficiencyLine(rep) {
-  const skipped = rep.stagesSkipped.length ? `skipped: ${rep.stagesSkipped.join(", ")}` : "no stages skipped";
-  return `graph=${rep.graph} · ${skipped} · tokens=${rep.tokensTotal} · cost=${JSON.stringify(rep.byCostSource)} · management-calls=${rep.managementCalls}` +
+  const skipped = rep.stagesSkipped.length ? `not used: ${rep.stagesSkipped.join(", ")}` : "all optional stages used";
+  const tokens = rep.tokensScope === "partial" ? `~${rep.tokensTotal} (output-only)` : `${rep.tokensTotal}`;
+  return `graph=${rep.graph} · ${skipped} · tokens=${tokens} · cost=${JSON.stringify(rep.byCostSource)} · management-calls=${rep.managementCalls}` +
     (rep.durationMs != null ? ` · ${rep.durationMs}ms` : "");
 }

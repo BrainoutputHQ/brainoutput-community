@@ -13,14 +13,15 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { Store } from "./store.mjs";
 import { routeTask, makeCatalog, costReport, executionSummary, validateCompanyConfig } from "./ce-core.mjs";
-import { executePlan, runNode } from "./adapters.mjs";
+import { executePlan, runNode, execLogLine } from "./adapters.mjs";
 import { runOpenCode } from "./opencode-adapter.mjs";
 import { DEPARTMENT_TEMPLATES } from "./departments.mjs";
 import { detectConnections, generateOrg, recommendAssignments, applyOverrides, confirmZeroFunded, renderAgentView } from "./onboarding.mjs";
 import { runtimeCards, runtimeConnection, runtimeToConnection } from "./runtimes.mjs";
 import { applyAdvancedAgentConfig } from "./onboarding.mjs";
 import { newConversation, addMessage, pin, resolveMention, rollSummary, compactContext, draftMissionSpec,
-  editMissionSpec, approveMission, rejectMission, modeAllows, missionComposer, reviewMission, saveAsWorkflow, looksLikeWork } from "./chat.mjs";
+  editMissionSpec, approveMission, rejectMission, modeAllows, missionComposer, reviewMission, saveAsWorkflow, looksLikeWork,
+  askTail, inferDepartment, missionWorkerPrompt, unmetDeliverables, deliverableGapNote } from "./chat.mjs";
 import { connectRagSource, indexDocuments, searchRag } from "./rag.mjs";
 import { createWorkTwin, setMode as twinSetMode, connectWorkSource, grantTwinScope, twinPermission,
   indexMessages as twinIndex, retrieveForRequest, prioritySummary, unansweredThreads, extractCommitments,
@@ -64,7 +65,7 @@ const store = new Store();
 
 // ── server-side model detection (user LOCAL only; never a BrainOutput account) ────────────────
 function probe(host, port, path) {
-  return new Promise((res) => { const r = httpReq({ host, port, path, timeout: 2500 }, (x) => { let d = ""; x.on("data", (c) => (d += c)); x.on("end", () => res(d)); }); r.on("error", () => res("")); r.on("timeout", () => { r.destroy(); res(""); }); r.end(); });
+  return new Promise((res) => { const r = httpReq({ host, port, path, timeout: 2500 }, (x) => { x.setEncoding("utf8"); let d = ""; x.on("data", (c) => (d += c)); x.on("end", () => res(d)); }); r.on("error", () => res("")); r.on("timeout", () => { r.destroy(); res(""); }); r.end(); });
 }
 async function detectLocal() {
   const models = [];
@@ -97,7 +98,7 @@ const ctx = () => ({ agents: store.def.agents, assignments: store.def.modelAssig
 let uidCounter = 0;
 const uid = (p) => `${p}-${Date.now().toString(36)}-${(uidCounter += 1)}`;
 
-async function body(req) { return new Promise((res) => { let d = ""; req.on("data", (c) => (d += c)); req.on("end", () => { try { res(d ? JSON.parse(d) : {}); } catch { res({}); } }); }); }
+async function body(req) { return new Promise((res) => { req.setEncoding("utf8"); let d = ""; req.on("data", (c) => (d += c)); req.on("end", () => { try { res(d ? JSON.parse(d) : {}); } catch { res({}); } }); }); }
 const json = (res, obj, code = 200) => { res.writeHead(code, { "Content-Type": "application/json" }); res.end(JSON.stringify(obj)); };
 
 // ── Local-API guard: CSRF + DNS-rebinding ───────────────────────────────────────────────────────
@@ -780,7 +781,11 @@ async function chatSend(res, b) {
     // Auto-plan: a build request in Ask mode is work, not chat — draft the mission directly
     // (the user should never have to think about modes). Same draft path as Plan mode.
     const agent = conv.agentId ? (store.def.agents || []).find((a) => a.id === conv.agentId) : null;
-    const dept = conv.department || agent?.department || (store.def.departments || [])[0] || null;
+    // No explicit department? Infer it from the objective's vocabulary (a campaign belongs to
+    // marketing, not to whatever department happens to be listed first) — existing departments only.
+    const dept = conv.department || agent?.department
+      || inferDepartment(b.text || "", store.def.departments || [])
+      || (store.def.departments || [])[0] || null;
     mission = draftMissionSpec(conv, {
       department: dept,
       agents: agent ? [agent.id] : (store.def.agents || []).filter((a) => a.department === dept).map((a) => a.id).slice(0, 1),
@@ -797,9 +802,22 @@ async function chatSend(res, b) {
     // perfectly normal questions). With no model: knowledge hits or the configure guidance.
     rag = searchRag([knowledgeSource()], b.text || "", { agent: { id: conv.agentId, department: conv.department }, topK: 3 });
     const ctx = compactContext(conv, { query: b.text || "", k: 3 });
+    // The recent tail is what follow-ups resolve against ("do them", "and the second one?") —
+    // term-frequency retrieval alone sees no lexical overlap and loses the thread entirely.
+    const tail = askTail(conv, { n: 6 });
     let modelError = null;
     if (model.connection && !model.needsConfiguration) {
-      const prompt = `Answer the user briefly and helpfully, in the user's language. Use the company context below when it is relevant; if it is not relevant, answer from your own knowledge.\n\nCompany context:\n${rag.map((r) => `- ${r.text} (${r.citation})`).join("\n") || "(none yet)"}\n\nPinned constraints: ${ctx.pinned.map((p) => p.text).join("; ") || "none"}\n\nUser: ${b.text}`;
+      const prompt = `Answer the user briefly and helpfully, in the user's language. Use the recent conversation and the company context below when relevant; if they are not relevant, answer from your own knowledge.
+
+Recent conversation (oldest first):
+${tail.map((m) => `${m.role}: ${m.text}`).join("\n") || "(none yet)"}
+
+Company context:
+${rag.map((r) => `- ${r.text} (${r.citation})`).join("\n") || "(none yet)"}
+
+Pinned constraints: ${ctx.pinned.map((p) => p.text).join("; ") || "none"}
+
+User: ${b.text}`;
       try {
         // 800 tokens: reasoning models (deepseek-flash & co.) think first — a small budget used
         // to be eaten entirely by reasoning and surfaced as "no model configured", which was a lie.
@@ -816,7 +834,9 @@ async function chatSend(res, b) {
     const gate = modeAllows(mode, "draft-plan");
     if (!gate.allowed) return json(res, { error: gate.reason }, 400);
     const agent = conv.agentId ? (store.def.agents || []).find((a) => a.id === conv.agentId) : null;
-    const dept = conv.department || agent?.department || (store.def.departments || [])[0] || null;
+    const dept = conv.department || agent?.department
+      || inferDepartment(b.text || "", store.def.departments || [])
+      || (store.def.departments || [])[0] || null;
     mission = draftMissionSpec(conv, {
       department: dept,
       agents: agent ? [agent.id] : (store.def.agents || []).filter((a) => a.department === dept).map((a) => a.id).slice(0, 1),
@@ -979,14 +999,17 @@ async function chatLaunch(res, b) {
       ? `\n\nThe deliverable is a DOCUMENT. Output ONLY a fenced file spec, nothing else:\n\`\`\`file:spec.json\n{"title":"…","pages":[{"heading":"…","lines":["…","…"],"images":["uploaded-file-name.jpg"]}]}\n\`\`\`\nAvailable uploaded images you may embed: ${imageNames.join(", ") || "(none — leave images out)"}.${siteText ? `\nAbout the business (from its own website — use THESE facts, never invent others): ${siteText}` : ""}`
       : "";
     // Cold-start contract: a worker in a project gets the project's compact brief — what
-    // shipped, what is open, the pinned decisions. Never the transcripts.
+    // shipped, what is open, the pinned decisions. Never the transcripts. And EVERY worker gets
+    // the company line — without it a worker invents "a generic lifestyle brand" for a hotel.
     const brief = m.projectId ? projectBrief(store.runtime, m.projectId) : null;
-    const briefSection = brief ? `\n\nProject context (so you don't start cold):\n${brief}` : "";
-    const prompt = `${m.objective}\n\nConstraints: ${(m.constraints || []).join("; ") || "none"}\nAcceptance: ${(m.acceptanceCriteria || []).join("; ") || "none"}${briefSection}\n\nDo not ask for clarification. Make reasonable assumptions (state them in one line), then produce the COMPLETE deliverable — the full file or content itself, not a description or plan of it.${fileInstruction}`;
+    const prompt = missionWorkerPrompt({
+      objective: m.objective, constraints: m.constraints, acceptanceCriteria: m.acceptanceCriteria,
+      brief, company: store.def.company || null, fileInstruction,
+    });
     const updateExec = (patch) => { store.addExecution({ ...exec, ...patch }); store.saveRuntime(); };
     const onNodeDone = (result, i) => {
       exec.results.push(result);
-      exec.logs.push(`${result.node}: ${result.output ? String(result.output).slice(0, 400) : result.needsConfiguration ? "UNCONFIGURED → offer free/BYOK/local/stop" : result.gate ? "human approval required" : ""}`);
+      exec.logs.push(execLogLine(result));
       if (exec.graph[i]) exec.graph[i] = { ...exec.graph[i], status: "done" };
       updateExec({});
     };
@@ -1036,8 +1059,9 @@ async function chatLaunch(res, b) {
         eff.artifacts.push(`file:${fname}${skippedImages.length ? ` (skipped non-JPEG: ${skippedImages.join(", ")})` : ""}`);
       } catch (e) { eff.artifacts.push(`file-spec-error: ${String(e.message || e).slice(0, 120)}`); }
     }
-    updateExec({ results, costBySource: rep.byCostSource, efficiency: eff, status: "done",
-      logs: results.flatMap((x) => x.logs || (x.output ? [String(x.output)] : [])) });
+    // Logs stay SNIPPETS (exec.logs accumulated via execLogLine) — the run view renders full
+    // outputs separately; writing them into logs too duplicated every deliverable in the thread.
+    updateExec({ results, costBySource: rep.byCostSource, efficiency: eff, status: "done" });
     const gates = r.plan.filter((n) => n.gate);
     for (const n of gates)
       store.addApproval({ id: uid("appr"), missionId: m.id, executionId: exec.id, kind: "action",
@@ -1049,8 +1073,12 @@ async function chatLaunch(res, b) {
     if (spineTask && !pending) store.addTask(reportMissionToTask(store.runtime, spineTask.id, { missionId: m.id, ok: true,
       summary: results.map((x) => x.output).filter(Boolean).join(" | ").slice(0, 200) || "done", artifacts: eff.artifacts, at: Date.now() }));
     const review = reviewMission(done, results);
+    // Say what was NOT delivered. "Generate the pic" with no image-gen model configured produced
+    // the copy, not the picture — "Mission complete" alone would be a lie by omission.
+    const imageGenAvailable = !!(store.def.modelAssignments || {})["image-gen"];
+    const gaps = unmetDeliverables(m.objective, eff.artifacts, { imageGenAvailable });
     const c2 = conv ? addMessage(conv, { role: "assistant", mode: "execute", at: Date.now(),
-      text: `Mission complete${retried ? " (after a retry with a bigger output budget)" : ""} — graph ${eff.graph}${eff.stagesSkipped.length ? `, skipped ${eff.stagesSkipped.join(", ")}` : ""}. ${review.allMet ? "Acceptance criteria met." : review.unmet.length ? `Unmet: ${review.unmet.join("; ")}` : ""}`,
+      text: `Mission complete${retried ? " (after a retry with a bigger output budget)" : ""} — graph ${eff.graph}${eff.stagesSkipped.length ? `, stages not used: ${eff.stagesSkipped.join(", ")}` : ""}. ${review.allMet ? "Acceptance criteria met." : review.unmet.length ? `Unmet: ${review.unmet.join("; ")}` : ""}${deliverableGapNote(gaps)}`,
       meta: { executionId: exec.id, efficiency: eff } }) : null;
     if (c2) saveConversation(c2);
     store.saveRuntime();
@@ -1224,7 +1252,7 @@ async function runTask(res, b) {
   for (const n of r.plan) if (n.gate) store.addApproval({ id: uid("appr"), taskId: task.id, kind: "action", status: "pending" });
   const exec = store.addExecution({ id: uid("exec"), taskId: task.id, agent: r.agent, department: r.department, shape: r.shape,
     graph: r.plan.map((n) => ({ node: n.node, slot: n.slot, model: n.model?.model || null, provider: n.model?.provider || null, costSource: n.model?.costSource || (n.tool ? "deterministic" : n.gate ? "human-approval" : null), needsConfiguration: !!n.model?.needsConfiguration })),
-    results: rep.nodes, logs: results.map((x) => `${x.node}: ${x.output ? String(x.output).slice(0, 400) : x.needsConfiguration ? "UNCONFIGURED → offer free/BYOK/local/stop" : x.gate ? "human approval required" : x.deterministic ? JSON.stringify(x.output) : ""}`),
+    results: rep.nodes, logs: results.map(execLogLine),
     artifacts: rep.nodes.filter((n) => n.artifact).map((n) => n.artifact),
     codeFiles: results.flatMap((x) => (x.files || []).map((f) => ({ node: x.node, name: f.name, content: f.content }))),
     executorByNode: Object.fromEntries(results.map((x) => [x.node, x.executor || "chat"])),
@@ -1238,7 +1266,7 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname.startsWith("/api/")) { try { await api(req, res, url); } catch (e) { recordError(store, { source: "api", message: e.message, stack: e.stack }); json(res, { error: String(e.message || e) }, 500); } return; }
   // Sign-in (hosted mode only). Constant-time compare; the token lands in an HttpOnly cookie.
   if (ACCESS_TOKEN && url.pathname === "/login" && req.method === "POST") {
-    const body = await new Promise((r) => { let d = ""; req.on("data", (c) => (d += c)); req.on("end", () => r(d)); });
+    const body = await new Promise((r) => { req.setEncoding("utf8"); let d = ""; req.on("data", (c) => (d += c)); req.on("end", () => r(d)); });
     const given = new URLSearchParams(body).get("token") || "";
     const a = Buffer.from(given), b = Buffer.from(ACCESS_TOKEN);
     if (a.length === b.length && timingSafeEqual(a, b)) {
@@ -1377,7 +1405,7 @@ const VIEWS={
    +'<div class=card><h2>Recent runs</h2>'
     +(ex.length?ex.slice(0,6).map(e=>'<div class=node style="display:block;margin-bottom:8px">'
       +'<b>'+(e.department||'-')+'</b> · '+e.shape+' · '+(e.graph||[]).map(g=>g.node+(g.model?'['+g.provider+'/'+g.model+']':'')).join(' → ')
-      +(e.efficiency&&e.efficiency.stagesSkipped&&e.efficiency.stagesSkipped.length?'<div class=mut style="font-size:12px">skipped: '+e.efficiency.stagesSkipped.join(', ')+' · '+(e.efficiency.tokensTotal||0)+' tokens</div>':'')
+      +(e.efficiency&&e.efficiency.stagesSkipped&&e.efficiency.stagesSkipped.length?'<div class=mut style="font-size:12px">stages not used: '+e.efficiency.stagesSkipped.join(', ')+' · '+(e.efficiency.tokensScope==='partial'?'~':'')+(e.efficiency.tokensTotal||0)+' tokens'+(e.efficiency.tokensScope==='partial'?' (output-only)':'')+'</div>':'')
       +'</div>').join('')
       :'<span class=mut>Nothing has run yet.</span>')+'</div></div>');
   d.querySelector('#newwork').onclick=()=>{S.settingsOpen=false;S.tab='chat';S.chat.mode='plan';render()};

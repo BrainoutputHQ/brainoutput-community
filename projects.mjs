@@ -6,6 +6,7 @@
 //
 // The runtime `projects` collection is shared with saved workflows (kind:"workflow") —
 // everything here filters on kind:"project" and never touches workflow records.
+import { safeSlice } from "./ce-core.mjs";
 export const PROJECT_KIND = "project";
 
 export function newProject({ id, name, at = null } = {}) {
@@ -67,10 +68,12 @@ export function projectBrief(runtime, projectId, { maxLen = 700 } = {}) {
   const pinned = (runtime.conversations || []).filter((c) => c.projectId === project.id)
     .flatMap((c) => c.pinned || []).slice(-5);
   const parts = [`project "${project.name}" — ${digest.missions} mission(s), ${digest.executions} run(s), ${digest.threads} conversation(s).`];
-  if (done.length) parts.push(`done: ${done.map((t) => `${t.title} → ${(t.result.summary || "").slice(0, 60)}`).join("; ")}`);
-  if (open.length) parts.push(`open: ${open.map((t) => t.title).join("; ")}`);
-  if (pinned.length) parts.push(`decisions: ${pinned.map((p) => p.text).join("; ")}`);
-  return parts.join("\n").slice(0, maxLen);
+  // Say exactly what these are: "open: do something; do something else" read like a STATUS string,
+  // and a model answered "the project hasn't started" while two open tasks stared at it.
+  if (done.length) parts.push(`recently completed tasks (${done.length}): ${done.map((t) => `"${t.title}" → ${safeSlice(t.result.summary || "", 60)}`).join("; ")}`);
+  if (open.length) parts.push(`open tasks (${open.length}): ${open.map((t) => `"${t.title}"`).join("; ")}`);
+  if (pinned.length) parts.push(`pinned decisions (${pinned.length}): ${pinned.map((p) => `"${p.text}"`).join("; ")}`);
+  return safeSlice(parts.join("\n"), maxLen);
 }
 
 /**

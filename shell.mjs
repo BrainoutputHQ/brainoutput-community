@@ -277,8 +277,9 @@ function runCard(ex){
  const outs=(ex.results||[]).map((r,i)=>({node:r.node||('output '+(i+1)),output:String(r.output||'')})).filter(r=>r.output.trim());
  const d=el('<div class="cardx"><h3>'+esc(t('run.title'))+' · '+esc(ex.department||'')+' · <span class="'+(running?'warn':'ok')+'">'+(running?esc(t('run.running')):esc(ex.status||''))+'</span></h3>'
   +'<div class=mut style="font-size:13px">'+rows+'</div>'
-  +'<div class=mut style="font-size:13px;margin-top:4px">'+(eff.tokensTotal!=null?esc(eff.tokensTotal)+' '+esc(t('run.tokens')):'')
-   +(eff.stagesSkipped&&eff.stagesSkipped.length?' · '+esc(t('run.skipped'))+': '+esc(eff.stagesSkipped.join(', ')):'')+'</div>'
+   +'<div class=mut style="font-size:13px;margin-top:4px">'+(eff.tokensTotal!=null?esc(eff.tokensTotal)+' '+esc(t('run.tokens')):'')
+    +(eff.tokensScope==='partial'?' <span class=warn title="'+esc(t('run.tokensPartial'))+'">('+esc(t('run.tokensPartial'))+')</span>':'')
+    +(eff.stagesSkipped&&eff.stagesSkipped.length?' · '+esc(t('run.skipped'))+': '+esc(eff.stagesSkipped.join(', ')):'')+'</div>'
   +(artifacts.length?'<div style="margin-top:10px"><b style="font-size:13px">'+esc(t('run.artifacts'))+'</b><div class=mut style="font-size:13px">'+artifacts.map(esc).join('<br>')+'</div></div>':'')
   +(((S.state||{}).artifacts||[]).filter(a=>a.executionId===ex.id).map(a=>'<a href="/api/artifact/download?id='+esc(a.id)+'" target="_blank" title="'+esc(t('run.download'))+'" style="display:inline-flex;align-items:center;gap:6px;margin:8px 8px 0 0;padding:7px 12px;border:1px solid var(--acc);border-radius:10px;font-size:13px;text-decoration:none;color:var(--acc)"><span style="font-size:16px">📄</span><b>'+esc(a.name)+'</b><span class=mut>'+Math.round(a.size/1024)+' KB</span></a>').join(''))
   +(files.length?'<div style="margin-top:10px"><b style="font-size:13px">'+esc(t('run.files'))+'</b>'+files.map(f=>'<details style="margin-top:4px"><summary style="font-size:13px">'+esc(f.name)+'</summary><pre style="background:#0b0d11;border:1px solid var(--line);border-radius:8px;padding:10px;font-size:12px;overflow:auto;white-space:pre-wrap">'+esc(f.content)+'</pre></details>').join('')+'</div>':'')

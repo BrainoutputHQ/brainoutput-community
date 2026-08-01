@@ -8,7 +8,7 @@
 // Modes: ask (read-only) · plan (build an editable MissionSpec, no external writes) · execute (only
 // after approval) · review (compare against acceptance criteria).
 // No simulated agent-to-agent chatter, no management relay, no idle heartbeats. Pure logic; zero-dep.
-import { planGraph, selectPolicies } from "./ce-core.mjs";
+import { planGraph, selectPolicies, safeSlice } from "./ce-core.mjs";
 
 export const CHAT_SCOPES = ["work-twin", "company", "department", "agent"];
 export const CHAT_MODES = ["ask", "plan", "execute", "review"];
@@ -16,14 +16,93 @@ export const CHAT_MODES = ["ask", "plan", "execute", "review"];
 /**
  * Does this message ask for WORK to be produced (not a question)? Imperative verbs at the
  * start ("crée", "build", "erstelle") or "X-moi" / "me X" forms — and NOT a question.
+ * "I need to create…" / "need a pdf" forms count too: first-time users ask for work in
+ * polite phrasing, and silently treating it as a question strands them in Ask mode.
  * Used to auto-draft a mission in Ask mode: a user should never have to think about modes.
  */
 export function looksLikeWork(text = "") {
   const s = String(text).trim();
   if (!s || /\?\s*$/.test(s)) return false;
-  return /^(cr[ée]e?r?|créer|fais|faire|fabrique|build|make|create|write|implement|code|développe?|develop|génère|generate|erstelle?|baue?|schreibe|mach)\b/i.test(s)
+  return /^(cr[ée]e?r?|créer|fais|faire|fabrique|build|make|create|write|implement|code|développe?|develop|génère|generate|draft|erstelle?|baue?|schreibe|mach)\b/i.test(s)
     || /(crée?|fais|fabrique|build|make|create|write|génère)[- ](moi|me|nous|uns)\b/i.test(s)
-    || /^(crée|fais|build|make|create)\s+(a|an|un|une|le|la|the|some|this)\b/i.test(s);
+    || /^(crée|fais|build|make|create)\s+(a|an|un|une|le|la|the|some|this)\b/i.test(s)
+    || /^(i\s+)?(need|want|would like|brauche)\s+(to\s+)?(a\s+|an\s+|une?\s+)?(create|build|make|write|generate|draft|produce)\b/i.test(s)
+    || /^(i\s+)?(need|want)\s+(a|an|un|une|eine?)\s+\S*(campaign|pdf|document|brochure|report|post|page|site|deck|presentation|visuel|image)\b/i.test(s);
+}
+
+/** The recent conversation tail — the context follow-ups actually resolve against. Retrieval
+ *  (term frequency) CANNOT resolve "do them" or "and the second one?" — nothing overlaps
+ *  lexically. Recency can. Ask mode sends this alongside retrieval, never the whole transcript. */
+export function askTail(conversation, { n = 6, maxLen = 350 } = {}) {
+  return (conversation.messages || []).slice(-n).map((m) => ({ role: m.role, text: safeSlice(m.text, maxLen) }));
+}
+
+/**
+ * Infer a department from the objective's vocabulary — against the company's EXISTING
+ * departments only. Used when the user never picked one: without it, everything drafted from a
+ * company-scope chat lands on whatever department happens to be first (a marketing campaign went
+ * to "technical" because it was the only configured team — with no word about the mismatch).
+ */
+const DEPARTMENT_VOCABULARY = {
+  marketing: ["marketing", "campaign", "instagram", "ig post", "social media", "social post", "tweet", "linkedin", "facebook", "tiktok", "newsletter", "seo", "brand", "promotion", "promo", "ad campaign", "ads", "campagne", "publicité", "werbung", "kampagne"],
+  sales: ["sales", "deal", "lead", "prospect", "quote", "proposal", "crm", "vente", "devis", "verkauf", "angebot"],
+  finance: ["invoice", "invoices", "accounting", "budget", "tax", "payment", "payroll", "expense", "bookkeeping", "facture", "comptabilité", "rechnung", "buchhaltung"],
+  "customer-service": ["support", "ticket", "customer question", "refund", "complaint", "customer service", "helpdesk", "remboursement", "rek lamation", "kundensupport"],
+  "legal-compliance": ["contract", "legal", "gdpr", "compliance", "privacy policy", "terms", "contrat", "juridique", "vertrag", "rechtlich"],
+  "human-resources": ["hiring", "recruit", "job posting", "interview", "onboarding", "hr", "payroll review", "recrutement", "embauche", "einstellung", "bewerbung"],
+  technical: ["code", "bug", "deploy", "api", "software", "implement", "refactor", "repository", "script", "migration", "déployer", "bereitstellen"],
+  "data-research": ["research", "analysis", "benchmark", "dataset", "data report", "survey", "recherche", "analyse", "analyse de", "datenanalyse"],
+  operations: ["operations", "logistics", "inventory", "supplier", "procurement", "logistique", "inventaire", "lieferanten"],
+};
+export function inferDepartment(objective = "", departments = []) {
+  const text = ` ${String(objective).toLowerCase()} `;
+  let best = null, bestHits = 0;
+  for (const dept of departments) {
+    const vocab = DEPARTMENT_VOCABULARY[dept];
+    if (!vocab) continue;
+    const hits = vocab.filter((w) => text.includes(` ${w}`) || text.includes(`${w} `) || text.includes(` ${w} `)).length;
+    if (hits > bestHits) { best = dept; bestHits = hits; }
+  }
+  return best;                                   // null → caller falls back, honestly
+}
+
+/**
+ * Is the deliverable meant for the public or for customers (social post, campaign, newsletter,
+ * press, customer email, published page)? Public-facing work gets an independent REVIEWER stage
+ * by default — a brand mistake outside is costlier than a slow draft inside. The human still
+ * approves the mission itself before launch; this adds machine review inside the graph.
+ */
+export const PUBLIC_FACING_RE = /instagram|ig post|social (media|post)|tweet|linkedin|facebook|tiktok|newsletter|press release|campaign|campagne|public|publish|blog post|customer (email|mail|reply)|promo(ption)?|ad(s| campaign)?\b|affisch|werbung|posted?\b/i;
+
+/** What the objective promised but the run could not produce. Honesty over "Mission complete". */
+export function unmetDeliverables(objective = "", artifacts = [], { imageGenAvailable = false } = {}) {
+  const gaps = [];
+  const wantsImage = /\b(pic|pics|picture|photo|image|images|visual|visuals|logo|illustration|graphic|banner|poster|flyer|bild|visuel)\b/i.test(String(objective));
+  const hasImage = (artifacts || []).some((a) => /^file:.*\.(png|jpe?g|webp|svg)$/i.test(String(a)) || /^image:/i.test(String(a)));
+  if (wantsImage && !hasImage && !imageGenAvailable) gaps.push("image");
+  return gaps;
+}
+
+/** One honest line naming what the run did NOT deliver and why. */
+export function deliverableGapNote(gaps = []) {
+  if (!gaps.length) return "";
+  const parts = [];
+  if (gaps.includes("image"))
+    parts.push("the picture itself was NOT rendered — no image-generation model is configured. What you have is the copy plus a ready-to-use image prompt. Assign an image-gen model (Settings → Model assignment) to render images directly.");
+  return ` Heads-up: ${parts.join(" ")}`;
+}
+
+/**
+ * The worker prompt for a chat-launched mission. The COMPANY LINE is the fix for invented
+ * businesses: a worker with no company context makes up "a generic lifestyle brand" when the
+ * company is a hotel. One line of truth beats a paragraph of assumptions.
+ */
+export function missionWorkerPrompt({ objective, constraints = [], acceptanceCriteria = [], brief = null, company = null, fileInstruction = "" } = {}) {
+  const companySection = company?.name
+    ? `\n\nCompany: ${company.name}${company.does ? ` — ${company.does}` : ""}${company.website ? ` (${company.website})` : ""}. The work is for THIS company; never invent a different business, product, or brand.`
+    : "";
+  const briefSection = brief ? `\n\nProject context (so you don't start cold):\n${brief}` : "";
+  return `${objective}\n\nConstraints: ${(constraints || []).join("; ") || "none"}\nAcceptance: ${(acceptanceCriteria || []).join("; ") || "none"}${companySection}${briefSection}\n\nDo not ask for clarification. Make reasonable assumptions (state them in one line), then produce the COMPLETE deliverable — the full file or content itself, not a description or plan of it.${fileInstruction}`;
 }
 
 const tokenize = (s) => (String(s).toLowerCase().match(/[a-z0-9]+/g) || []).filter((w) => w.length > 2);
@@ -139,10 +218,14 @@ export function draftMissionSpec(conversation, {
   const dept = department || conversation.department || null;
 
   const bound = selectPolicies({ department: dept, tags }, policies);
+  // Public-facing work (social posts, campaigns, customer mail, published pages) carries an
+  // independent reviewer by default — see PUBLIC_FACING_RE. An explicit `risk` still wins.
+  const publicFacing = PUBLIC_FACING_RE.test(obj);
   const task = {
     summary: obj, tags,
     ...(complexity ? { complexity } : {}),
     ...(risk ? { risk } : {}),
+    ...(publicFacing ? { requireReview: true } : {}),
     policies: bound,
   };
   const graph = planGraph(task);

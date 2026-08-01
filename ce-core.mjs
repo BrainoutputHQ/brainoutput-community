@@ -17,6 +17,15 @@ export const COST_SOURCES = ["free", "user-subscription", "user-api-account", "l
 // A connection's funder is who pays for the tokens. "brainoutput" is FORBIDDEN in Community.
 export const ALLOWED_FUNDERS = ["free", "user", "local"];
 
+/**
+ * Truncate without ever splitting a surrogate pair — a naive String.slice can cut an emoji in
+ * half and print a replacement char into logs, briefs and deliverables.
+ */
+export function safeSlice(s, n) {
+  const chars = [...String(s ?? "")];
+  return chars.length <= n ? chars.join("") : chars.slice(0, n).join("");
+}
+
 // BrainOutput's dev credentials/models that must NEVER back a Community connection.
 const DEV_ONLY_MARKERS = [/^kimi-for-coding\b/i, /sk-fleet/i];
 

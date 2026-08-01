@@ -4,7 +4,16 @@
 // no BrainOutput-funded inference. Deterministic tools and human-approval use NO model at all.
 import http from "node:http";
 import https from "node:https";
-import { resolveApprovalGate, escalationBrief } from "./ce-core.mjs";
+import { resolveApprovalGate, escalationBrief, safeSlice } from "./ce-core.mjs";
+
+/**
+ * One live log line for a finished node — a bounded SNIPPET, never the full output (the run view
+ * renders full outputs separately; putting them in logs too duplicated every deliverable in the
+ * thread). safeSlice never splits a surrogate pair, so the cut can't print a �.
+ */
+export function execLogLine(result) {
+  return `${result.node}: ${result.output ? safeSlice(result.output, 400) : result.needsConfiguration ? "UNCONFIGURED → offer free/BYOK/local/stop" : result.gate ? "human approval required" : result.deterministic ? safeSlice(JSON.stringify(result.output), 400) : ""}`;
+}
 
 // Minimal OpenAI-compatible /v1/chat/completions client (works with ollama, local, or BYOK).
 export async function chatCompletion({ endpoint, model, apiKey, prompt, maxTokens = 512, timeoutMs = 60000 }) {
@@ -15,6 +24,9 @@ export async function chatCompletion({ endpoint, model, apiKey, prompt, maxToken
   if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
   return new Promise((resolve, reject) => {
     const req = lib.request(url, { method: "POST", headers, timeout: timeoutMs }, (res) => {
+      // setEncoding(utf8) → StringDecoder holds a multibyte char split across TCP chunks instead of
+      // corrupting it (per-chunk Buffer.toString produced "🕶��" in stored deliverables).
+      res.setEncoding("utf8");
       let data = ""; res.on("data", (d) => (data += d));
       res.on("end", () => {
         let j;
@@ -42,7 +54,14 @@ export async function chatCompletion({ endpoint, model, apiKey, prompt, maxToken
           return reject(new Error(`model '${model}' returned no content — ${why}`));
         }
         const usage = j.usage || {};
-        resolve({ content, tokens: usage.total_tokens ?? ((usage.prompt_tokens || 0) + (usage.completion_tokens || 0)), raw: j });
+        // Honest token accounting: some providers report only completion tokens (or nothing).
+        // Displaying a partial sum as "tokens" undercounts by the whole prompt — say what was measured.
+        const hasTotal = usage.total_tokens != null;
+        const hasBoth = usage.prompt_tokens != null && usage.completion_tokens != null;
+        const tokens = hasTotal ? usage.total_tokens : hasBoth ? usage.prompt_tokens + usage.completion_tokens
+          : usage.completion_tokens ?? 0;
+        const tokenScope = hasTotal || hasBoth ? "total" : usage.completion_tokens != null ? "output-only" : "unknown";
+        resolve({ content, tokens, tokenScope, raw: j });
       });
     });
     req.on("error", reject); req.on("timeout", () => req.destroy(new Error("timeout")));
@@ -104,13 +123,13 @@ export async function runNode(node, nodeModel, input = {}, opts = {}) {
     if (!review || typeof review.pass !== "boolean")
       review = { pass: false, flags: ["reviewer verdict not parseable — escalate to human"], notes: rr.content || "", recommendation: "hold for human decision" };
     if (!Array.isArray(review.flags)) review.flags = [];
-    return { ...base, tokens: rr.tokens, review, output: rr.content };
+    return { ...base, tokens: rr.tokens, tokenScope: rr.tokenScope, review, output: rr.content };
   }
 
   const prompt = input.prompt || opts.prompt || "Respond concisely.";
   if (opts.dryRun) return { node: node.node, model: conn.model, provider: conn.provider, costSource: conn.costSource, funder: conn.funder, tokens: 0, artifact: "(dry-run: not executed)", output: null };
   const r = await chatCompletion({ endpoint, model: conn.model, apiKey, prompt, maxTokens: opts.maxTokens || 400, timeoutMs: opts.timeoutMs || 60000 });
-  return { node: node.node, model: conn.model, provider: conn.provider, costSource: conn.costSource, funder: conn.funder, tokens: r.tokens, output: r.content, artifact: `completion:${conn.provider}/${conn.model}` };
+  return { node: node.node, model: conn.model, provider: conn.provider, costSource: conn.costSource, funder: conn.funder, tokens: r.tokens, tokenScope: r.tokenScope, output: r.content, artifact: `completion:${conn.provider}/${conn.model}` };
 }
 
 // Run a whole routed plan; returns the results array (feed to ce-core.costReport).

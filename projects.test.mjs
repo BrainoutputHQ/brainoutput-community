@@ -113,8 +113,8 @@ test("projectBrief: the cold-start contract — shipped, open, decisions; bounde
   r.conversations.push({ id: "c9", projectId: "p1", pinned: [{ kind: "decision", text: "no Stripe until v2" }] });
   const b = projectBrief(r, "p1");
   assert.match(b, /project "pdf-saas"/);
-  assert.match(b, /converter → 3 formats shipped/);
-  assert.match(b, /open: stripe keys/);
+  assert.match(b, /"converter" → 3 formats shipped/);
+  assert.match(b, /open tasks \(1\): "stripe keys"/);
   assert.match(b, /no Stripe until v2/);
   assert.ok(b.length <= 700);
   assert.equal(projectBrief(r, "ghost"), null);
