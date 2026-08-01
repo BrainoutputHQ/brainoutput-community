@@ -32,6 +32,7 @@ import { createWorkTwin, setMode as twinSetMode, connectWorkSource, grantTwinSco
 import { connectMailSource, workSourceOptions, smtpSend } from "./mail-sources.mjs";
 import { draftConnectorSpec, connectorGuide, missingConfig, connectorBuildPlan } from "./connector-builder.mjs";
 import { LocalNodes, POLL_HOLD_MS } from "./local-bridge.mjs";
+import { GoogleOAuth } from "./oauth-google.mjs";
 import { connectDriveSource, driveProviderOptions } from "./drive-sources.mjs";
 import { indexFiles, searchFiles } from "./worktwin.mjs";
 import { efficiencyReport } from "./efficiency.mjs";
@@ -72,6 +73,37 @@ const REPO_DIR = dirname(fileURLToPath(import.meta.url));
 const localNodes = new LocalNodes();
 const localNodeCall = (nodeId, verb, args, opts = {}) => localNodes.call(nodeId, verb, args, opts);
 const localNodeModelCall = (conn, prompt, opts = {}) => localNodes.call(conn.nodeId, "complete", { model: conn.model, prompt, maxTokens: opts.maxTokens });
+
+// ── Google OAuth wiring (customer's own OAuth client, or a verified BrainOutput app later) ─────
+const googleClientSecretRef = () => (store.runtime.secrets || {})["google-oauth-client-secret"] || null;
+function googleOAuthFor(req) {
+  const proto = req.headers["x-forwarded-proto"] || (SECURE_COOKIE ? "https" : "http");
+  const host = req.headers["x-forwarded-host"] || req.headers.host || `127.0.0.1:${PORT}`;
+  return new GoogleOAuth({
+    clientId: store.def.settings?.googleClientId || null,
+    clientSecretRef: googleClientSecretRef(),
+    redirectUri: `${proto}://${host}/api/oauth/google/callback`,
+  });
+}
+/** googleapis call with a fresh token (auto-refresh + reseal on rotation). Never throws away errors. */
+async function googleApiFetch(path) {
+  const resolver = store.secretResolver();
+  const raw = await resolver("google-oauth-tokens");
+  if (!raw) throw new Error("Google is not connected — connect it in Settings → Sources");
+  const g = new GoogleOAuth({ clientId: store.def.settings?.googleClientId, clientSecretRef: googleClientSecretRef(), redirectUri: "https://unused/refresh" });
+  const { accessToken, bundle, rotated } = await g.accessToken(JSON.parse(raw), (ref) => store.openSecret(ref));
+  if (rotated) store.putSecret("google-oauth-tokens", JSON.stringify(bundle));
+  const r = await fetch(`https://www.googleapis.com${path}`, { headers: { authorization: `Bearer ${accessToken}` }, signal: AbortSignal.timeout(15000) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(`Google API ${r.status}: ${j.error?.message || "request failed"}`);
+  return j;
+}
+const googleStatus = () => ({
+  configured: !!(store.def.settings?.googleClientId && googleClientSecretRef()),
+  connected: !!store.hasSecret("google-oauth-tokens"),
+  connectedAt: store.def.settings?.googleConnectedAt || null,
+  scopes: store.def.settings?.googleScopes || null,
+});
 
 // ── server-side model detection (user LOCAL only; never a BrainOutput account) ────────────────
 function probe(host, port, path) {
@@ -196,6 +228,27 @@ async function api(req, res, url) {
     if (!localNodes.verifyNode(b.nodeId, b.credential)) return json(res, { error: "unauthorized node" }, 401);
     if (b.models) localNodes.noteModels(b.nodeId, b.models);
     return json(res, localNodes.postResult(b.nodeId, b));
+  }
+  // ── Google OAuth dance (public: Google's callback has no session; the state nonce is the CSRF
+  // guard). Client id/secret setup and disconnect stay guarded below. ──
+  if (url.pathname === "/api/oauth/google/start" && req.method === "GET") {
+    const g = googleOAuthFor(req);
+    if (!g.configured) return json(res, { error: "Google OAuth is not configured — add the client id and secret in Settings → Sources first" }, 400);
+    const { url: go } = g.startAuth();
+    res.writeHead(302, { location: go });
+    return res.end();
+  }
+  if (url.pathname === "/api/oauth/google/callback" && req.method === "GET") {
+    const g = googleOAuthFor(req);
+    try {
+      const bundle = await g.exchangeCode({ code: url.searchParams.get("code"), state: url.searchParams.get("state") },
+        (ref) => store.openSecret(ref));
+      store.putSecret("google-oauth-tokens", JSON.stringify(bundle));
+      store.setSettings({ ...(store.def.settings || {}), googleConnectedAt: Date.now(), googleScopes: bundle.scope });
+      store.saveDefinition();
+      res.writeHead(302, { location: "/?connected=google" });
+      return res.end();
+    } catch (e) { return json(res, { error: `Google connect failed: ${e.message}` }, 400); }
   }
   const refusal = guardRequest(req, url);
   if (refusal) return json(res, { error: refusal.error }, refusal.code);
@@ -485,6 +538,24 @@ async function api(req, res, url) {
   }
   // ── Local devices (UI side of the bridge; session-guarded) ──
   if (url.pathname === "/api/local/pair-code") return json(res, localNodes.issueCode());
+  // ── Google OAuth client setup (guarded). The client secret is sealed; state shows only status. ──
+  if (url.pathname === "/api/oauth/google/config") {
+    if (!b.clientId || !/.+\.apps\.googleusercontent\.com$/.test(b.clientId))
+      return json(res, { error: "a Google OAuth client id ends in .apps.googleusercontent.com" }, 400);
+    if (!b.clientSecret || b.clientSecret.length < 10) return json(res, { error: "client secret required" }, 400);
+    store.putSecret("google-oauth-client-secret", b.clientSecret);
+    store.setSettings({ ...(store.def.settings || {}), googleClientId: b.clientId.trim() });
+    store.saveDefinition();
+    return json(res, { google: googleStatus(), state: publicState() });
+  }
+  if (url.pathname === "/api/oauth/google/disconnect") {
+    store.deleteSecret("google-oauth-tokens");
+    store.deleteSecret("google-oauth-client-secret");
+    const s = { ...(store.def.settings || {}) };
+    delete s.googleClientId; delete s.googleConnectedAt; delete s.googleScopes;
+    store.setSettings(s).saveDefinition();
+    return json(res, { google: googleStatus(), state: publicState() });
+  }
   if (url.pathname === "/api/local/revoke") {
     try { localNodes.revoke(b.nodeId); return json(res, { revoked: true, state: publicState() }); }
     catch (e) { return json(res, { error: e.message }, 400); }
@@ -543,9 +614,12 @@ async function api(req, res, url) {
 
 // Work-source kinds that are DOCUMENT stores rather than mail.
 const DRIVE_KINDS = new Set(["drive", "local-drive", "google-drive", "onedrive", "sharepoint", "nextcloud"]);
-const driveSpecFor = (acc) => connectDriveSource({
+// google-drive reads go through the OAuth token store (auto-refresh) when no explicit token is set.
+const withGoogleAuth = (spec) =>
+  spec.provider === "google-drive" && !spec.accessToken ? { ...spec, fetchImpl: googleApiFetch } : spec;
+const driveSpecFor = (acc) => connectDriveSource(withGoogleAuth({
   provider: acc.config?.provider || (acc.kind === "drive" ? "local" : acc.kind),
-  account: acc.account, ...(acc.config || {}) });
+  account: acc.account, ...(acc.config || {}) }));
 
 // ── Work Twin ───────────────────────────────────────────────────────────────────────────────────
 const twins = () => store.runtime.workTwins || [];
@@ -572,8 +646,8 @@ async function twinConnect(res, b) {
     // stores use different clients, so route on the kind.
     const isDrive = DRIVE_KINDS.has(b.source?.kind);
     const src = isDrive
-      ? connectDriveSource({ provider: b.source.provider || (b.source.kind === "drive" ? "local" : b.source.kind),
-          ...b.source, account: b.source?.account || t.employee.id })
+      ? connectDriveSource(withGoogleAuth({ provider: b.source.provider || (b.source.kind === "drive" ? "local" : b.source.kind),
+          ...b.source, account: b.source?.account || t.employee.id }))
       : connectMailSource({ ...b.source, account: b.source?.account || t.employee.id });
     let sample = [];
     try { sample = isDrive ? await src.listFiles({ limit: 5 }) : await src.listMessages({ limit: 5 }); }
@@ -1391,6 +1465,7 @@ function publicState() {
     sourceFamilies: familyStatus(sourceCatalog(getTwin(), { customConnectors: store.runtime.customConnectors || [] })),
     customConnectors: (store.runtime.customConnectors || []).map(publicCustomConnector),
     localNodes: localNodes.listPublic(),
+    google: googleStatus(),
     brainoutputFundedTokens: funded };
 }
 

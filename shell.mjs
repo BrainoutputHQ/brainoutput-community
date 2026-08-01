@@ -573,6 +573,31 @@ async function deleteCustomApp(id){
  if(r.error){alert(r.error);return}
  S.state=r.state;await refresh();
 }
+/** The guided Google panel: configure your own OAuth client → connect with Google → connected. */
+function googlePanel(c,g){
+ const d=el('<div style="margin-top:6px"></div>');
+ if(g.connected){
+  d.appendChild(el('<div style="font-size:12.5px"><span class=ok>✓ '+esc(t('sources.googleConnected'))+'</span> <span class=mut>'+esc((g.scopes||'').split(' ').map((x)=>x.split('/').pop()).join(', '))+'</span> '
+   +'<button class=ghost style="padding:2px 9px;font-size:11.5px">'+esc(t('sources.disconnect'))+'</button></div>'));
+  d.querySelector('button').onclick=async()=>{const r=await api('/api/oauth/google/disconnect',{});if(r.error){alert(r.error);return}S.state=r.state;await refresh()};
+  return d;
+ }
+ if(!g.configured){
+  const f=el('<div style="font-size:12.5px" class=mut>'+esc(t('sources.googleHow'))+'</div>'
+   +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px"><input class=inp id=gcid placeholder="client id — ….apps.googleusercontent.com" style="margin-top:0;flex:2;min-width:220px">'
+   +'<input class=inp id=gsec type="password" placeholder="'+esc(t('sources.appKey'))+'" style="margin-top:0;flex:1;min-width:160px">'
+   +'<button class=ghost style="font-size:12.5px">'+esc(t('settings.save'))+'</button></div>'
+   +'<div class=mut id=gmsg style="font-size:12px;margin-top:4px"></div>');
+  f.querySelector('button').onclick=async()=>{
+   const r=await api('/api/oauth/google/config',{clientId:f.querySelector('#gcid').value.trim(),clientSecret:f.querySelector('#gsec').value});
+   f.querySelector('#gmsg').textContent=r.error||'✓';if(!r.error){S.state=r.state;await refresh()}};
+  d.appendChild(f);
+  return d;
+ }
+ const b=el('<a class=ghost href="/api/oauth/google/start" style="display:inline-block;font-size:12.5px;padding:5px 12px;text-decoration:none;border:1px solid var(--line);border-radius:10px">'+esc(t('sources.connectGoogle'))+'</a>');
+ d.appendChild(b);
+ return d;
+}
 function sourcesView(){
  const s=S.state||{};
  const T=(s.workTwins||[])[0];
@@ -649,6 +674,18 @@ function sourcesView(){
     if(!T)b.disabled=true,b.style.opacity=.5;
     b.onclick=()=>connectSource(c.kind);
     bar.appendChild(b);
+   }else if(c.needs&&c.needs.startsWith('oauth-')){
+    // OAuth kinds: guided setup — own Google client (today) or a verified BrainOutput app (later).
+    // The Google Drive row becomes connectable the moment Google is connected.
+    const g=s.google||{};
+    if(c.kind==='google-drive'&&g.connected){
+     const b=el('<button class=ghost style="font-size:12.5px;padding:5px 12px">'+(c.accounts.length?'+ '+esc(t('sources.addAnother')):esc(t('sources.connect')))+'</button>');
+     if(!T)b.disabled=true,b.style.opacity=.5;
+     b.onclick=async()=>{const r=await api('/api/worktwin/connect',{twinId:T&&T.id,source:{kind:'google-drive',provider:'google-drive',account:'google'}});if(r.error)alert(r.error);await refresh()};
+     bar.appendChild(b);
+    }else{
+     bar.appendChild(googlePanel(c,g));
+    }
    }else{
     bar.appendChild(el('<span class=mut style="font-size:12px">'+esc(c.needs==='odoo-wiring'?t('sources.needsWiring'):t('sources.needsOAuth'))+'</span>'));
    }

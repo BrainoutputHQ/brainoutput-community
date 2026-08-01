@@ -578,3 +578,30 @@ test("settings shows a Users section, open by default, with the actual user and 
   const st = await state();
   assert.ok(Array.isArray(st.workTwins), "state carries the actual user (the Alter's employee)");
 });
+
+test("google oauth: config seals the secret, start redirects with state, callback rejects forgery", async () => {
+  const st0 = await state();
+  assert.equal(st0.google.configured, false);
+  assert.equal(st0.google.connected, false);
+
+  const badId = await post("/api/oauth/google/config", { clientId: "nope", clientSecret: "x".repeat(12) });
+  assert.equal(badId.status, 400, "client id must be a real Google client id shape");
+  const cfg = await post("/api/oauth/google/config", { clientId: "123.apps.googleusercontent.com", clientSecret: "secret-value-123" });
+  assert.equal(cfg.status, 200);
+  assert.equal(cfg.body.google.configured, true);
+  assert.equal(JSON.stringify(cfg.body.state).includes("secret-value-123"), false, "the client secret never leaves via state");
+
+  const start = await fetch(`${BASE}/api/oauth/google/start`, { redirect: "manual" });
+  assert.equal(start.status, 302);
+  const loc = start.headers.get("location");
+  assert.match(loc, /^https:\/\/accounts\.google\.com\/o\/oauth2\/v2\/auth/);
+  const stateParam = new URL(loc).searchParams.get("state");
+  assert.ok(stateParam);
+
+  const forged = await fetch(`${BASE}/api/oauth/google/callback?code=x&state=forged`, { redirect: "manual" });
+  assert.equal(forged.status, 400);
+  assert.match(await forged.json().then((j) => j.error), /unknown OAuth state/);
+
+  const disc = await post("/api/oauth/google/disconnect", {});
+  assert.equal(disc.body.google.configured, false);
+});
