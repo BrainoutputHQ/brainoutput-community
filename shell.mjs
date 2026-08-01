@@ -8,12 +8,18 @@
 // conversation. Zero-dep inline page; the multi-tab dashboard stays at /dashboard as the
 // advanced surface. All UI strings come from the embedded locale catalog (i18n.mjs).
 export const SHELL_PAGE = `<!doctype html><html lang="__BO_LOCALE__"><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>BrainOutput</title>
+<link rel="icon" type="image/png" sizes="32x32" href="/assets/brand/logo/icon-light-32.png">
+<link rel="apple-touch-icon" href="/assets/brand/logo/icon-light-180.png">
 <style>
 :root{--bg:#f5f6f8;--card:#ffffff;--card2:#f2f4f7;--fg:#1a1d24;--mut:#667085;--acc:#2f7cf6;--ok:#16a34a;--warn:#d97706;--line:#e4e7ec;--ub:#dbeafe;--ubline:#bfdbfe;--inp:#f9fafb;--pre:#f2f4f7;--side:#ffffff;--thead:#ffffff;--shadow:0 1px 2px rgba(16,24,40,.06)}
 body.dark{--bg:#0e1014;--card:#171a21;--card2:#1c202a;--fg:#e8eaf0;--mut:#8f96a8;--acc:#5b9dff;--ok:#3ddc84;--warn:#ffb454;--line:#242935;--ub:#1e3a5f;--ubline:#2a4a73;--inp:#0f1319;--pre:#0b0d11;--side:#11131a;--thead:#10121a;--shadow:none}
 *{box-sizing:border-box}body{margin:0;font:15.5px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;background:var(--bg);color:var(--fg);display:flex;height:100vh;overflow:hidden;-webkit-font-smoothing:antialiased}
 aside{width:250px;min-width:250px;border-right:1px solid var(--line);background:var(--side);display:flex;flex-direction:column}
 aside .brand{padding:18px 18px 14px;border-bottom:1px solid var(--line);font-weight:700;font-size:17px;letter-spacing:-.01em}
+.brand img.bl{height:24px;width:24px;border-radius:6px;vertical-align:-6px;margin-right:9px}
+.brand img.bl.d{display:none}
+body.dark .brand img.bl.l{display:none}
+body.dark .brand img.bl.d{display:inline}
 aside .brand .tag{display:block;font-weight:400;font-size:12px;color:var(--mut);margin-top:2px}
 aside .scroll{flex:1;overflow:auto;padding:12px}
 aside .foot{padding:12px 16px;border-top:1px solid var(--line);display:flex;gap:10px;align-items:center;font-size:13px}
@@ -100,7 +106,7 @@ pre{background:var(--pre)!important}
 }
 </style></head><body>
 <aside>
- <div class=brand><span id=coname>🏢 BrainOutput</span><span class=tag id=tagline></span></div>
+ <div class=brand><span id=coname><img class="bl l" src="/assets/brand/logo/icon-light-192.png" alt="BrainOutput"><img class="bl d" src="/assets/brand/logo/icon-dark-192.png" alt="BrainOutput"><span id=conamet>BrainOutput</span></span><span class=tag id=tagline></span></div>
  <div class=scroll>
   <div class=vmenu>
    <button id=vm-chat><i class=ic></i><span></span></button>
@@ -190,7 +196,7 @@ function sidebar(){
  document.getElementById('ladhoc').innerHTML=I('chat',12)+esc(t('shell.adHoc'));
  document.getElementById('lsources').innerHTML=I('database',12)+esc(t('nav.sources'));
  document.getElementById('locale').value=LOCALE;
- document.getElementById('coname').textContent='🏢 '+(s.company?.name||'BrainOutput');
+ document.getElementById('conamet').textContent=s.company?.name||'BrainOutput';
  document.getElementById('mconame').textContent=s.company?.name||'BrainOutput';
  const nt=document.getElementById('navtoggle');
  nt.onclick=()=>{

@@ -425,3 +425,19 @@ test("sidebar: consistent SVG line icons (no emoji iconography) + whitespace-sep
   assert.match(shell, /\.sdot\.run\{[^}]*var\(--acc\)/, "running status dot");
   assert.match(shell, /\.sdot\.attn\{[^}]*var\(--warn\)/, "attention status dot");
 });
+
+test("brand: the logo icon ships, is served publicly, and the pages link it", async () => {
+  const shell = await (await fetch(`${BASE}/`)).text();
+  assert.match(shell, /\/assets\/brand\/logo\/icon-light-32\.png/, "favicon linked");
+  assert.match(shell, /icon-dark-192\.png/, "dark-theme brand tile present");
+  const icon = await fetch(`${BASE}/assets/brand/logo/icon-light-32.png`);
+  assert.equal(icon.status, 200);
+  assert.equal(icon.headers.get("content-type"), "image/png");
+  const body = await icon.arrayBuffer();
+  assert.ok(body.byteLength > 500, "a real PNG, not an empty stub");
+  const traversal = await fetch(`${BASE}/assets/brand/logo/..%2F..%2Fstore.mjs`);
+  assert.notEqual(traversal.headers.get("content-type"), "image/png", "the brand route never serves outside its allowlist");
+  assert.match(await traversal.text(), /<!doctype html/i, "unknown paths get the shell page, never file bytes");
+  const login = await fetch(`${BASE}/assets/brand/logo/icon-dark-192.png`);
+  assert.equal(login.status, 200, "serves without auth (the login page needs the favicon)");
+});
