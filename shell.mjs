@@ -464,6 +464,35 @@ function settingsView(){
   const r=await api('/api/company',{name:co.querySelector('#cn').value,website:co.querySelector('#cw').value});
   co.querySelector('#cmsg').textContent=r.error||'✓';if(!r.error){S.state=r;render()}};
  wrap.appendChild(CO.el);
+ // Users — the actual people on this workspace. Open by default: you should always see WHO the
+ // Alter acts for, and its permission mode, at a glance.
+ const twins=s.workTwins||[];
+ const UF=fold(t('settings.users'),twins.length?twins.map(x=>x.employee?.name||x.employee?.email).join(', '):t('settings.noUsers'),{open:true});
+ const ub=UF.body;
+ if(!twins.length){
+  const d=el('<div style="margin-top:10px"><div class=mut style="font-size:13px;margin-bottom:8px">'+esc(t('settings.noUsersHint'))+'</div>'
+   +'<div class=row style="display:flex;gap:8px"><input class=inp id=un placeholder="'+esc(t('work.yourName'))+'" style="margin-top:0"><input class=inp id=ue placeholder="you@company.com" style="margin-top:0"></div>'
+   +'<div style="margin-top:8px"><button class=act>'+esc(t('work.createAlter'))+'</button> <span class=mut id=umsg style="font-size:12px"></span></div></div>');
+  d.querySelector('button').onclick=async()=>{
+   const nm=d.querySelector('#un').value.trim(),em=d.querySelector('#ue').value.trim();
+   if(!em){d.querySelector('#umsg').textContent='email?';return}
+   const r=await api('/api/worktwin/create',{employee:{id:em.split('@')[0],name:nm||em,email:em}});
+   d.querySelector('#umsg').textContent=r.error||'✓';if(!r.error){S.state=r.state;render()}};
+  ub.appendChild(d);
+ }
+ twins.forEach(tw=>{
+  const acc=tw.accounts||[];
+  const row=el('<div style="margin-top:10px;padding:10px;border:1px solid var(--line);border-radius:10px">'
+   +'<div style="display:flex;gap:8px;align-items:center"><b style="font-size:14px">'+esc(tw.employee?.name||tw.name)+'</b>'
+   +'<span class=mut style="font-size:12.5px">'+esc(tw.employee?.email||'')+'</span></div>'
+   +'<div class=mut style="font-size:12.5px;margin-top:3px">'+esc(t('settings.userAlter'))+': '+esc(tw.name)+' · '+esc(t('settings.userSources'))+': '+acc.length+' · '+(tw.indexSize||0)+' '+esc(t('work.indexed'))+'</div>'
+   +'<div style="margin-top:7px;display:flex;gap:6px;align-items:center;flex-wrap:wrap"><span class=mut style="font-size:12px">'+esc(t('settings.userMode'))+':</span>'
+   +['mirror','copilot','delegate'].map(m=>'<button class="'+(tw.mode===m?'act':'ghost')+'" data-m="'+m+'" style="font-size:12px;padding:4px 11px">'+esc(t('twin.mode.'+m))+'</button>').join('')
+   +'</div><div class=mut style="font-size:11.5px;margin-top:5px">'+esc(t('twin.mode.'+(tw.mode||'mirror')+'.desc'))+'</div></div>');
+  row.querySelectorAll('[data-m]').forEach(b=>b.onclick=async()=>{
+   const r=await api('/api/worktwin/mode',{twinId:tw.id,mode:b.dataset.m});if(r.error){alert(r.error);return}await refresh()});
+  ub.appendChild(row)});
+ wrap.appendChild(UF.el);
  // The sources catalog lives in Settings (the menu stays lean); the sidebar keeps the rollup.
  wrap.appendChild(sourcesView());
  const MF=fold(t('models.assignments'),conns.length+' · '+(s.company? '' : '')+t('models.connections').toLowerCase());

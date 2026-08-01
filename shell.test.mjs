@@ -570,3 +570,11 @@ test("settings sections are FOLDED by default (details.fold, no open attribute) 
   assert.ok(shell.includes("fold(t('sources.computer')"), "this-computer folds");
   assert.ok(!shell.includes('class="fold" open'), "nothing but the opt-in opens by default");
 });
+
+test("settings shows a Users section, open by default, with the actual user and its mode", async () => {
+  const shell = await (await fetch(`${BASE}/`)).text();
+  assert.match(shell, /fold\(t\('settings\.users'\)[^\n]*\{open:true\}/, "the Users fold exists and opens by default");
+  assert.match(shell, /twin\.mode\.mirror/, "permission modes are shown");
+  const st = await state();
+  assert.ok(Array.isArray(st.workTwins), "state carries the actual user (the Alter's employee)");
+});
