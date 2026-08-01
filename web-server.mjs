@@ -27,7 +27,7 @@ import { createWorkTwin, setMode as twinSetMode, connectWorkSource, grantTwinSco
   indexMessages as twinIndex, retrieveForRequest, prioritySummary, unansweredThreads, extractCommitments,
   meetingBrief, followUpSuggestions, draftReply, sendDraft, emailToMission, taskPacket, recordDelegation,
   withAudit, auditRecord, WORK_TWIN_MODES, publicTwin, setModelPolicy, modelForStage, TWIN_MODEL_STAGES,
-  disconnectWorkSource, sourceCatalog } from "./worktwin.mjs";
+  disconnectWorkSource, sourceCatalog, familyStatus } from "./worktwin.mjs";
 import { connectMailSource, workSourceOptions, smtpSend } from "./mail-sources.mjs";
 import { connectDriveSource, driveProviderOptions } from "./drive-sources.mjs";
 import { indexFiles, searchFiles } from "./worktwin.mjs";
@@ -1227,6 +1227,8 @@ function publicState() {
     // The connectable-source catalog, always present — connected kinds AND the ones not connected
     // yet, so the UI can show what the assistant COULD read (never a guess, never hidden).
     sourceCatalog: sourceCatalog(getTwin()),
+    // The sidebar rollup (✉️ Mail ✓ · 📁 Drive · 📊 Apps) — always visible, connected or not.
+    sourceFamilies: familyStatus(sourceCatalog(getTwin())),
     brainoutputFundedTokens: funded };
 }
 

@@ -100,6 +100,8 @@ pre{background:var(--pre)!important}
   <div id=projects></div>
   <div class=shead><span id=ladhoc></span></div>
   <div id=adhoc></div>
+  <div class=shead><span id=lsources></span></div>
+  <div id=sources></div>
   <div id=qresults></div>
  </div>
  <div class=foot>
@@ -152,6 +154,7 @@ function sidebar(){
  document.getElementById('lprojects').textContent=t('shell.projects');
  document.getElementById('lnewproj').textContent=t('shell.newProject');
  document.getElementById('ladhoc').textContent=t('shell.adHoc');
+ document.getElementById('lsources').textContent=t('nav.sources');
  document.getElementById('locale').value=LOCALE;
  document.getElementById('coname').textContent='🏢 '+(s.company?.name||'BrainOutput');
  document.getElementById('mconame').textContent=s.company?.name||'BrainOutput';
@@ -178,6 +181,17 @@ function sidebar(){
  const searching=!!(S.q&&S.q.trim());
  document.getElementById('projects').style.display=searching?'none':'';
  document.getElementById('adhoc').style.display=searching?'none':'';
+ document.getElementById('sources').style.display=searching?'none':'';
+ // The Sources rollup — always visible, connected or not (the carousel's intranet display, for
+ // real): one row per family, status chip, click opens the Sources catalog.
+ const srcBox=document.getElementById('sources');srcBox.innerHTML='';
+ (s.sourceFamilies||[]).forEach(f=>{
+  const chip=f.state==='connected'?'<span class=cnt>✓'+(f.connected>1?' '+f.connected:'')+'</span>'
+   :f.state==='available'?'<span class=cnt>+</span>'
+   :'<span class=cnt>'+esc(t('sources.soon'))+'</span>';
+  const b=el('<button class="pitem">'+esc(f.icon)+' '+esc(t('sources.family.'+f.family))+chip+'</button>');
+  b.onclick=()=>{S.view='sources';render()};
+  srcBox.appendChild(b)});
  document.querySelectorAll('aside .shead').forEach(h=>h.style.display=searching?'none':'flex');
  if(searching){
   const q=S.q.trim().toLowerCase();
@@ -450,7 +464,7 @@ function sourcesView(){
    d.querySelector('#wmsg').textContent=r.error||'✓';if(!r.error){S.state=r.state;render()}};
   wrap.appendChild(d);
  }
- const groups=[['mail',t('sources.groupMail')],['files',t('sources.groupFiles')]];
+ const groups=[['mail',t('sources.groupMail')],['files',t('sources.groupFiles')],['apps',t('sources.groupApps')]];
  for(const [g,label] of groups){
   const card=el('<div class="cardx"><h3>'+esc(label)+'</h3></div>');
   catalog.filter(c=>c.group===g).forEach(c=>{
@@ -473,7 +487,7 @@ function sourcesView(){
     b.onclick=()=>connectSource(c.kind);
     bar.appendChild(b);
    }else{
-    bar.appendChild(el('<span class=mut style="font-size:12px">'+esc(t('sources.needsOAuth'))+'</span>'));
+    bar.appendChild(el('<span class=mut style="font-size:12px">'+esc(c.needs==='odoo-wiring'?t('sources.needsWiring'):t('sources.needsOAuth'))+'</span>'));
    }
    row.appendChild(bar);
    card.appendChild(row)});

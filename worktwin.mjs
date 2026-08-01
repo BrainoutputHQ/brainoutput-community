@@ -157,6 +157,9 @@ export const SOURCE_CATALOG = [
   { kind: "google-drive", group: "files", verified: false, needs: "oauth-google" },
   { kind: "onedrive", group: "files", verified: false, needs: "oauth-microsoft" },
   { kind: "sharepoint", group: "files", verified: false, needs: "oauth-microsoft" },
+  // The read-only Odoo client exists (odoo.mjs) but its reads are not wired into chat answers
+  // yet — so it shows as "ready soon", NEVER as a connect button that would silently dead-end.
+  { kind: "odoo", group: "apps", verified: false, needs: "odoo-wiring" },
 ];
 
 /** Catalog + the twin's live accounts merged: per kind, who is connected. `twin` may be null. */
@@ -167,6 +170,26 @@ export function sourceCatalog(twin = null) {
     accounts: accounts.filter((a) => a.kind === entry.kind)
       .map((a) => ({ id: a.id, account: a.account, label: a.label, resources: a.resources || [], scope: a.scope })),
   }));
+}
+
+/**
+ * The SIDEBAR rollup — the same display as the marketing carousel's intranet screen: one row per
+ * source FAMILY (✉️ Mail ✓ · 📁 Drive ✓ · 📊 Apps), always visible, connected or not. Pure over
+ * sourceCatalog() output so page and product can never disagree about what is connected.
+ */
+export const SOURCE_FAMILIES = [
+  { family: "mail", icon: "✉️", kinds: ["imap", "local-mail", "google-workspace", "microsoft-365"] },
+  { family: "files", icon: "📁", kinds: ["drive", "nextcloud", "google-drive", "onedrive", "sharepoint"] },
+  { family: "apps", icon: "📊", kinds: ["odoo"] },
+];
+export function familyStatus(catalog = []) {
+  return SOURCE_FAMILIES.map((f) => {
+    const entries = catalog.filter((c) => f.kinds.includes(c.kind));
+    const connected = entries.reduce((n, c) => n + (c.accounts?.length || 0), 0);
+    const connectableToday = entries.some((c) => c.verified);
+    return { ...f, connected, connectableToday,
+      state: connected > 0 ? "connected" : connectableToday ? "available" : "soon" };
+  });
 }
 
 /** Grant an elevated scope explicitly (beyond the mode ceiling). Sensitive is always human-approved. */

@@ -7,7 +7,7 @@ import {
   twinPermission, auditRecord, draftAttribution, indexMessages, retrieveForRequest,
   prioritySummary, unansweredThreads, extractCommitments, meetingBrief, followUpSuggestions,
   draftReply, sendDraft, emailToMission, taskPacket, onConnectorEvent, sleep,
-  disconnectWorkSource, sourceCatalog, SOURCE_CATALOG,
+  disconnectWorkSource, sourceCatalog, SOURCE_CATALOG, familyStatus,
 } from "./worktwin.mjs";
 import { newConnector, grantScope } from "./connectors.mjs";
 
@@ -317,4 +317,22 @@ test("the source catalog ALWAYS lists every kind — connected or not — with l
   assert.equal(imap.accounts.length, 2, "both mailboxes show under one kind");
   assert.deepEqual(imap.accounts.map((a) => a.account), ["alice@acme.test", "support@acme.test"]);
   assert.equal(cat.find((c) => c.kind === "nextcloud").accounts.length, 0, "unconnected kinds stay visible");
+});
+
+test("the sidebar family rollup matches the carousel display: Mail ✓ / Drive ✓ / Apps soon", () => {
+  let t = createWorkTwin({ employee: EMP, name: "Alice" });
+  t = connectWorkSource(t, { kind: "imap", account: "alice@acme.test" });
+  t = connectWorkSource(t, { kind: "imap", account: "support@acme.test" });
+  t = connectWorkSource(t, { kind: "drive", account: "/data/contracts" });
+  const fams = familyStatus(sourceCatalog(t));
+  assert.deepEqual(fams.map((f) => f.family), ["mail", "files", "apps"]);
+  const mail = fams[0];
+  assert.equal(mail.state, "connected");
+  assert.equal(mail.connected, 2, "two mailboxes roll up under Mail");
+  assert.equal(mail.icon, "✉️");
+  assert.equal(fams[1].state, "connected");
+  assert.equal(fams[2].state, "soon", "apps family (Odoo) is never shown as connectable before its wiring lands");
+  const empty = familyStatus(sourceCatalog(null));
+  assert.deepEqual(empty.map((f) => f.state), ["available", "available", "soon"],
+    "with nothing connected, mail+files show available (+) — always visible");
 });

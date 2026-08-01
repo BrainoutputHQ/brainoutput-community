@@ -371,9 +371,15 @@ test("sources: the menu and the always-visible catalog exist — connected or no
 
   const st = await state();
   assert.ok(Array.isArray(st.sourceCatalog), "state carries the catalog");
-  assert.equal(st.sourceCatalog.length, 9);
+  assert.equal(st.sourceCatalog.length, 10);
   assert.ok(st.sourceCatalog.every((c) => Array.isArray(c.accounts) && typeof c.verified === "boolean"));
   assert.ok(st.sourceCatalog.some((c) => !c.verified), "OAuth-needing kinds are listed too, marked as such");
+  // The sidebar rollup (the carousel display): Mail / Drive / Apps rows, always present.
+  assert.ok(Array.isArray(st.sourceFamilies));
+  assert.deepEqual(st.sourceFamilies.map((f) => f.family), ["mail", "files", "apps"]);
+  assert.equal(st.sourceFamilies.find((f) => f.family === "apps").state, "soon", "Odoo shows as soon — never a fake connect button");
+  const shell2 = await (await fetch(`${BASE}/`)).text();
+  assert.match(shell2, /id=sources/, "the sidebar Sources section is in the page");
 });
 
 test("sources: connect a folder, see it connected (and INDEXED), reject duplicates, disconnect", async () => {
