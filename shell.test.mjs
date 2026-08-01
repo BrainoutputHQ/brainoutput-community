@@ -414,11 +414,14 @@ test("sources: connect a folder, see it connected (and INDEXED), reject duplicat
   rmSync(dir, { recursive: true, force: true });
 });
 
-test("sidebar: consistent SVG line icons (no emoji iconography) + visible section separation", async () => {
+test("sidebar: consistent SVG line icons (no emoji iconography) + whitespace-separated sections", async () => {
   const shell = await (await fetch(`${BASE}/`)).text();
   assert.match(shell, /stroke="currentColor"/, "inline SVG icons render in brand-agnostic currentColor");
   assert.doesNotMatch(shell, /vm-chat">💬|vm-work">🗂|vm-settings">⚙/, "no emoji in the view menu");
   assert.match(shell, /ICONS=\{/, "the icon set is defined once");
-  assert.match(shell, /\.shead\{[^}]*border-top:1px solid/, "sections are separated by a rule line");
-  assert.match(shell, /\.pitem svg\{[^}]*margin-right/, "row icons align consistently");
+  assert.doesNotMatch(shell, /\.shead\{[^}]*border-top/, "sections separate with whitespace, not divider lines");
+  assert.match(shell, /\.pitem \.lab\{[^}]*text-overflow:ellipsis/, "long labels truncate with ellipsis");
+  assert.match(shell, /\.vmenu button\.on\{[^}]*box-shadow/, "the view menu is a segmented control");
+  assert.match(shell, /\.sdot\.run\{[^}]*var\(--acc\)/, "running status dot");
+  assert.match(shell, /\.sdot\.attn\{[^}]*var\(--warn\)/, "attention status dot");
 });

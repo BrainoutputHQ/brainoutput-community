@@ -12,21 +12,30 @@ export const SHELL_PAGE = `<!doctype html><html lang="__BO_LOCALE__"><head><meta
 :root{--bg:#f5f6f8;--card:#ffffff;--card2:#f2f4f7;--fg:#1a1d24;--mut:#667085;--acc:#2f7cf6;--ok:#16a34a;--warn:#d97706;--line:#e4e7ec;--ub:#dbeafe;--ubline:#bfdbfe;--inp:#f9fafb;--pre:#f2f4f7;--side:#ffffff;--thead:#ffffff;--shadow:0 1px 2px rgba(16,24,40,.06)}
 body.dark{--bg:#0e1014;--card:#171a21;--card2:#1c202a;--fg:#e8eaf0;--mut:#8f96a8;--acc:#5b9dff;--ok:#3ddc84;--warn:#ffb454;--line:#242935;--ub:#1e3a5f;--ubline:#2a4a73;--inp:#0f1319;--pre:#0b0d11;--side:#11131a;--thead:#10121a;--shadow:none}
 *{box-sizing:border-box}body{margin:0;font:15.5px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;background:var(--bg);color:var(--fg);display:flex;height:100vh;overflow:hidden;-webkit-font-smoothing:antialiased}
-aside{width:280px;min-width:280px;border-right:1px solid var(--line);background:var(--side);display:flex;flex-direction:column}
+aside{width:250px;min-width:250px;border-right:1px solid var(--line);background:var(--side);display:flex;flex-direction:column}
 aside .brand{padding:18px 18px 14px;border-bottom:1px solid var(--line);font-weight:700;font-size:17px;letter-spacing:-.01em}
 aside .brand .tag{display:block;font-weight:400;font-size:12px;color:var(--mut);margin-top:2px}
 aside .scroll{flex:1;overflow:auto;padding:12px}
 aside .foot{padding:12px 16px;border-top:1px solid var(--line);display:flex;gap:10px;align-items:center;font-size:13px}
 aside select{background:var(--inp);border:1px solid var(--line);color:var(--fg);border-radius:8px;padding:5px 8px;font-size:13px}
-.vmenu{display:flex;gap:4px;padding:2px 2px 8px;border-bottom:1px solid var(--line);margin-bottom:6px}
-.vmenu button{flex:1;background:none;border:1px solid transparent;color:var(--mut);border-radius:9px;padding:7px 4px;cursor:pointer;font-size:12.5px;font-weight:600}
-.vmenu button.on{background:var(--card2);color:var(--fg);border-color:var(--line)}
-.shead{color:var(--mut);font-size:11.5px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;margin:18px 6px 8px;display:flex;align-items:center;gap:7px;padding-top:14px;border-top:1px solid var(--line)}
-.scroll>.shead:first-of-type{border-top:none;padding-top:0;margin-top:10px}
+.vmenu{display:flex;gap:2px;padding:3px;background:var(--card2);border-radius:12px;margin-bottom:10px}
+.vmenu button{flex:1;background:none;border:none;color:var(--mut);border-radius:9px;padding:7px 4px;cursor:pointer;font-size:12.5px;font-weight:600}
+.vmenu button.on{background:var(--card);color:var(--fg);box-shadow:var(--shadow)}
+.acts{display:flex;flex-direction:column;gap:2px;margin-bottom:6px}
+.acts button{display:flex;align-items:center;gap:9px;background:none;border:none;border-radius:10px;padding:8px 12px;color:var(--fg);cursor:pointer;font-size:14px;text-align:left}
+.acts button:hover{background:var(--card2)}
+.acts button svg{color:var(--acc)}
+.shead{color:var(--mut);font-size:11.5px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;margin:20px 6px 7px;display:flex;align-items:center;gap:7px}
+.scroll>.shead:first-of-type{margin-top:12px}
 .shead svg{opacity:.7}
-.shead button{margin-left:auto;background:none;border:1px solid var(--line);color:var(--mut);border-radius:8px;font-size:12px;padding:3px 10px;cursor:pointer}
-.shead button:hover{color:var(--fg);border-color:var(--acc)}
-.pitem svg{vertical-align:-2.5px;margin-right:9px;opacity:.8}
+.pitem{display:flex;align-items:center;gap:9px;width:100%;text-align:left;background:none;border:1px solid transparent;border-radius:10px;padding:9px 12px;color:var(--fg);cursor:pointer;font-size:14px;margin-bottom:2px}
+.pitem:hover{background:var(--card2)}.pitem.on{background:var(--card2);border-color:var(--line)}
+.pitem .lab{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pitem svg{opacity:.8;flex:none}
+.pitem .cnt{color:var(--mut);font-size:12px;flex:none}
+.sdot{width:8px;height:8px;border-radius:50%;flex:none}
+.sdot.run{background:var(--acc);animation:boPulse 1.1s ease-in-out infinite}
+.sdot.attn{background:var(--warn)}
 .vmenu button svg{vertical-align:-2px;margin-right:5px}
 .pitem{display:block;width:100%;text-align:left;background:none;border:1px solid transparent;border-radius:10px;padding:9px 12px;color:var(--fg);cursor:pointer;font-size:14px;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .pitem:hover{background:var(--card2)}.pitem.on{background:var(--card2);border-color:var(--line)}
@@ -98,8 +107,12 @@ pre{background:var(--pre)!important}
    <button id=vm-work><i class=ic></i><span></span></button>
    <button id=vm-settings><i class=ic></i><span></span></button>
   </div>
+  <div class=acts>
+   <button id=na-chat><i class=ic></i><span id=lnewchat></span></button>
+   <button id=na-proj><i class=ic></i><span id=lnewproj></span></button>
+  </div>
   <input id=qsearch class=inp style="margin:4px 0 8px;width:100%" placeholder="">
-  <div class=shead><span id=lprojects></span><button id=newproj>+ <span id=lnewproj></span></button></div>
+  <div class=shead><span id=lprojects></span></div>
   <div id=projects></div>
   <div class=shead><span id=ladhoc></span></div>
   <div id=adhoc></div>
@@ -150,6 +163,8 @@ const ICONS={
  mail:'<path d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/><path d="M22 6l-10 7L2 6"/>',
  drive:'<path d="M22 12H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><path d="M6 16h.01"/><path d="M10 16h.01"/>',
  apps:'<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/>',
+ plus:'<circle cx="12" cy="12" r="10"/><path d="M12 8v8"/><path d="M8 12h8"/>',
+ folderplus:'<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><path d="M12 11v6"/><path d="M9 14h6"/>',
 };
 const I=(n,sz=15)=>'<svg width="'+sz+'" height="'+sz+'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'+(ICONS[n]||'')+'</svg>';
 const FAMILY_ICON={mail:'mail',files:'drive',apps:'apps'};
@@ -169,6 +184,9 @@ function sidebar(){
  document.getElementById('tagline').textContent=t('app.tagline');
  document.getElementById('lprojects').innerHTML=I('folder',12)+esc(t('shell.projects'));
  document.getElementById('lnewproj').textContent=t('shell.newProject');
+ document.getElementById('lnewchat').textContent=t('shell.newChat');
+ document.getElementById('na-chat').querySelector('.ic').innerHTML=I('plus');
+ document.getElementById('na-proj').querySelector('.ic').innerHTML=I('folderplus');
  document.getElementById('ladhoc').innerHTML=I('chat',12)+esc(t('shell.adHoc'));
  document.getElementById('lsources').innerHTML=I('database',12)+esc(t('nav.sources'));
  document.getElementById('locale').value=LOCALE;
@@ -182,7 +200,7 @@ function sidebar(){
   if(!open&&scrim)scrim.remove();
  };
  // navigating from the sidebar closes the mobile nav
- document.querySelectorAll('aside .pitem,aside .vmenu button').forEach(b=>b.addEventListener('click',()=>{document.body.classList.remove('nav-open');document.getElementById('scrim')?.remove()}));
+ document.querySelectorAll('aside .pitem,aside .vmenu button,aside .acts button').forEach(b=>b.addEventListener('click',()=>{document.body.classList.remove('nav-open');document.getElementById('scrim')?.remove()}));
  // view menu + mode dropdown + theme toggle — icons are inline SVG, never emoji
  const vm=[['chat',t('nav.chat'),'chat'],['work',t('nav.work'),'work'],['settings',t('nav.settings'),'settings']];
  ['chat','work','settings'].forEach((v,i)=>{const b=document.getElementById('vm-'+v);if(!b)return;
@@ -206,7 +224,7 @@ function sidebar(){
   const chip=f.state==='connected'?'<span class=cnt>✓'+(f.connected>1?' '+f.connected:'')+'</span>'
    :f.state==='available'?'<span class=cnt>+</span>'
    :'<span class=cnt>'+esc(t('sources.soon'))+'</span>';
-  const b=el('<button class="pitem">'+I(FAMILY_ICON[f.family]||'apps')+esc(t('sources.family.'+f.family))+chip+'</button>');
+  const b=el('<button class="pitem">'+I(FAMILY_ICON[f.family]||'apps')+'<span class=lab>'+esc(t('sources.family.'+f.family))+'</span>'+chip+'</button>');
   b.onclick=()=>{S.view='settings';render()};       // the catalog lives in Settings
   srcBox.appendChild(b)});
  document.querySelectorAll('aside .shead').forEach(h=>h.style.display=searching?'none':'flex');
@@ -217,7 +235,7 @@ function sidebar(){
   hits.forEach(c=>{
    const label=c.title||(c.messages[0]?String(c.messages[0].text).slice(0,40):c.id);
    const proj=c.projectId?(s.projects||[]).find(p=>p.id===c.projectId):null;
-   const b=el('<button class="pitem">'+esc(label)+(proj?' <span class=mut>· '+esc(proj.name)+'</span>':'')+'</button>');
+   const b=el('<button class="pitem">'+I('chat')+'<span class=lab>'+esc(label)+(proj?' <span class=mut>· '+esc(proj.name)+'</span>':'')+'</span></button>');
    b.onclick=()=>{S.projectId=c.projectId||null;S.convId=c.id;S.view='chat';S.q='';render()};
    qr.appendChild(b)});
   if(!hits.length)qr.appendChild(el('<div class=mut style="font-size:13px;padding:4px 6px">—</div>'));
@@ -225,24 +243,28 @@ function sidebar(){
  qs.onchange=()=>{S.q=qs.value;render()};
  qs.oninput=()=>{S.q=qs.value;clearTimeout(S._q);S._q=setTimeout(render,250)};
  const runningPids=new Set((s.executions||[]).filter(e=>e.status==='running').map(e=>e.projectId).filter(Boolean));
+ // Attention = a mission in that project waits on the user (draft or post-run approval).
+ const attnPids=new Set((s.missions||[]).filter(m=>m.projectId&&(m.status==='awaiting-approval'||m.status==='draft')).map(m=>m.projectId));
  const proj=document.getElementById('projects');proj.innerHTML='';
  (s.projects||[]).forEach(p=>{
   const n=convs.filter(c=>c.projectId===p.id).length;
-  const b=el('<button class="pitem'+(S.projectId===p.id?' on':'')+'">'+I('folder')+esc(p.name)+(runningPids.has(p.id)?'<span class=wdot></span>':'')+'<span class=cnt>'+(n||'')+'</span></button>');
+  const dot=runningPids.has(p.id)?'<span class="sdot run" title="running"></span>':attnPids.has(p.id)?'<span class="sdot attn" title="needs you"></span>':'';
+  const b=el('<button class="pitem'+(S.projectId===p.id?' on':'')+'">'+I('folder')+'<span class=lab>'+esc(p.name)+'</span>'+dot+'<span class=cnt>'+(n||'')+'</span></button>');
   b.onclick=()=>{S.projectId=p.id;S.convId=null;S.view='chat';render()};
   proj.appendChild(b)});
  if(!(s.projects||[]).length)proj.appendChild(el('<div class=mut style="font-size:13px;padding:4px 6px">'+esc(t('shell.emptyProjects'))+'</div>'));
  const ad=document.getElementById('adhoc');ad.innerHTML='';
  convs.filter(c=>!c.projectId).slice().reverse().slice(0,20).forEach(c=>{
   const label=c.title||(c.messages[0]?String(c.messages[0].text).slice(0,34):c.id);
-  const b=el('<button class="pitem'+(S.convId===c.id&&!S.projectId?' on':'')+'">'+I('chat')+esc(label)+'</button>');
+  const b=el('<button class="pitem'+(S.convId===c.id&&!S.projectId?' on':'')+'">'+I('chat')+'<span class=lab>'+esc(label)+'</span></button>');
   b.onclick=()=>{S.projectId=null;S.convId=c.id;S.view='chat';render()};
   ad.appendChild(b);
-  const del=el('<button class="delchat" title="'+esc(t('chat.delete'))+'" style="float:right;background:none;border:none;color:var(--mut);cursor:pointer;font-size:12px;padding:6px">✕</button>');
+  const del=el('<button class="delchat" title="'+esc(t('chat.delete'))+'" style="margin-left:auto;flex:none;background:none;border:none;color:var(--mut);cursor:pointer;font-size:12px;padding:2px 4px">✕</button>');
   del.onclick=async(e)=>{e.stopPropagation();if(!confirm(t('chat.deleteConfirm')))return;
    await api('/api/conversation/delete',{id:c.id});if(S.convId===c.id)S.convId=null;await refresh()};
   b.appendChild(del)});
- document.getElementById('newproj').onclick=async()=>{
+ document.getElementById('na-chat').onclick=()=>{S.projectId=null;S.convId=null;S.view='chat';render()};
+ document.getElementById('na-proj').onclick=async()=>{
   const name=prompt(t('shell.projectName'));if(!name||!name.trim())return;
   const r=await api('/api/project',{name:name.trim()});if(r.error){alert(r.error);return}
   S.projectId=(r.project||{}).id||S.projectId;S.convId=null;await refresh()};
