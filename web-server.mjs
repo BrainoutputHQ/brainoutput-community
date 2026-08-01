@@ -32,7 +32,9 @@ import { createWorkTwin, setMode as twinSetMode, connectWorkSource, grantTwinSco
 import { connectMailSource, workSourceOptions, smtpSend } from "./mail-sources.mjs";
 import { draftConnectorSpec, connectorGuide, missingConfig, connectorBuildPlan } from "./connector-builder.mjs";
 import { LocalNodes, POLL_HOLD_MS } from "./local-bridge.mjs";
-import { PLAN_TASKS_INSTRUCTION, parsePlannedTasks } from "./plan-tasks.mjs";
+import { PLAN_TASKS_INSTRUCTION, parsePlannedTasks, workerPartPrompt } from "./plan-tasks.mjs";
+import { FILES_SPEC_INSTRUCTION, writeFilesSpec } from "./file-spec.mjs";
+import { safeSlice } from "./ce-core.mjs";
 import { GoogleOAuth } from "./oauth-google.mjs";
 import { connectDriveSource, driveProviderOptions } from "./drive-sources.mjs";
 import { indexFiles, searchFiles } from "./worktwin.mjs";
@@ -1181,6 +1183,8 @@ async function chatLaunch(res, b) {
   // File deliverables get a real-file protocol: the model outputs a spec, we render the file
   // deterministically (pdf.mjs) — never "code that could make the file" as the deliverable.
   const wantsFile = /pdf|document|brochure|catalog|flyer/i.test(m.objective || "");
+  // A web/code artifact deliverable gets the files-spec protocol (real files written on disk).
+  const WANTS_FILES_RE = /dashboard|web ?site|website|web ?app|landing|html|css|component|page\b|ui\b|frontend|spa\b/i;
   const conv = getConversation(m.conversationId);
   const run = async () => {
     // Images: uploaded JPEGs first; else fetch from the project's or the company's website —
@@ -1203,15 +1207,14 @@ async function chatLaunch(res, b) {
     }
     const fileInstruction = wantsFile
       ? `\n\nThe deliverable is a DOCUMENT. Output ONLY a fenced file spec, nothing else:\n\`\`\`file:spec.json\n{"title":"…","pages":[{"heading":"…","lines":["…","…"],"images":["uploaded-file-name.jpg"]}]}\n\`\`\`\nAvailable uploaded images you may embed: ${imageNames.join(", ") || "(none — leave images out)"}.${siteText ? `\nAbout the business (from its own website — use THESE facts, never invent others): ${siteText}` : ""}`
-      : "";
-    // Cold-start contract: a worker in a project gets the project's compact brief — what
+      : "";    // Cold-start contract: a worker in a project gets the project's compact brief — what
     // shipped, what is open, the pinned decisions. Never the transcripts. And EVERY worker gets
     // the company line — without it a worker invents "a generic lifestyle brand" for a hotel.
     const brief = m.projectId ? projectBrief(store.runtime, m.projectId) : null;
     const prompt = missionWorkerPrompt({
       objective: m.objective, constraints: m.constraints, acceptanceCriteria: m.acceptanceCriteria,
       brief, company: store.def.company || null, fileInstruction,
-    });
+    }) + (WANTS_FILES_RE.test(m.objective || "") ? FILES_SPEC_INSTRUCTION : "");
     const updateExec = (patch) => { store.addExecution({ ...exec, ...patch }); store.saveRuntime(); };
     const onNodeDone = (result, i) => {
       exec.results.push(result);
@@ -1233,6 +1236,7 @@ async function chatLaunch(res, b) {
     let retried = false;
     let decomposed = null;                          // plan → spine tasks bookkeeping
     let planRest = r.plan;                          // nodes left after the planner (or the whole plan)
+    let pr = null;                                  // the planner result (drives per-task workers)
     try {
       // PLAN → SPINE TASKS: a planner in a PROJECT mission decomposes the objective into real
       // subtasks; workers execute them one by one and each report flips its task to done. This
@@ -1240,7 +1244,6 @@ async function chatLaunch(res, b) {
       const plannerNode = r.plan.find((n) => String(n.node).replace(/\d+$/, "") === "planner");
       const workerNode = r.plan.find((n) => String(n.node).replace(/\d+$/, "") === "worker");
       if (plannerNode && workerNode && m.projectId && spineTask) {
-        let pr;
         try {
           pr = await runNode(plannerNode, plannerNode.model, { prompt: prompt + PLAN_TASKS_INSTRUCTION },
             { maxTokens: b.maxTokens || 1500, timeoutMs: b.timeoutMs || 240000, localCall: localNodeModelCall });
@@ -1287,7 +1290,7 @@ async function chatLaunch(res, b) {
         const codeWs = join(store.dir, "workspaces", exec.id);
         for (const [i, st] of decomposed.subtasks.entries()) {
           store.addTask(setTaskStatus(store.runtime, st.id, "in-progress", { at: Date.now() }));
-          const wprompt = `${prompt}\n\nThe plan has ${decomposed.subtasks.length} parts. YOUR PART (task ${i + 1}/${decomposed.subtasks.length}): ${st.title}\nComplete ONLY your part, fully.`;
+          const wprompt = workerPartPrompt({ objective: prompt, planOutput: safeSlice(pr.output, 1200), part: st.title, index: i + 1, total: decomposed.subtasks.length });
           let out;
           if (isCodingWorker) {
             try {
@@ -1395,6 +1398,20 @@ async function chatLaunch(res, b) {
         eff.artifacts.push(`file:${fname}${skippedImages.length ? ` (skipped non-JPEG: ${skippedImages.join(", ")})` : ""}`);
       } catch (e) { eff.artifacts.push(`file-spec-error: ${String(e.message || e).slice(0, 120)}`); }
     }
+    // Code deliverables land as REAL FILES (the files-spec protocol — like the PDF protocol,
+    // never "code that could make them"). Written into the execution workspace, path-guarded,
+    // downloadable as artifacts.
+    let writtenFiles = [], fileErrors = [];
+    if (WANTS_FILES_RE.test(m.objective || "")) {
+      const out = writeFilesSpec(outText, join(store.dir, "workspaces", exec.id));
+      writtenFiles = out.files;
+      fileErrors = out.errors;
+      for (const f of writtenFiles)
+        store.addArtifact({ id: uid("file"), kind: "file", name: f.name, path: join("workspaces", exec.id, f.name),
+          size: f.bytes, mime: f.mime, executionId: exec.id, projectId: m.projectId || null, createdAt: Date.now() });
+      for (const f of writtenFiles) eff.artifacts.push(`file:${f.name}`);
+      for (const e of fileErrors) eff.artifacts.push(`file-error: ${e}`);
+    }
     // Logs stay SNIPPETS (exec.logs accumulated via execLogLine) — the run view renders full
     // outputs separately; writing them into logs too duplicated every deliverable in the thread.
     const codeFiles = results.flatMap((x) => x.files || []);
@@ -1415,7 +1432,7 @@ async function chatLaunch(res, b) {
     const imageGenAvailable = !!(store.def.modelAssignments || {})["image-gen"];
     const gaps = unmetDeliverables(m.objective, eff.artifacts, { imageGenAvailable });
     const c2 = conv ? addMessage(conv, { role: "assistant", mode: "execute", at: Date.now(),
-      text: `Mission complete${retried ? " (after a retry with a bigger output budget)" : ""} — graph ${eff.graph}${eff.stagesSkipped.length ? `, stages not used: ${eff.stagesSkipped.join(", ")}` : ""}. ${review.allMet ? "Acceptance criteria met." : review.unmet.length ? `Unmet: ${review.unmet.join("; ")}` : ""}${decomposed ? ` Planned tasks: ${decomposed.subtasks.filter((s) => (store.runtime.tasks || []).find((t) => t.id === s.id)?.status === "done").length}/${decomposed.subtasks.length} done.` : ""}${deliverableGapNote(gaps)}`,
+      text: `Mission complete${retried ? " (after a retry with a bigger output budget)" : ""} — graph ${eff.graph}${eff.stagesSkipped.length ? `, stages not used: ${eff.stagesSkipped.join(", ")}` : ""}. ${review.allMet ? "Acceptance criteria met." : review.unmet.length ? `Unmet: ${review.unmet.join("; ")}` : ""}${decomposed ? ` Planned tasks: ${decomposed.subtasks.filter((s) => (store.runtime.tasks || []).find((t) => t.id === s.id)?.status === "done").length}/${decomposed.subtasks.length} done.` : ""}${writtenFiles.length ? ` Files written: ${writtenFiles.map((f) => f.name).join(", ")}.` : ""}${fileErrors.length ? ` File errors: ${fileErrors.join("; ")}.` : ""}${deliverableGapNote(gaps)}`,
       meta: { executionId: exec.id, efficiency: eff } }) : null;
     if (c2) saveConversation(c2);
     store.saveRuntime();

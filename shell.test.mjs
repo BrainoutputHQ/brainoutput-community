@@ -13,6 +13,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const PORT = 4333;
 const BASE = `http://127.0.0.1:${PORT}`;
 let srv, dir, zenStub, zenPort;
+globalThis.__zenBodies = [];
 
 before(async () => {
   dir = mkdtempSync(join(tmpdir(), "bo-shell-"));
@@ -22,13 +23,15 @@ before(async () => {
   let flakySeen = 0;
   zenStub = createServer((req, res) => {
     let d = ""; req.on("data", (c) => (d += c));
-    req.on("end", () => { res.writeHead(200, { "Content-Type": "application/json" });
+    req.on("end", () => { globalThis.__zenBodies.push(d); res.writeHead(200, { "Content-Type": "application/json" });
       if (d.includes("FLAKY-BUDGET") && flakySeen++ === 0)
         return res.end(JSON.stringify({ choices: [{ message: { content: "" }, finish_reason: "length" }] }));
       if (d.includes("CLARIFY-NOW"))
         return res.end(JSON.stringify({ choices: [{ message: { content: "You haven't provided any context for me to analyze. Could you please clarify?" } }] }));
-      if (d.includes("output the plan as a fenced block"))
+      if (d.includes("Reply in exactly this form"))
         return res.end(JSON.stringify({ choices: [{ message: { content: "Thinking through it.\n\n```tasks\n[{\"title\": \"research the options\"}, {\"title\": \"draft the first version\"}, {\"title\": \"verify with the user\"}]\n```" } }] }));
+      if (d.includes("DASHBOARD-FILES-HERE"))
+        return res.end(JSON.stringify({ choices: [{ message: { content: "```files\n[{\"path\": \"index.html\", \"content\": \"<!doctype html><title>rooms</title><h1>Rooms</h1><script src=app.js></script>\"}, {\"path\": \"app.js\", \"content\": \"console.log('rooms')\"}]\n```" } }] }));
       if (d.includes("PDF-SPEC"))
         return res.end(JSON.stringify({ choices: [{ message: { content: "```file:spec.json\n" + JSON.stringify({ title: "Hotel Soleil — pictures", pages: [{ heading: "The hotel", lines: ["A real hotel brochure, generated as a real PDF file by the runtime — not as code that could make one. ".repeat(2)], images: [] }] }) + "\n```" } }] }));
       res.end(JSON.stringify({ choices: [{ message: { content: "ok — done. " + "Real work output follows: ".repeat(8) } }] })); });
@@ -639,4 +642,31 @@ test("plan → spine tasks: a goal mission decomposes into subtasks that flip do
   assert.ok(graphNodes.includes("worker-1") && graphNodes.includes("worker-3"), "the live graph shows per-task workers");
   const conv = (st.conversations || []).find((c) => c.id === m.conversationId);
   assert.match(conv.messages.at(-1).text, /Planned tasks: 3\/3 done/);
+});
+
+test("a web build lands as REAL downloadable files, and every worker gets the planner's decisions", async () => {
+  const p = await post("/api/project", { name: "dash-proj" });
+  const send = await post("/api/chat/send", { scope: "department", department: "technical", mode: "plan",
+    text: "set up the DASHBOARD-FILES-HERE room reservations dashboard", projectId: p.body.project.id });
+  const m = send.body.mission;
+  await post("/api/chat/mission", { missionId: m.id, action: "approve" });
+  await post("/api/chat/launch", { missionId: m.id, timeoutMs: 30000 });
+  const done = await until(async () => {
+    const st = await state();
+    const mm = (st.missions || []).find((x) => x.id === m.id);
+    return mm?.status === "done" ? st : null;
+  }, 60000);
+  const arts = (done.artifacts || []).filter((a) => a.executionId && a.kind === "file");
+  assert.ok(arts.some((a) => a.name === "index.html"), "index.html is a real artifact");
+  assert.ok(arts.some((a) => a.name === "app.js"));
+  const dl = await fetch(`${BASE}/api/artifact/download?id=${arts.find((a) => a.name === "index.html").id}`);
+  assert.equal(dl.status, 200);
+  assert.match(await dl.text(), /<h1>Rooms<\/h1>/, "the file content is really on disk");
+  const conv = (done.conversations || []).find((c) => c.id === m.conversationId);
+  assert.match(conv.messages.at(-1).text, /Files written: index\.html, app\.js/);
+  // workers shared the planner's decisions — no three-stack chaos
+  const workerBodies = globalThis.__zenBodies.filter((b) => b.includes("YOUR PART (task"));
+  assert.ok(workerBodies.length >= 2, "decomposed workers ran");
+  for (const b of workerBodies)
+    assert.ok(b.includes("The plan and decisions (shared, binding"), "every worker prompt carries the shared plan+decisions");
 });

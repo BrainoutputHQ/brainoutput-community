@@ -6,11 +6,24 @@
 // The parse contract is deterministic and bounded; an unusable plan falls back to one worker.
 export const PLAN_TASKS_INSTRUCTION = `
 
-You are the PLANNER. Think, then output the plan as a fenced block at the END, exactly:
+You are the PLANNER. Reply in exactly this form:
+DECISIONS: <one or two lines of shared choices every step must respect — stack, style, names>
 \`\`\`tasks
 [{"title": "step one"}, {"title": "step two"}]
 \`\`\`
 Rules: 2 to 6 steps; each step is one concrete, completable task; titles under 80 characters; no nesting, no commentary inside the block.`;
+
+/** The shared context every per-task worker gets — without it each worker re-invents the stack
+ *  (a real run produced React+Vite, "vanilla HTML", and Next.js for ONE dashboard). */
+export function workerPartPrompt({ objective, planOutput, part, index, total }) {
+  return `${objective}
+
+The plan and decisions (shared, binding on every worker):
+${planOutput}
+
+YOUR PART (task ${index}/${total}): ${part}
+Complete ONLY your part, fully, and stay inside the shared decisions.`;
+}
 
 /** Parse the planner's task block. Returns ≥2 titles, or [] (caller falls back to one worker). */
 export function parsePlannedTasks(output = "", { max = 6 } = {}) {
