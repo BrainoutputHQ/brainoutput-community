@@ -185,3 +185,23 @@ test("assertZeroFunded + costReport keep BrainOutput-funded tokens at 0", () => 
   assert.equal(rep.brainoutputFundedTokens, 0);
   assert.equal(rep.byCostSource["local-compute"], 120);
 });
+
+test("privacy posture: full-private floors every non-local stage to local/stop — never a silent cloud call", () => {
+  const connections = [
+    { id: "free1", kind: "opencode-free", provider: "zen", model: "free-x", costSource: "free", funder: "free" },
+    { id: "loc1", kind: "local", provider: "ollama", model: "qwen", costSource: "local-compute", funder: "local" },
+  ];
+  const agents = [{ id: "eng", department: "technical", role: "engineer", capabilities: { worker: "coding-free" } }];
+  const base = { agents, assignments: { "coding-free": "free1" }, connections, catalog: null, departments: {}, policies: {} };
+  const open = routeTask({ department: "technical", task: { summary: "x" } }, base);
+  assert.equal(open.plan[0].model.funder, "free", "open posture lets the assigned free model run");
+  const priv = routeTask({ department: "technical", task: { summary: "x" } }, { ...base, settings: { privacy: "private" } });
+  assert.equal(priv.plan[0].model.needsConfiguration, true, "private posture blocks the free model");
+  assert.deepEqual(priv.plan[0].model.options, ["local", "stop"]);
+  assert.match(priv.plan[0].model.reason, /full-private/);
+  const localOk = routeTask({ department: "technical", task: { summary: "x" } },
+    { ...base, assignments: { "coding-free": "loc1" }, settings: { privacy: "private" } });
+  assert.equal(localOk.plan[0].model.funder, "local", "local models still run under full-private");
+  assert.throws(() => PRIVACY_POSTURES && routeTask({ department: "technical", task: { summary: "x" } },
+    { ...base, settings: { privacy: "private" }, connections: connections.filter((c) => c.id === "free1") }), null, "no local model needed for the check to fail closed");
+});

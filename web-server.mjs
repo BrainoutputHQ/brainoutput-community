@@ -13,7 +13,7 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Store } from "./store.mjs";
-import { routeTask, makeCatalog, costReport, executionSummary, validateCompanyConfig } from "./ce-core.mjs";
+import { routeTask, makeCatalog, costReport, executionSummary, validateCompanyConfig, PRIVACY_POSTURES } from "./ce-core.mjs";
 import { executePlan, runNode, execLogLine } from "./adapters.mjs";
 import { runOpenCode } from "./opencode-adapter.mjs";
 import { DEPARTMENT_TEMPLATES } from "./departments.mjs";
@@ -96,7 +96,7 @@ async function detectLocal() {
   return Promise.all(checks);
 }
 const catalog = makeCatalog([]);
-const ctx = () => ({ agents: store.def.agents, assignments: store.def.modelAssignments, connections: store.def.modelConnections, catalog, departments: DEPARTMENT_TEMPLATES });
+const ctx = () => ({ agents: store.def.agents, assignments: store.def.modelAssignments, connections: store.def.modelConnections, catalog, departments: DEPARTMENT_TEMPLATES, settings: store.def.settings || {} });
 // History-bounded store: ids must NOT derive from collection lengths (they shrink on trim).
 let uidCounter = 0;
 const uid = (p) => `${p}-${Date.now().toString(36)}-${(uidCounter += 1)}`;
@@ -258,9 +258,15 @@ async function api(req, res, url) {
       if (!LOCALES.includes(b.locale)) return json(res, { error: `unknown locale '${b.locale}' — launch locales: ${LOCALES.join(", ")}` }, 400);
       patch.locale = b.locale;
     }
+    if (b.privacy !== undefined) {
+      if (!PRIVACY_POSTURES.includes(b.privacy))
+        return json(res, { error: `unknown privacy posture '${b.privacy}' — expected one of ${PRIVACY_POSTURES.join(", ")}` }, 400);
+      patch.privacy = b.privacy;
+    }
     const next = { ...(store.def.settings || {}) };
     if (patch.mode) next.mode = patch.mode;
     if (patch.locale) next.locale = patch.locale;
+    if (patch.privacy) next.privacy = patch.privacy;
     store.setSettings(next).saveDefinition();
     return json(res, publicState());
   }

@@ -476,6 +476,17 @@ function settingsView(){
   const r=await api('/api/connect-free');fm.textContent=r.error?r.error:('✓ '+r.picked.model+' (free)');if(!r.error){S.state=r;render()}};
  c.appendChild(fb);
  wrap.appendChild(c);
+ // Privacy posture — the one-line choice: full private (local models only) or more open (free cloud
+ // models allowed where you assigned them). Fail-closed at routing, never a silent cloud call.
+ const posture=(s.settings||{}).privacy||'open';
+ const pv=el('<div class="cardx"><h3>'+esc(t('settings.privacy'))+'</h3>'
+  +'<div class=mut style="font-size:12.5px;margin-bottom:8px">'+esc(t('settings.privacyHint'))+'</div>'
+  +'<div style="display:flex;gap:8px;flex-wrap:wrap">'
+  +['open','private'].map(p=>'<button class="'+(posture===p?'act':'ghost')+'" data-pv="'+p+'" style="font-size:13px">'+esc(t('settings.privacy.'+p))+'</button>').join('')
+  +'</div><div class=mut id=pvmsg style="font-size:12px;margin-top:6px">'+esc(t('settings.privacy.'+posture+'.desc'))+'</div></div>');
+ pv.querySelectorAll('[data-pv]').forEach(b=>b.onclick=async()=>{
+  const r=await api('/api/settings',{privacy:b.dataset.pv});if(r.error){alert(r.error);return}S.state=r;render()});
+ wrap.appendChild(pv);
  return wrap;
 }
 

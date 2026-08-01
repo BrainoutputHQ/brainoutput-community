@@ -458,3 +458,15 @@ test("brand: the B monogram tiles serve as the favicon (PNG first choice)", asyn
   assert.equal(icon.status, 200);
   assert.equal(icon.headers.get("content-type"), "image/png");
 });
+
+test("privacy posture: the setting round-trips and the page offers the choice", async () => {
+  const shell = await (await fetch(`${BASE}/`)).text();
+  assert.match(shell, /settings\.privacy\.private/, "the full-private option is in the UI");
+  const bad = await post("/api/settings", { privacy: "paranoid" });
+  assert.equal(bad.status, 400);
+  const priv = await post("/api/settings", { privacy: "private" });
+  assert.equal(priv.status, 200);
+  assert.equal(priv.body.settings.privacy, "private");
+  const back = await post("/api/settings", { privacy: "open" });
+  assert.equal(back.body.settings.privacy, "open");
+});

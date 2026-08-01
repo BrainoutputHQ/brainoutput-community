@@ -319,6 +319,7 @@ export function routeTask(req, ctx) {
   const deptDefaults = departments[agent.department]?.capabilityDefaults || {};
   let plan = graph.nodes.map((n) => ({ ...n, model: selectModel(n.slot, { assignments, connections, catalog, departmentDefaults: deptDefaults }) }));
   plan = applyStageOverrides(plan, agent, connections);   // ADVANCED: per-stage models + privacy rules
+  plan = applyPrivacyFloor(plan, ctx.settings?.privacy);  // company-wide: full-private = local only
 
   const funded = assertZeroFunded(plan);
   const needsConfig = plan.filter((n) => n.model?.needsConfiguration);
@@ -367,6 +368,26 @@ export function assertZeroFunded(plan) {
     if (f && !ALLOWED_FUNDERS.includes(f)) throw new Error(`BrainOutput-funded inference in plan (node ${n.node}, funder ${f})`);
   }
   return true;
+}
+
+// ── Company privacy posture: who may run models WHERE. ────────────────────────
+// "open"   — any user/free/local connection may run (today's behaviour; the user picks per slot).
+// "private"— FULL PRIVATE: only local models may execute, company-wide. Any stage that would run
+//            on a free/cloud connection is left UNCONFIGURED with local/stop as the only options —
+//            fail-closed, never a silent cloud call. Per-agent confidentiality
+//            (applyStageOverrides) still applies on top.
+export const PRIVACY_POSTURES = ["open", "private"];
+
+export function applyPrivacyFloor(plan, posture) {
+  if (posture !== "private") return plan;
+  return plan.map((n) => {
+    if (n.gate || n.tool || n.model?.deterministic) return n;          // tools/gates use no model
+    if (n.model?.needsConfiguration) return n;                          // already unconfigured — nothing leaks
+    const f = n.model?.funder;
+    if (!f || f === "local") return n;
+    return { ...n, model: { slot: n.slot, needsConfiguration: true, options: ["local", "stop"],
+      privacyBlocked: "private", reason: "company posture is full-private — only local models may run" } };
+  });
 }
 
 /**
