@@ -364,10 +364,11 @@ test("task spine API: manual tasks, subtasks, status flips — and missions repo
   assert.equal(typeof reported.result.ok, "boolean");
 });
 
-test("sources: the menu and the always-visible catalog exist — connected or not", async () => {
+test("sources: sidebar rollup always visible; the full catalog lives in Settings (lean menu)", async () => {
   const shell = await (await fetch(`${BASE}/`)).text();
-  assert.match(shell, /vm-sources/, "the Sources menu entry is in the page");
-  assert.match(shell, /sources\.kind\.imap|sources\\?\.kind/, "catalog kind labels are wired");
+  assert.doesNotMatch(shell, /vm-sources/, "no fourth menu tab — the menu stays lean");
+  assert.match(shell, /id=sources/, "the sidebar Sources section is in the page");
+  assert.match(shell, /sourcesView/, "the catalog renders inside Settings");
 
   const st = await state();
   assert.ok(Array.isArray(st.sourceCatalog), "state carries the catalog");

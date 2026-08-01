@@ -92,7 +92,6 @@ pre{background:var(--pre)!important}
   <div class=vmenu>
    <button id=vm-chat>💬 <span></span></button>
    <button id=vm-work>🗂 <span></span></button>
-   <button id=vm-sources>🔌 <span></span></button>
    <button id=vm-settings>⚙ <span></span></button>
   </div>
   <input id=qsearch class=inp style="margin:4px 0 8px;width:100%" placeholder="">
@@ -168,8 +167,8 @@ function sidebar(){
  // navigating from the sidebar closes the mobile nav
  document.querySelectorAll('aside .pitem,aside .vmenu button').forEach(b=>b.addEventListener('click',()=>{document.body.classList.remove('nav-open');document.getElementById('scrim')?.remove()}));
  // view menu + mode dropdown + theme toggle
- const vm=[['chat',t('nav.chat')],['work',t('nav.work')],['sources',t('nav.sources')],['settings',t('nav.settings')]];
- ['chat','work','sources','settings'].forEach((v,i)=>{const b=document.getElementById('vm-'+v);if(!b)return;b.querySelector('span').textContent=vm[i][1];
+ const vm=[['chat',t('nav.chat')],['work',t('nav.work')],['settings',t('nav.settings')]];
+ ['chat','work','settings'].forEach((v,i)=>{const b=document.getElementById('vm-'+v);if(!b)return;b.querySelector('span').textContent=vm[i][1];
   b.className=S.view===v?'on':'';b.onclick=()=>{S.view=v;render()}});
  const tb=document.getElementById('themebtn');tb.textContent=document.body.classList.contains('dark')?'☀':'☾';
  tb.onclick=toggleTheme;
@@ -190,7 +189,7 @@ function sidebar(){
    :f.state==='available'?'<span class=cnt>+</span>'
    :'<span class=cnt>'+esc(t('sources.soon'))+'</span>';
   const b=el('<button class="pitem">'+esc(f.icon)+' '+esc(t('sources.family.'+f.family))+chip+'</button>');
-  b.onclick=()=>{S.view='sources';render()};
+  b.onclick=()=>{S.view='settings';render()};       // the catalog lives in Settings
   srcBox.appendChild(b)});
  document.querySelectorAll('aside .shead').forEach(h=>h.style.display=searching?'none':'flex');
  if(searching){
@@ -389,6 +388,8 @@ function settingsView(){
   const r=await api('/api/company',{name:co.querySelector('#cn').value,website:co.querySelector('#cw').value});
   co.querySelector('#cmsg').textContent=r.error||'✓';if(!r.error){S.state=r;render()}};
  wrap.appendChild(co);
+ // The sources catalog lives in Settings (the menu stays lean); the sidebar keeps the rollup.
+ wrap.appendChild(sourcesView());
  const a=el('<div class="cardx"><h3>'+esc(t('models.assignments'))+'</h3><div class=mut style="font-size:12.5px;margin-bottom:8px">'+esc(t('models.hint'))+'</div></div>');
  slots.forEach(sl=>{
   const cur=(s.assignments||{})[sl];
@@ -536,7 +537,7 @@ function workView(){
   +(T?'<span>'+esc(T.name)+' · <b>'+connectedN+'</b> '+esc(t('sources.connectedCount'))+' · '+(T.indexSize||0)+' '+esc(t('work.indexed'))+'</span>'
     :'<span class=mut>'+esc(t('work.noTwin'))+'</span>')
   +'<button class=ghost style="margin-left:auto">'+esc(t('sources.manage'))+' →</button></div>');
- sum.querySelector('button').onclick=()=>{S.view='sources';render()};
+ sum.querySelector('button').onclick=()=>{S.view='settings';render()};
  sc.appendChild(sum);
  wrap.appendChild(sc);
 
@@ -618,7 +619,6 @@ function thread(){
  const s=S.state||{};const box=document.getElementById('msgs');box.innerHTML='';
  if(S.view==='settings'){box.appendChild(settingsView());return}
  if(S.view==='work'){box.appendChild(workView());return}
- if(S.view==='sources'){box.appendChild(sourcesView());return}
  if(!tourSeen())box.appendChild(tourCard());
  const conv=(s.conversations||[]).find(c=>c.id===S.convId);
  if(!conv){
