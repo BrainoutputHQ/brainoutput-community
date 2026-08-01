@@ -5,8 +5,14 @@ models**. Roles are durable; execution happens only when there's work. **It neve
 account, BrainOutput credits, Claude, or Kimi — runs on your own models.**
 
 ## 1. Install (one command)
+
+**Linux / macOS**
 ```bash
-./install.sh
+./install.sh          # from a git checkout; zero npm dependencies
+```
+**Windows (PowerShell)**
+```powershell
+irm https://raw.githubusercontent.com/BrainoutputHQ/brainoutput-community/main/install.ps1 | iex
 ```
 Requires only **Node ≥18** and at least one model source you own. No npm dependencies.
 
@@ -14,6 +20,19 @@ Check prerequisites any time:
 ```bash
 node bo-community.mjs doctor
 ```
+
+## 1b. Bridge this computer to a hosted workspace (trial or cloud)
+
+Lets a hosted workspace use **this machine's local models** and **folders you explicitly grant** —
+outbound-only (no open ports), revocable anytime. This is how a hosted trial can run "full
+private": inference happens on your hardware.
+
+```bash
+node bo-community.mjs connect --url https://<your-workspace>.trial.brainoutput.com --code <CODE> --allow /path/to/folder
+```
+Get the code in the workspace: **Settings → Sources → This computer → Pair a device**. Codes are
+single-use and expire after 10 minutes. Same command on Windows: `node bo-community.mjs connect …`
+from the install directory.
 
 ## 2. Connect a model (pick any — all run on models you own or control)
 - **Local** (recommended): install [ollama](https://ollama.com), then `ollama pull qwen3-30b-a3b`

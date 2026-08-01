@@ -115,9 +115,49 @@ switch (cmd) {
   case "discover": case "inventory": case "diagnose": case "opportunities": case "twin":
     run("discovery/run.mjs", [cmd, ...rest]); break;
   case "ask": await ask(rest); break;
+  case "connect": await connectBridge(rest); break;
   default:
     console.log("BrainOutput Community Edition — runs on YOUR own models (free, local, subscription, or BYOK).\n");
-    console.log("usage: bo-community <doctor|setup|serve|onboard|demo|store|playbook|discover|inventory|diagnose|opportunities|twin|ask|write-demo|twin-demo>");
+    console.log("usage: bo-community <doctor|setup|serve|onboard|demo|store|playbook|discover|inventory|diagnose|opportunities|twin|ask|connect|write-demo|twin-demo>");
+}
+
+/**
+ * bo connect — the local bridge. Pair this computer with a workspace (hosted trial / cloud / or
+ * your own `serve` instance) so the workspace can use LOCAL models and GRANTED folders only.
+ * Outbound-only; the code is single-use and short-lived; revoke anytime from the workspace.
+ *   bo-community connect --url https://w….trial.brainoutput.com --code K7F2-9Q3M --name "Dimitri's laptop" --allow /home/me/docs
+ */
+async function connectBridge(args) {
+  const opt = (k) => { const i = args.indexOf(k); return i >= 0 ? args[i + 1] : null; };
+  const url = (opt("--url") || "").replace(/\/+$/, "");
+  const code = opt("--code");
+  const name = opt("--name") || `${process.env.USER || process.env.USERNAME || "my"}'s computer`;
+  const allow = [];
+  for (let i = 0; i < args.length; i++) if (args[i] === "--allow" && args[i + 1]) allow.push(args[i + 1]);
+  if (!url || !code) {
+    console.log("usage: bo-community connect --url <workspace-url> --code <pairing-code> [--name <name>] [--allow <folder>]…");
+    console.log("Get the code from your workspace: Settings → Sources → This computer → Pair a device.");
+    process.exit(1);
+  }
+  const post = async (path, body) => {
+    const r = await fetch(url + path, { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify(body), signal: AbortSignal.timeout(Number(body.holdMs || 5000) + 15000) });
+    return r.json();
+  };
+  console.log(`BrainOutput bridge — pairing with ${url} …`);
+  const { bridgePair, bridgeLoop, makeLocalExec } = await import("./local-bridge.mjs");
+  let node;
+  try { node = await bridgePair({ url, code, name, grants: allow, post }); }
+  catch (e) { console.error(`✗ pairing failed: ${e.message}`); process.exit(1); }
+  console.log(`✓ paired as '${name}' (${node.nodeId})` + (allow.length ? ` — granted folders: ${allow.join(", ")}` : " — no folders granted (models only)"));
+  const exec = makeLocalExec({ allow });
+  try { const { models } = await exec("list-models", {});
+    console.log(`✓ local models: ${models.join(", ") || "none (install ollama to add some)"}`);
+    await post("/api/local/result", { nodeId: node.nodeId, credential: node.credential, callId: "announce", models }).catch(() => {});
+  } catch { console.log("○ no local ollama found — the bridge still serves granted folders"); }
+  console.log("listening… (Ctrl-C to stop; the workspace shows this device while connected)");
+  await bridgeLoop({ url, nodeId: node.nodeId, credential: node.credential, exec, post,
+    onError: (e) => console.error(`  bridge note: ${String(e.message || e).slice(0, 120)}`) });
 }
 
 /**

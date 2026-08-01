@@ -514,3 +514,49 @@ test("guided add-app: create → configure with live probe → listed → duplic
   assert.equal(del.body.removed, 1);
   pms.close();
 });
+
+test("local bridge endpoints: pair (public, code-authed) → online → models → folder index → revoke kills", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "bo-shell-node-"));
+  writeFileSync(join(dir, "menu.txt"), "the lunch menu");
+  const pc = await post("/api/local/pair-code", {});
+  assert.match(pc.body.code, /^[A-Z2-9]{4}-[A-Z2-9]{4}$/);
+
+  const pair = await post("/api/local/pair", { code: pc.body.code, name: "test-laptop", grants: [dir] });
+  assert.equal(pair.status, 200, JSON.stringify(pair.body));
+  const { nodeId, credential } = pair.body;
+  const again = await post("/api/local/pair", { code: pc.body.code, name: "x", grants: [] });
+  assert.equal(again.status, 400, "codes are single-use");
+
+  const bad = await post("/api/local/poll", { nodeId, credential: "wrong", holdMs: 10 });
+  assert.equal(bad.status, 401);
+  const poll = await post("/api/local/poll", { nodeId, credential, holdMs: 50 });
+  assert.deepEqual(poll.body.verbs, []);
+  await post("/api/local/result", { nodeId, credential, callId: "announce", models: ["qwen3:8b"] });
+
+  let st = await state();
+  const node = (st.localNodes || []).find((n) => n.id === nodeId);
+  assert.ok(node && node.online, "node shows online after polling");
+  assert.deepEqual(node.models, ["qwen3:8b"]);
+  assert.deepEqual(node.grants, [dir]);
+
+  const addm = await post("/api/local/add-model", { nodeId, model: "qwen3:8b" });
+  assert.equal(addm.status, 200);
+  const conn = (addm.body.state.connections || []).find((c) => c.kind === "local-node");
+  assert.ok(conn, "the node's model became a connection");
+  assert.equal(conn.funder, "local");
+
+  const outside = await post("/api/local/index-folder", { nodeId, root: "/etc" });
+  assert.equal(outside.status, 400, "cannot index outside the grant");
+  const tw = await post("/api/worktwin/create", { employee: { id: "n@x.test", name: "N", email: "n@x.test" } });
+  const idx = await post("/api/local/index-folder", { nodeId, root: dir, twinId: tw.body.twin.id });
+  assert.equal(idx.status, 400, "bridge not answering in the test server (no exec) → honest error, OR indexed");
+  // either the folder indexed (if a bridge answered) or an honest error — never a fake success
+  if (idx.status === 200) assert.ok(idx.body.sampled >= 0);
+  else assert.match(idx.body.error, /could not index|timed out|offline/);
+
+  const rev = await post("/api/local/revoke", { nodeId });
+  assert.equal(rev.status, 200);
+  const dead = await post("/api/local/poll", { nodeId, credential, holdMs: 10 });
+  assert.equal(dead.status, 401, "a revoked node's credential dies immediately");
+  rmSync(dir, { recursive: true, force: true });
+});

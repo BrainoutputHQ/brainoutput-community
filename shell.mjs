@@ -616,6 +616,45 @@ function sourcesView(){
    const r=await api('/api/worktwin/sync',{twinId:T.id,limit:50});m.textContent=r.error?r.error:('✓ '+r.indexed);await refresh()};
   wrap.appendChild(sync);
  }
+ // This computer — the local bridge. Pair a device with a short code; its LOCAL models become
+ // assignable connections and its GRANTED folders can be indexed. Outbound-only, revocable.
+ const nodes=s.localNodes||[];
+ const cc=el('<div class="cardx"><h3>'+esc(t('sources.computer'))+'</h3>'
+  +'<div class=mut style="font-size:12.5px;margin-bottom:8px">'+esc(t('sources.computerHint'))+'</div></div>');
+ const pb=el('<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button class=ghost style="font-size:12.5px">'+esc(t('sources.pairDevice'))+'</button>'
+  +'<span id=pcode style="font-size:15px;font-weight:700;letter-spacing:.08em"></span><span class=mut id=phelp style="font-size:12px"></span></div>');
+ pb.querySelector('button').onclick=async()=>{
+  const r=await api('/api/local/pair-code',{});
+  pb.querySelector('#pcode').textContent=r.code;
+  pb.querySelector('#phelp').textContent='→ bo-community connect --url '+location.origin+' --code '+r.code+' [--allow /folder]';
+ };
+ cc.appendChild(pb);
+ nodes.forEach(n=>{
+  const row=el('<div style="margin-top:8px;padding:9px 10px;border:1px solid var(--line);border-radius:10px"></div>');
+  row.appendChild(el('<div style="display:flex;gap:8px;align-items:center;font-size:13.5px">'
+   +'<span style="color:'+(n.online?'var(--ok)':'var(--mut)')+'">●</span><b>'+esc(n.name)+'</b>'
+   +'<span class=mut style="font-size:12px">'+(n.online?esc(t('sources.online')):esc(t('sources.offline')))+'</span>'
+   +'<button class=ghost style="margin-left:auto;padding:3px 10px;font-size:12px">'+esc(t('sources.revoke'))+'</button></div>'));
+  row.querySelector('button').onclick=async()=>{const r=await api('/api/local/revoke',{nodeId:n.id});if(r.error){alert(r.error);return}S.state=r.state;await refresh()};
+  if((n.models||[]).length){
+   const ml=el('<div style="margin-top:6px;font-size:12.5px" class=mut>'+esc(t('sources.models'))+': </div>');
+   n.models.forEach(m=>{
+    const b=el('<button class=ghost style="font-size:12px;padding:3px 9px;margin:2px 4px 2px 0">+ '+esc(m)+'</button>');
+    b.title=t('sources.addModelHint');
+    b.onclick=async()=>{const r=await api('/api/local/add-model',{nodeId:n.id,model:m});if(r.error){alert(r.error);return}S.state=r.state;await refresh()};
+    ml.appendChild(b)});
+   row.appendChild(ml);
+  }
+  if((n.grants||[]).length){
+   const gl=el('<div style="margin-top:4px;font-size:12.5px" class=mut>'+esc(t('sources.folders'))+': </div>');
+   n.grants.forEach(g=>{
+    const b=el('<button class=ghost style="font-size:12px;padding:3px 9px;margin:2px 4px 2px 0">'+esc(g)+' — '+esc(t('sources.indexFolder'))+'</button>');
+    b.onclick=async()=>{const r=await api('/api/local/index-folder',{nodeId:n.id,root:g,twinId:T&&T.id});if(r.error){alert(r.error);return}S.state=r.state;await refresh()};
+    gl.appendChild(b)});
+   row.appendChild(gl);
+  }
+  cc.appendChild(row)});
+ wrap.appendChild(cc);
  return wrap;
 }
 

@@ -97,6 +97,21 @@ export async function runNode(node, nodeModel, input = {}, opts = {}) {
     return { node: node.node, needsConfiguration: true, options: nodeModel.options, tokens: 0, note: `slot '${nodeModel.slot}' unassigned — offer free/BYOK/local or stop` };
 
   const conn = nodeModel.connection;
+
+  // A LOCAL-NODE connection runs on the user's own computer via the bridge (bo connect):
+  // inference happens on their hardware, over the outbound channel. Offline node = honest error.
+  if (conn.kind === "local-node") {
+    if (typeof opts.localCall !== "function")
+      return { node: node.node, model: conn.model, provider: conn.provider, costSource: conn.costSource, funder: conn.funder,
+        tokens: 0, error: `local node '${conn.nodeId}' has no bridge attached`, output: null, artifact: null };
+    const prompt0 = input.prompt || opts.prompt || "Respond concisely.";
+    if (opts.dryRun) return { node: node.node, model: conn.model, provider: conn.provider, costSource: conn.costSource, funder: conn.funder, tokens: 0, artifact: "(dry-run: not executed)", output: null };
+    const r = await opts.localCall(conn, prompt0, opts);
+    if (r?.__error) throw new Error(`local node '${conn.nodeId}': ${r.__error}`);
+    return { node: node.node, model: conn.model, provider: conn.provider, costSource: conn.costSource, funder: conn.funder,
+      tokens: r.tokens || 0, tokenScope: r.tokenScope || "unknown", output: r.content, artifact: `local-node:${conn.nodeId}` };
+  }
+
   const endpoint = conn.endpoint || "http://127.0.0.1:11434/v1/chat/completions";
   const apiKey = conn.apiKeyEnv ? process.env[conn.apiKeyEnv] : undefined;
 

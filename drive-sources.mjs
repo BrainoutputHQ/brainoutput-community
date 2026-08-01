@@ -191,8 +191,31 @@ export function connectDriveSource(spec = {}) {
     case "webdav": case "nextcloud": return webdavDriveSource(spec);
     case "google-drive": return googleDriveSource(spec);
     case "onedrive": case "sharepoint": return oneDriveSource({ ...spec, site: spec.provider === "sharepoint" ? spec.site : null });
+    case "local-node": return localNodeSource(spec);
     default: throw new Error(`unknown drive provider '${spec.provider}'`);
   }
+}
+
+/** A folder on the USER'S computer, reached through the local bridge (bo connect). Reads happen
+ *  on demand over the outbound channel — nothing syncs wholesale, nothing leaves the grant. */
+export function localNodeSource({ nodeId, root, callFn, account = "local-node" } = {}) {
+  if (!nodeId || !root) throw new Error("localNodeSource needs a nodeId and a granted root");
+  if (typeof callFn !== "function") throw new Error("localNodeSource needs the bridge callFn");
+  return {
+    kind: "drive", accountId: `drive:${account}`, verified: true, roots: [root], nodeId,
+    async listFiles({ limit = 200 } = {}) {
+      const r = await callFn(nodeId, "list-files", { root });
+      if (r?.__error) throw new Error(r.__error);
+      return (r.files || []).slice(0, limit).map((f) => normalizeFile(
+        { id: f.path, name: f.name, path: f.path, size: f.size, modified: f.modified, folder: root, snippet: "" }, { accountId: `drive:${account}` }));
+    },
+    async readFile(path, { maxBytes = 200_000 } = {}) {
+      const r = await callFn(nodeId, "read-file", { path, maxBytes });
+      if (r?.__error) throw new Error(r.__error);
+      return r.content;
+    },
+    async close() {},
+  };
 }
 
 export function driveProviderOptions() {

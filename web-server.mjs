@@ -31,6 +31,7 @@ import { createWorkTwin, setMode as twinSetMode, connectWorkSource, grantTwinSco
   disconnectWorkSource, sourceCatalog, familyStatus } from "./worktwin.mjs";
 import { connectMailSource, workSourceOptions, smtpSend } from "./mail-sources.mjs";
 import { draftConnectorSpec, connectorGuide, missingConfig, connectorBuildPlan } from "./connector-builder.mjs";
+import { LocalNodes, POLL_HOLD_MS } from "./local-bridge.mjs";
 import { connectDriveSource, driveProviderOptions } from "./drive-sources.mjs";
 import { indexFiles, searchFiles } from "./worktwin.mjs";
 import { efficiencyReport } from "./efficiency.mjs";
@@ -66,6 +67,11 @@ if (!HOST_IS_LOOPBACK && !ACCESS_TOKEN) {
 }
 const store = new Store();
 const REPO_DIR = dirname(fileURLToPath(import.meta.url));
+// The local-bridge node registry (bo connect). In-memory by design: pairings re-issue cheaply,
+// and a restart cleanly drops every held poll.
+const localNodes = new LocalNodes();
+const localNodeCall = (nodeId, verb, args, opts = {}) => localNodes.call(nodeId, verb, args, opts);
+const localNodeModelCall = (conn, prompt, opts = {}) => localNodes.call(conn.nodeId, "complete", { model: conn.model, prompt, maxTokens: opts.maxTokens });
 
 // ── server-side model detection (user LOCAL only; never a BrainOutput account) ────────────────
 function probe(host, port, path) {
@@ -169,6 +175,28 @@ function guardRequest(req, url) {
 }
 
 async function api(req, res, url) {
+  // ── Local bridge (bo connect): machine-to-machine endpoints with their OWN credential auth
+  // (pairing code / node credential — never a cookie, so no CSRF exposure). They must answer
+  // before the session guard: a bridge has no session, and hosted workspaces require a token.
+  if (url.pathname === "/api/local/pair" && req.method === "POST") {
+    const b = await body(req);
+    try {
+      const r = localNodes.redeemCode(b.code, { name: b.name, grants: Array.isArray(b.grants) ? b.grants : [] });
+      return json(res, r);
+    } catch (e) { return json(res, { error: e.message }, 400); }
+  }
+  if (url.pathname === "/api/local/poll" && req.method === "POST") {
+    const b = await body(req);
+    if (!localNodes.verifyNode(b.nodeId, b.credential)) return json(res, { error: "unauthorized node" }, 401);
+    const batch = await localNodes.poll(b.nodeId, { holdMs: Math.min(Number(b.holdMs) || POLL_HOLD_MS, 30000) });
+    return json(res, batch);
+  }
+  if (url.pathname === "/api/local/result" && req.method === "POST") {
+    const b = await body(req);
+    if (!localNodes.verifyNode(b.nodeId, b.credential)) return json(res, { error: "unauthorized node" }, 401);
+    if (b.models) localNodes.noteModels(b.nodeId, b.models);
+    return json(res, localNodes.postResult(b.nodeId, b));
+  }
   const refusal = guardRequest(req, url);
   if (refusal) return json(res, { error: refusal.error }, refusal.code);
   if (url.pathname === "/api/artifact/download") {
@@ -454,6 +482,42 @@ async function api(req, res, url) {
     store.runtime.customConnectors = (store.runtime.customConnectors || []).filter((c) => c.id !== b.id);
     store.saveRuntime();
     return json(res, { removed: before - store.runtime.customConnectors.length, state: publicState() });
+  }
+  // ── Local devices (UI side of the bridge; session-guarded) ──
+  if (url.pathname === "/api/local/pair-code") return json(res, localNodes.issueCode());
+  if (url.pathname === "/api/local/revoke") {
+    try { localNodes.revoke(b.nodeId); return json(res, { revoked: true, state: publicState() }); }
+    catch (e) { return json(res, { error: e.message }, 400); }
+  }
+  if (url.pathname === "/api/local/add-model") {
+    const node = localNodes.listPublic().find((n) => n.id === b.nodeId);
+    if (!node) return json(res, { error: `unknown node '${b.nodeId}'` }, 404);
+    if (!(node.models || []).includes(b.model)) return json(res, { error: `node has not announced model '${b.model}'` }, 400);
+    const id = `localnode:${b.nodeId}:${b.model}`;
+    const conns = store.def.modelConnections || [];
+    if (!conns.some((c) => c.id === id)) {
+      store.setConnections([...conns, { id, kind: "local-node", provider: node.name, model: b.model,
+        costSource: "local-compute", funder: "local", nodeId: b.nodeId }]);
+      store.saveDefinition();
+    }
+    return json(res, { connection: id, state: publicState() });
+  }
+  if (url.pathname === "/api/local/index-folder") {
+    const t = getTwin(b.twinId);
+    if (!t) return json(res, { error: "create your Alter first — sources attach to it" }, 404);
+    const node = localNodes.listPublic().find((n) => n.id === b.nodeId);
+    if (!node) return json(res, { error: `unknown node '${b.nodeId}'` }, 404);
+    if (!(node.grants || []).includes(b.root)) return json(res, { error: `'${b.root}' is not in this node's granted folders` }, 400);
+    if (!node.online) return json(res, { error: `node '${node.name}' is offline` }, 409);
+    try {
+      const src = connectDriveSource({ provider: "local-node", nodeId: b.nodeId, root: b.root, account: b.root, callFn: localNodeCall });
+      const sample = await src.listFiles({ limit: 5 });
+      const t2 = connectWorkSource(t, { kind: "local-drive", account: b.root,
+        label: `${node.name}: ${b.root}`, resources: [b.root],
+        config: { provider: "local-node", nodeId: b.nodeId, root: b.root } });
+      saveTwin(t2);
+      return json(res, { twin: publicTwin(t2), sampled: sample.length, state: publicState() });
+    } catch (e) { return json(res, { error: `could not index: ${e.message}` }, 400); }
   }
   if (url.pathname === "/api/worktwin/disconnect") {
     let t = getTwin(b.twinId);
@@ -888,7 +952,7 @@ User: ${b.text}`;
       try {
         // 800 tokens: reasoning models (deepseek-flash & co.) think first — a small budget used
         // to be eaten entirely by reasoning and surfaced as "no model configured", which was a lie.
-        const r = await runNode({ node: "chat", slot: model.slot }, model, { prompt }, { maxTokens: 800 });
+        const r = await runNode({ node: "chat", slot: model.slot }, model, { prompt }, { maxTokens: 800, localCall: localNodeModelCall });
         reply = r.output || null;
       } catch (e) { modelError = String(e.message || e); }
     }
@@ -1116,24 +1180,24 @@ async function chatLaunch(res, b) {
                 artifact: oc.changedFiles?.length ? `opencode:${oc.changedFiles.join(",")}` : null,
                 output: oc.changedFiles?.length ? `wrote ${oc.changedFiles.join(", ")}` : "(no files produced — try a stronger local/BYOK coding model)" };
             } catch (e) {
-              const fb = await runNode(node, node.model, { prompt }, { maxTokens: b.maxTokens || 1500, timeoutMs: b.timeoutMs || 240000 });
+              const fb = await runNode(node, node.model, { prompt }, { maxTokens: b.maxTokens || 1500, timeoutMs: b.timeoutMs || 240000, localCall: localNodeModelCall });
               out = { ...fb, codingFallback: `coding runtime failed (${String(e.message || e).slice(0, 80)}) — delivered as text` };
             }
           } else {
-            out = await runNode(node, node.model, { prompt }, { maxTokens: b.maxTokens || 1500, timeoutMs: b.timeoutMs || 240000 });
+            out = await runNode(node, node.model, { prompt }, { maxTokens: b.maxTokens || 1500, timeoutMs: b.timeoutMs || 240000, localCall: localNodeModelCall });
             if (isCoding) out = { ...out, codingFallback: "no coding runtime here (install opencode to write files) — delivered as text" };
           }
           results.push(out);
           onNodeDone(out, results.length - 1);
         }
       } else {
-        results = await executePlan(r.plan, { _all: { prompt } }, { maxTokens: b.maxTokens || 1500, boundPolicies: r.boundPolicies, task: m.task, timeoutMs: b.timeoutMs || 240000, onNodeDone });
+        results = await executePlan(r.plan, { _all: { prompt } }, { maxTokens: b.maxTokens || 1500, boundPolicies: r.boundPolicies, task: m.task, timeoutMs: b.timeoutMs || 240000, onNodeDone, localCall: localNodeModelCall });
       }
     } catch (e) {
       if (!/no content|budget/i.test(String(e.message || e))) return fail(String(e.message || e));
       retried = true;
       try {
-        results = await executePlan(r.plan, { _all: { prompt } }, { maxTokens: (b.maxTokens || 1500) * 2, boundPolicies: r.boundPolicies, task: m.task, timeoutMs: b.timeoutMs || 240000, onNodeDone });
+        results = await executePlan(r.plan, { _all: { prompt } }, { maxTokens: (b.maxTokens || 1500) * 2, boundPolicies: r.boundPolicies, task: m.task, timeoutMs: b.timeoutMs || 240000, onNodeDone, localCall: localNodeModelCall });
       } catch (e2) { return fail(String(e2.message || e2)); }
     }
 
@@ -1326,6 +1390,7 @@ function publicState() {
     // The sidebar rollup (✉️ Mail ✓ · 📁 Drive · 📊 Apps) — always visible, connected or not.
     sourceFamilies: familyStatus(sourceCatalog(getTwin(), { customConnectors: store.runtime.customConnectors || [] })),
     customConnectors: (store.runtime.customConnectors || []).map(publicCustomConnector),
+    localNodes: localNodes.listPublic(),
     brainoutputFundedTokens: funded };
 }
 
@@ -1398,6 +1463,7 @@ const server = http.createServer(async (req, res) => {
       return res.end(data);
     } catch { res.writeHead(404); return res.end(); }
   }
+  // (The local-bridge endpoints live at the top of api() — /api/* never reaches this section.)
   const refusal = guardRequest(req, url);
   if (refusal) {
     if (refusal.code === 401) { res.writeHead(401, { "Content-Type": "text/html; charset=utf-8" }); return res.end(LOGIN_PAGE.replace("__MSG__", "")); }
