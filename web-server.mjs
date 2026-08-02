@@ -43,7 +43,7 @@ import { efficiencyReport } from "./efficiency.mjs";
 import { selectModel } from "./ce-core.mjs";
 import { CATALOG, LOCALES, SLOT_LABELS } from "./i18n.mjs";
 import { SHELL_PAGE } from "./shell.mjs";
-import { newProject, listProjects, promoteConversation, projectBrief } from "./projects.mjs";
+import { newProject, listProjects, promoteConversation, projectBrief, projectUpdate } from "./projects.mjs";
 import { newTask, newSubtask, setTaskStatus, reportMissionToTask, assertTaskDeps, askTaskQuestion, answerTaskQuestion, reviewTask } from "./tasks.mjs";
 import { reviewTaskPrompt, parseTaskReview } from "./review-tasks.mjs";
 import { newPlan, updateDraft, validatePlan, rejectPlan, markMaterialized, planById, latestProjectPlan } from "./plans.mjs";
@@ -385,6 +385,17 @@ async function api(req, res, url) {
     if (url && !/^https?:\/\//i.test(url)) return json(res, { error: "a project url must be http(s), or empty" }, 400);
     store.addProject({ ...p, url: url || null, updatedAt: Date.now() }); store.saveRuntime();
     return json(res, publicState());
+  }
+  if (url.pathname === "/api/project/update") {
+    // The project header (task-pm-10): objective + state, validated by projectUpdate. Unknown
+    // project → 404; a bad state or an over-long objective → 400; clearing stores null.
+    const p = (store.runtime.projects || []).find((x) => x.id === b.id && x.kind === "project");
+    if (!p) return json(res, { error: `no project '${b.id}'` }, 404);
+    try {
+      const next = projectUpdate(store.runtime, p.id, { objective: b.objective, state: b.state, at: Date.now() });
+      store.addProject(next); store.saveRuntime();
+      return json(res, { ...publicState(), project: next });
+    } catch (e) { return json(res, { error: e.message }, 400); }
   }
   if (url.pathname === "/api/company") {
     const next = { ...(store.def.company || {}) };
@@ -1807,7 +1818,7 @@ async function chatLaunch(res, b) {  const m = (store.runtime.missions || []).fi
     if (c2) saveConversation(c2);
     store.saveRuntime();
   };
-  run().catch((e) => { try { store.addExecution({ ...exec, status: "failed" }); store.saveRuntime(); } catch {} console.error(`async launch ${exec.id} crashed: ${e.message}`); });
+  run().catch((e) => { try { store.addExecution({ ...exec, status: "failed", finishedAt: Date.now() }); store.saveRuntime(); } catch {} console.error(`async launch ${exec.id} crashed: ${e.message}`); });
 
   return json(res, { started: true, mission: { ...m, status: "running" }, execution: exec });
 }

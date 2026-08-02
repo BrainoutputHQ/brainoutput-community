@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { LOCALES, CATALOG, t, missingKeys } from "./i18n.mjs";
 import { newProject, listProjects, findProject, projectThreads, adHocThreads,
-  promoteConversation, projectDigest, projectBrief, PROJECT_KIND } from "./projects.mjs";
+  promoteConversation, projectDigest, projectBrief, projectUpdate, PROJECT_KIND, PROJECT_STATES } from "./projects.mjs";
 
 // ── i18n ──────────────────────────────────────────────────────────────────────
 
@@ -118,4 +118,58 @@ test("projectBrief: the cold-start contract — shipped, open, decisions; bounde
   assert.match(b, /no Stripe until v2/);
   assert.ok(b.length <= 700);
   assert.equal(projectBrief(r, "ghost"), null);
+});
+
+// ── project header fields (task-pm-10): objective + state ─────────────────────
+
+test("PROJECT_STATES is the planned/active/done enum", () => {
+  assert.deepEqual(PROJECT_STATES, ["planned", "active", "done"]);
+});
+
+test("newProject: objective/state stored only when set and valid — an old record keeps NEITHER key", () => {
+  const bare = newProject({ name: "legacy", at: 1 });
+  assert.ok(!("objective" in bare) && !("state" in bare), "no undefined keys forced onto the record");
+
+  const p = newProject({ name: "pdf-saas", objective: "  sell pdfs to hotels ", state: "active", at: 2 });
+  assert.equal(p.objective, "sell pdfs to hotels", "the objective is trimmed");
+  assert.equal(p.state, "active");
+
+  assert.ok(!("objective" in newProject({ name: "x", objective: "   " })), "a blank objective stays unset");
+  assert.ok(!("state" in newProject({ name: "x", state: null })), "state null stays unset");
+  assert.throws(() => newProject({ name: "x", state: "banana" }), /state.*planned, active, done/);
+  assert.throws(() => newProject({ name: "x", objective: "o".repeat(2001) }), /2000/);
+  assert.equal(newProject({ name: "x", objective: "o".repeat(2000) }).objective.length, 2000, "the cap itself is allowed");
+});
+
+test("projectUpdate: set, validate, clear — pure (the store record is never mutated)", () => {
+  const r = rt();
+  const upd = projectUpdate(r, "p1", { objective: "sell pdfs", state: "active", at: 10 });
+  assert.equal(upd.objective, "sell pdfs");
+  assert.equal(upd.state, "active");
+  assert.equal(upd.updatedAt, 10);
+  assert.equal(upd.name, "pdf-saas", "the other fields carry over");
+  assert.ok(!("objective" in r.projects[1]) && !("state" in r.projects[1]), "pure — the input record is untouched");
+
+  // validation: bad state / unknown project / over-long objective all throw
+  assert.throws(() => projectUpdate(r, "p1", { state: "banana" }), /state/);
+  assert.throws(() => projectUpdate(r, "p1", { state: "" }), /state/, "an empty-string state is not 'absent' — it is invalid");
+  assert.throws(() => projectUpdate(r, "ghost", { state: "active" }), /no project/);
+  assert.throws(() => projectUpdate(r, "p1", { objective: "x".repeat(2001) }), /objective/);
+
+  // clearing: state null → unset (null); objective ""/null → cleared (null)
+  const c1 = projectUpdate(r, "p1", { state: null, at: 11 });
+  assert.equal(c1.state, null);
+  const withObj = projectUpdate(r, "p1", { objective: "keep me", at: 12 });
+  const r2 = { ...r, projects: r.projects.map((p) => (p.id === "p1" ? withObj : p)) };
+  assert.equal(projectUpdate(r2, "p1", { objective: "" }).objective, null);
+  assert.equal(projectUpdate(r2, "p1", { objective: null }).objective, null);
+
+  // an empty patch forces NO keys onto an old record; a patch touching one field leaves the other absent
+  const legacy = { id: "p9", kind: PROJECT_KIND, name: "legacy", createdAt: 1, updatedAt: 2 };
+  const r3 = { projects: [legacy] };
+  const same = projectUpdate(r3, "p9", {});
+  assert.ok(!("objective" in same) && !("state" in same), "an empty patch adds nothing");
+  const onlyObj = projectUpdate(r3, "p9", { objective: "new objective" });
+  assert.equal(onlyObj.objective, "new objective");
+  assert.ok(!("state" in onlyObj), "the state stays absent, never fabricated");
 });

@@ -770,6 +770,81 @@ function taskRow(tk,subs){
 }
 const srow=(s)=>'<div style="margin-left:26px;padding:3px 0;font-size:13px" class="'+(s.status==='done'?'mut':'')+'">'+(s.status==='done'?'✓ ':'○ ')+esc(s.title)+(s.result?' <span class=ok>— '+esc(s.result.summary)+'</span>':'')+'</div>';
 
+// ── project header (task-pm-10): state, objective, binding decisions ─────────
+/** The project states, mirrored from PROJECT_STATES in projects.mjs (the page is standalone). */
+const PROJECT_STATES=['planned','active','done'];
+/** The state select: the REAL state, or an honest '—' placeholder option when unset — a state
+ *  is never fabricated. Saves via /api/project/update ('—' posts state:null, clearing it); a
+ *  server error surfaces via alert and the UI never lies about having saved. */
+function projectStateSel(proj){
+ const cur=PROJECT_STATES.includes(proj.state)?proj.state:'';
+ const sel=el('<select id=pstate title="'+esc(t('project.state'))+'" aria-label="'+esc(t('project.state'))+'" style="background:var(--inp);border:1px solid var(--line);color:var(--fg);border-radius:8px;padding:4px 8px;font-size:12.5px">'
+  +'<option value="">—</option>'
+  +PROJECT_STATES.map(st=>'<option value="'+st+'"'+(cur===st?' selected':'')+'>'+esc(t('project.state.'+st))+'</option>').join('')
+  +'</select>');
+ sel.value=cur;
+ sel.onchange=async()=>{
+  const r=await api('/api/project/update',{id:proj.id,state:sel.value||null});
+  if(r.error){alert(r.error);return}
+  S.state=r;render()};
+ return sel;
+}
+/** The objective: the real text when set, an honest empty hint when not; click-to-edit inline
+ *  (a textarea + save/cancel), saved via /api/project/update with the error surfaced in place.
+ *  Everything user-controlled is esc()'d — a stored objective can never inject markup. */
+function projectObjective(proj){
+ const wrap=el('<div id=pobj style="margin-top:6px"></div>');
+ const view=()=>{
+  const v=el('<div style="display:flex;gap:8px;align-items:baseline;font-size:13.5px"></div>');
+  v.appendChild(el('<span class=mut style="flex:none;font-size:12.5px">'+esc(t('project.objective'))+'</span>'));
+  v.appendChild(el(proj.objective
+   ?'<span style="white-space:pre-wrap;min-width:0">'+esc(proj.objective)+'</span>'
+   :'<span class=mut>'+esc(t('project.objective.empty'))+'</span>'));
+  const eb=el('<button class=ghost style="flex:none;padding:1px 9px;font-size:11.5px">'+esc(t('project.edit'))+'</button>');
+  eb.onclick=edit;
+  v.appendChild(eb);
+  wrap.innerHTML='';wrap.appendChild(v);
+ };
+ const edit=()=>{
+  const ta=el('<textarea class=inp rows=2 maxlength=2000 style="margin-top:0;flex:1;min-width:220px"></textarea>');
+  ta.value=proj.objective||'';
+  const save=el('<button class=act style="padding:5px 12px;font-size:12.5px">'+esc(t('settings.save'))+'</button>');
+  const cancel=el('<button class=ghost style="padding:5px 12px;font-size:12.5px">'+esc(t('mission.cancel'))+'</button>');
+  const msg=el('<span class=mut style="font-size:12px;flex-basis:100%"></span>');
+  const f=el('<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"></div>');
+  f.appendChild(ta);f.appendChild(save);f.appendChild(cancel);f.appendChild(msg);
+  save.onclick=async()=>{
+   const r=await api('/api/project/update',{id:proj.id,objective:ta.value});
+   if(r.error){msg.textContent=r.error;return}
+   S.state=r;render()};
+  cancel.onclick=view;
+  wrap.innerHTML='';wrap.appendChild(f);
+ };
+ view();
+ return wrap;
+}
+/** The project's BINDING choices: the decisions of the LATEST validated-or-materialized plan.
+ *  A draft plan was never validated — its decisions are NOT binding and never shown here. No
+ *  such plan (or no decisions on it) → no section at all, never empty chrome. */
+function projectDecisions(s,proj){
+ const plan=[...(s.plans||[])].reverse().find(p=>p.projectId===proj.id&&(p.status==='validated'||p.status==='materialized'));
+ if(!plan||!plan.decisions)return null;
+ return el('<div id=pdec style="margin-top:8px"><b style="font-size:13px">'+esc(t('project.decisions'))+'</b> '
+  +'<span class="pill dormant" style="font-size:10px">'+esc(t('plan.status.'+plan.status))+'</span>'
+  +'<div class=mut style="font-size:13px;white-space:pre-wrap;margin-top:2px">'+esc(plan.decisions)+'</div></div>');
+}
+/** The header itself: state row + objective + (when present) the binding decisions. */
+function projectHeader(s,proj){
+ const h=el('<div id=phead style="margin:2px 0 10px"></div>');
+ const stateRow=el('<div style="display:flex;align-items:center;gap:8px;font-size:12.5px"><span class=mut>'+esc(t('project.state'))+'</span></div>');
+ stateRow.appendChild(projectStateSel(proj));
+ h.appendChild(stateRow);
+ h.appendChild(projectObjective(proj));
+ const dec=projectDecisions(s,proj);
+ if(dec)h.appendChild(dec);
+ return h;
+}
+
 function projectView(proj){
  const s=S.state||{};
  const tasks=(s.tasks||[]).filter(x=>x.projectId===proj.id);
@@ -779,7 +854,10 @@ function projectView(proj){
  const pct=flat.length?Math.round(doneN/flat.length*100):0;
   const threads=(s.conversations||[]).filter(c=>c.projectId===proj.id);
   const taskView=taskViewOf(s,proj.id);
-  const d=el('<div class="cardx"><h3>'+esc(proj.name)+' · <span class=mut>'+doneN+'/'+flat.length+' '+esc(t('project.done'))+'</span></h3>'
+  const d=el('<div class="cardx"><h3>'+esc(proj.name)+' · <span class=mut>'+doneN+'/'+flat.length+' '+esc(t('project.done'))+'</span></h3></div>');
+  // The real header (task-pm-10) sits right under the name; the honest rollup math is untouched.
+  d.appendChild(projectHeader(s,proj));
+  const body=el('<div>'
    +'<div style="background:#0b0d11;border-radius:8px;height:7px;overflow:hidden;margin-bottom:10px"><div style="background:var(--ok);height:100%;width:'+pct+'%"></div></div>'
    +'<div style="display:flex;align-items:center;gap:8px;margin:8px 0 2px"><span class=mut style="font-size:13px">'+esc(t('project.tasks'))+'</span>'
    +'<div class="seg" id=tview style="margin-left:auto">'
@@ -789,7 +867,8 @@ function projectView(proj){
   +'<div style="display:flex;gap:8px;margin-top:10px"><input class=inp id=nt placeholder="'+esc(t('project.addTask'))+'" style="margin-top:0"><button class=ghost id=ntb>+</button></div>'
   +(threads.length?'<div class=mut style="font-size:13px;margin:14px 0 4px">'+esc(t('project.threads'))+'</div>':'')
   +'</div>');
-  const pt=d.querySelector('#ptasks');
+  d.appendChild(body);
+  const pt=body.querySelector('#ptasks');
   if(taskView==='board')pt.appendChild(taskBoard(s,tasks));
   else{
    tops.slice(0,25).forEach(tk=>pt.appendChild(taskRow(tk,tasks.filter(y=>y.parentId===tk.id))));
@@ -797,15 +876,15 @@ function projectView(proj){
    if(!tops.length)pt.appendChild(el('<div class=mut style="font-size:13px;padding:4px 0">—</div>'));
   }
   // The list/board choice is per project and persists server-side (settings.taskViewByProject).
-  d.querySelectorAll('#tview button').forEach(b=>b.onclick=async()=>{
+  body.querySelectorAll('#tview button').forEach(b=>b.onclick=async()=>{
    if(b.dataset.v===taskView)return;
    const r=await api('/api/settings',{taskViewByProject:{[proj.id]:b.dataset.v}});
    if(r.error){alert(r.error);return}
    S.state=r;render()});
- const add=async()=>{const v=d.querySelector('#nt').value.trim();if(!v)return;
+ const add=async()=>{const v=body.querySelector('#nt').value.trim();if(!v)return;
   const r=await api('/api/task/new',{title:v,projectId:proj.id});if(r.error){alert(r.error);return}await refresh()};
- d.querySelector('#ntb').onclick=add;
- d.querySelector('#nt').onkeydown=(e)=>{if(e.key==='Enter')add()};
+ body.querySelector('#ntb').onclick=add;
+ body.querySelector('#nt').onkeydown=(e)=>{if(e.key==='Enter')add()};
  threads.slice().reverse().slice(0,20).forEach(c=>{
   const label=c.title||(c.messages[0]?String(c.messages[0].text).slice(0,50):c.id);
   const b=el('<button class="pitem'+(S.convId===c.id?' on':'')+'">'+esc(label)+'</button>');

@@ -8,12 +8,50 @@
 // everything here filters on kind:"project" and never touches workflow records.
 import { safeSlice } from "./ce-core.mjs";
 export const PROJECT_KIND = "project";
+export const PROJECT_STATES = ["planned", "active", "done"];
+const MAX_OBJECTIVE = 2000;
 
-export function newProject({ id, name, at = null } = {}) {
+const checkObjective = (o) => {
+  if (o.length > MAX_OBJECTIVE) throw new Error(`a project objective is at most ${MAX_OBJECTIVE} characters`);
+};
+const checkState = (state) => {
+  if (!PROJECT_STATES.includes(state))
+    throw new Error(`unknown project state '${state}' — expected one of ${PROJECT_STATES.join(", ")}`);
+};
+
+export function newProject({ id, name, at = null, objective, state } = {}) {
   const n = String(name || "").trim();
   if (!n) throw new Error("a project needs a name");
-  return { id: id || `proj-${Date.now().toString(36)}`, kind: PROJECT_KIND, name: n,
+  const p = { id: id || `proj-${Date.now().toString(36)}`, kind: PROJECT_KIND, name: n,
     summary: null, createdAt: at, updatedAt: at };
+  // Optional header fields (task-pm-10): present ONLY when actually set — an old record has
+  // neither key and must load/behave exactly as before (no undefined keys forced on).
+  const o = String(objective ?? "").trim();
+  if (o) { checkObjective(o); p.objective = o; }
+  if (state != null) { checkState(state); p.state = state; }
+  return p;
+}
+
+/**
+ * Update a project's header fields (task-pm-10): objective and/or state. Pure — validates and
+ * returns the updated record; the caller persists. A field ABSENT from the patch stays as-is;
+ * state null clears to unset, objective null/"" clears (stored null, like project.url).
+ */
+export function projectUpdate(runtime, id, { objective, state, at = null } = {}) {
+  const p = findProject(runtime, id);
+  if (!p) throw new Error(`no project '${id}'`);
+  const next = { ...p };
+  if (state !== undefined) {
+    if (state === null) next.state = null;
+    else { checkState(state); next.state = state; }
+  }
+  if (objective !== undefined) {
+    const o = String(objective ?? "").trim();
+    checkObjective(o);
+    next.objective = o || null;
+  }
+  next.updatedAt = at;
+  return next;
 }
 
 export const listProjects = (runtime) =>
