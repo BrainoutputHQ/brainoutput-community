@@ -1293,11 +1293,15 @@ async function chatLaunch(res, b) {
   const gate = modeAllows("execute", "execute", { mission: m });
   if (!gate.allowed) return json(res, { error: gate.reason }, 400);
 
-  const r = routeTask({ department: m.department, task: { ...m.task, summary: m.objective } }, ctx());
+  // A mission-backed spine task's directives BIND the route (task-pm-04): its skills/agentSlot
+  // flow into routing, which is fail-closed on them. Ordinary tasks carry none → unchanged route.
+  let spineTask = (store.runtime.tasks || []).find((t) => t.missionId === m.id) || null;
+  const r = routeTask({ department: m.department, task: { ...m.task, summary: m.objective,
+    ...(spineTask?.skills?.length ? { skills: spineTask.skills } : {}),
+    ...(spineTask?.agentSlot ? { agentSlot: spineTask.agentSlot } : {}) } }, ctx());
   if (!r.ok) return json(res, { error: r.reason }, 400);
   store.addMission({ ...m, status: "running" });
   // A project mission leaves a task on the spine: work reports back where the user looks.
-  let spineTask = (store.runtime.tasks || []).find((t) => t.missionId === m.id) || null;
   if (!spineTask && m.projectId) {
     spineTask = { ...newTask({ projectId: m.projectId, title: String(m.objective || "").slice(0, 90),
       assignee: r.agent, status: "in-progress", reporter: "you", at: Date.now() }), missionId: m.id };
@@ -1395,8 +1399,12 @@ async function chatLaunch(res, b) {
           decomposed = { subtasks: [] };
           for (const t of planned) {
             // Explicit unique id: newTask's default is millisecond-grained — several subtasks
-            // created in one ms would COLLIDE and only the last would survive.
-            const st = newSubtask(store.runtime, spineTask.id, { id: uid("task"), title: t.title, assignee: r.agent, status: "todo", reporter: "you", at: Date.now() });
+            // created in one ms would COLLIDE and only the last would survive. The planner's
+            // optional per-step directives (sanitized by parsePlannedTasks) land on the record —
+            // they BIND this task's worker (prompt + routing are fail-closed on them).
+            const st = newSubtask(store.runtime, spineTask.id, { id: uid("task"), title: t.title,
+              acceptanceCriteria: t.acceptanceCriteria || [], skills: t.skills || [], restrictions: t.restrictions || {},
+              assignee: r.agent, status: "todo", reporter: "you", at: Date.now() });
             store.addTask(st);
             decomposed.subtasks.push(st);
           }
@@ -1423,7 +1431,9 @@ async function chatLaunch(res, b) {
         const codeWs = join(store.dir, "workspaces", exec.id);
         for (const [i, st] of decomposed.subtasks.entries()) {
           store.addTask(setTaskStatus(store.runtime, st.id, "in-progress", { at: Date.now() }));
-          const wprompt = workerPartPrompt({ objective: prompt, planOutput: safeSlice(pr.output, 1200), part: st.title, index: i + 1, total: decomposed.subtasks.length });
+          // The task record's directives (acceptanceCriteria/restrictions/skills) are passed in —
+          // the worker is BOUND by them; a directive-less task gets the same prompt as always.
+          const wprompt = workerPartPrompt({ objective: prompt, planOutput: safeSlice(pr.output, 1200), part: st.title, index: i + 1, total: decomposed.subtasks.length, task: st });
           let out;
           if (isCodingWorker) {
             try {

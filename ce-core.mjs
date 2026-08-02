@@ -12,6 +12,40 @@ export const CAPABILITY_SLOTS = [
   "image-gen",
 ];
 
+// ── Skill vocabulary the router understands (the task.skills directive, task-pm-04) ────────────
+// A skill belongs here ONLY when it has a real routing effect: a slot preference for the worker
+// stage (a slot that EXISTS in CAPABILITY_SLOTS) or a mandatory independent reviewer. Routing is
+// FAIL-CLOSED on skills: an unknown skill blocks the task loudly — it is never silently dropped
+// and never silently routed on a default. Keep the vocabulary small and honest.
+export const KNOWN_SKILLS = {
+  "node-esm":   { workerSlot: "coding-free" },   // server-side JS (ESM) → the coding worker
+  "browser-js": { workerSlot: "coding-free" },   // browser/frontend JS → the coding worker
+  "connectors": { workerSlot: "coding-free" },   // connector/integration code → the coding worker
+  "docs":       { workerSlot: "fast-cheap" },    // documentation/prose → the cheap writer
+  "ops":        { workerSlot: "fast-cheap" },    // runbooks/chores → the cheap worker
+  "research":   { workerSlot: "long-context" },  // research over large inputs → long context
+  "i18n":       { workerSlot: "multilingual" },  // translation/locale work → multilingual
+  "review":     { requireReview: true },         // the work MUST pass an independent reviewer
+};
+
+/**
+ * Fail-closed validation of a task's routing directives (skills, agentSlot). Returns
+ * { ok, reason? } — never throws; the caller surfaces the reason the same way it surfaces
+ * "no agent for department". Unknown skills are NAMED; an agentSlot that is not a capability
+ * slot is named. Empty/absent directives always pass (migration-safe).
+ */
+export function checkTaskDirectives(task = {}) {
+  if (task.skills != null && !Array.isArray(task.skills))
+    return { ok: false, reason: "task.skills must be an array of strings" };
+  const skills = Array.isArray(task.skills) ? task.skills : [];
+  const unknown = skills.filter((s) => !KNOWN_SKILLS[s]);
+  if (unknown.length)
+    return { ok: false, reason: `unknown skill(s) ${unknown.map((s) => `'${String(s)}'`).join(", ")} — this router routes on: ${Object.keys(KNOWN_SKILLS).join(", ")}` };
+  if (task.agentSlot != null && (typeof task.agentSlot !== "string" || !CAPABILITY_SLOTS.includes(task.agentSlot)))
+    return { ok: false, reason: `agentSlot '${String(task.agentSlot)}' is not a capability slot — the worker stage can only be pinned to one of: ${CAPABILITY_SLOTS.join(", ")}` };
+  return { ok: true };
+}
+
 // ── Cost sources a Community model may draw on. NONE is BrainOutput-funded. ─────────────────────
 export const COST_SOURCES = ["free", "user-subscription", "user-api-account", "local-compute"];
 // A connection's funder is who pays for the tokens. "brainoutput" is FORBIDDEN in Community.
@@ -295,19 +329,30 @@ export function validateCompanyConfig(cfg) {
 /**
  * Route ONE task to an agent, a smallest execution graph, and a model per node — all user/free/
  * local. Throws if any resolved node would use BrainOutput-funded inference (fail-closed).
+ * Task directives BIND the route: unknown skills or an unsatisfiable agentSlot block the task
+ * ({ ok:false, reason }) — never a silent drop, never a default-route fallback (task-pm-04).
  */
 export function routeTask(req, ctx) {
   const { agents, assignments, connections, catalog, departments = {}, policies = {} } = ctx;
+  const task = { ...req.task, ...req.taskOverrides };
+  const directives = checkTaskDirectives(task);
+  if (!directives.ok) return directives;
   const agent = req.agent ||
     agents.find((a) => a.department === req.department && (!req.role || a.role === req.role)) ||
     agents.find((a) => a.department === req.department);
   if (!agent) return { ok: false, reason: `no agent for department '${req.department}'${req.role ? "/" + req.role : ""}` };
 
-  // Agent capability slots are DEFAULTS; an explicit task slot overrides them (task wins).
+  // Agent capability slots are DEFAULTS. Directive precedence for the worker stage (strongest
+  // first): agentSlot pins it absolutely > an explicit task.workerSlot > a skill's slot
+  // preference > the agent's capability default. Skills merge in task order (last wins on a
+  // conflicting key) — deterministic for a given task record.
   const caps = agent.capabilities || {};
-  const task = { ...req.task, ...req.taskOverrides };
+  const skillEffect = {};
+  for (const s of Array.isArray(task.skills) ? task.skills : []) Object.assign(skillEffect, KNOWN_SKILLS[s]);
+  if (skillEffect.requireReview) task.requireReview = true;
+  const explicitWorkerSlot = Boolean(task.workerSlot);
   task.plannerSlot = task.plannerSlot || caps.planner;
-  task.workerSlot = task.workerSlot || caps.worker;
+  task.workerSlot = task.agentSlot || task.workerSlot || skillEffect.workerSlot || caps.worker;
   task.reviewerSlot = task.reviewerSlot || caps.reviewer;
   // Bind the policies relevant to THIS work (by department/tags) — their criteria load into the
   // reviewer's context (see selectPolicies/reviewContextFor). The worker operated under them; the
@@ -320,6 +365,20 @@ export function routeTask(req, ctx) {
   let plan = graph.nodes.map((n) => ({ ...n, model: selectModel(n.slot, { assignments, connections, catalog, departmentDefaults: deptDefaults }) }));
   plan = applyStageOverrides(plan, agent, connections);   // ADVANCED: per-stage models + privacy rules
   plan = applyPrivacyFloor(plan, ctx.settings?.privacy);  // company-wide: full-private = local only
+
+  // A directive-BOUND worker slot with no configured model is a loud block, never a silent
+  // substitution — same fail-closed pattern as the privacy floor, naming the directive and what
+  // is missing. (An existing reason — privacy floor, per-agent confidentiality — always wins.)
+  const boundWorkerSlot = task.agentSlot || (explicitWorkerSlot ? null : skillEffect.workerSlot) || null;
+  if (boundWorkerSlot) {
+    const neededBy = task.agentSlot ? "the agentSlot directive"
+      : `skill(s) ${(task.skills || []).filter((s) => KNOWN_SKILLS[s]?.workerSlot === boundWorkerSlot).join(", ")}`;
+    plan = plan.map((n) =>
+      String(n.node).replace(/\d+$/, "") === "worker" && n.slot === boundWorkerSlot && n.model?.needsConfiguration && !n.model.reason
+        ? { ...n, model: { ...n.model, directiveBlocked: true,
+            reason: `${neededBy} require(s) the '${boundWorkerSlot}' slot for the worker stage — configure it (free/byok/local) or stop` } }
+        : n);
+  }
 
   const funded = assertZeroFunded(plan);
   const needsConfig = plan.filter((n) => n.model?.needsConfiguration);
