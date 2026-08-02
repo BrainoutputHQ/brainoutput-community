@@ -351,10 +351,23 @@ async function api(req, res, url) {
         return json(res, { error: `unknown privacy posture '${b.privacy}' — expected one of ${PRIVACY_POSTURES.join(", ")}` }, 400);
       patch.privacy = b.privacy;
     }
+    if (b.taskViewByProject !== undefined) {
+      // The list/board choice per project (task-pm-08): merged per project id, values validated.
+      const tv = b.taskViewByProject;
+      if (!tv || typeof tv !== "object" || Array.isArray(tv))
+        return json(res, { error: "taskViewByProject must be an object { projectId: 'list' | 'board' }" }, 400);
+      for (const [pid, v] of Object.entries(tv)) {
+        if (!pid) return json(res, { error: "taskViewByProject keys must be project ids" }, 400);
+        if (!["list", "board"].includes(v))
+          return json(res, { error: `unknown task view '${v}' — expected 'list' or 'board'` }, 400);
+      }
+      patch.taskViewByProject = tv;
+    }
     const next = { ...(store.def.settings || {}) };
     if (patch.mode) next.mode = patch.mode;
     if (patch.locale) next.locale = patch.locale;
     if (patch.privacy) next.privacy = patch.privacy;
+    if (patch.taskViewByProject) next.taskViewByProject = { ...(next.taskViewByProject || {}), ...patch.taskViewByProject };
     store.setSettings(next).saveDefinition();
     return json(res, publicState());
   }

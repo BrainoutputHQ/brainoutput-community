@@ -47,6 +47,17 @@ aside select{background:var(--inp);border:1px solid var(--line);color:var(--fg);
 .tchip{font-size:10px;padding:0 6px;margin-left:4px;flex:none}
 #taskfilters{display:flex;gap:4px;padding:0 4px 6px;flex-wrap:wrap}
 #taskfilters select{background:var(--inp);border:1px solid var(--line);color:var(--fg);border-radius:7px;font-size:11px;padding:2px 3px;max-width:118px}
+.board{display:flex;gap:12px;align-items:flex-start;overflow-x:auto;padding:2px 2px 8px}
+.bcol{flex:1;min-width:210px;background:var(--card2);border:1px solid var(--line);border-radius:12px;padding:10px}
+.bcol.over{border-color:var(--acc)}
+.bcolh{font-size:11.5px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--mut);margin-bottom:8px;display:flex;align-items:center;gap:6px}
+.bcolh .bcnt{background:var(--card);border:1px solid var(--line);border-radius:9px;padding:0 7px;font-size:11px;font-weight:600}
+.bcard{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:9px 10px;margin-bottom:8px;box-shadow:var(--shadow);cursor:grab}
+.bcard .btitle{font-size:13.5px;font-weight:600;line-height:1.4}
+.bsub{display:flex;gap:6px;align-items:center;font-size:12.5px;padding:4px 0;border-top:1px solid var(--line)}
+.bsub .bmark{flex:none}
+.bsub .bt{flex:1;min-width:0}
+select.movesel{background:var(--inp);border:1px solid var(--line);color:var(--fg);border-radius:7px;font-size:11px;padding:2px 3px;max-width:110px;flex:none}
 .vmenu button svg{vertical-align:-2px;margin-right:5px}
 .pitem{display:block;width:100%;text-align:left;background:none;border:1px solid transparent;border-radius:10px;padding:9px 12px;color:var(--fg);cursor:pointer;font-size:14px;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .pitem:hover{background:var(--card2)}.pitem.on{background:var(--card2);border-color:var(--line)}
@@ -253,6 +264,68 @@ function issueRow(tk){
 function fold(title, sub, { open = false } = {}) {
  const d=el('<details class="fold"'+(open?' open':'')+'><summary>'+esc(title)+(sub?'<span class=sub>'+esc(sub)+'</span>':'')+'</summary><div class=fb></div></details>');
  return { el: d, body: d.querySelector('.fb') };
+}
+// ── task board (task-pm-08): one column per status; drag a card, or move it from the keyboard ──
+/** The four columns, in a fixed order. Status is truth — a task with open blockers but status
+ *  todo stays in todo (its blocked-by badge is context, never an auto-move). */
+const BOARD_COLS=['todo','in-progress','blocked','done'];
+/** The per-project list/board choice, persisted server-side in settings.taskViewByProject.
+ *  Default: list. */
+const taskViewOf=(s,pid)=>((((s||{}).settings||{}).taskViewByProject||{})[pid]==='board'?'board':'list');
+/** POST the move; the UI updates ONLY after the API confirms — an error is surfaced and the
+ *  card never moves (no optimistic lie). */
+async function moveTask(tk,status){
+ const r=await api('/api/task/status',{id:tk.id,status});
+ if(r.error){alert(r.error);render();return false}
+ S.state=r;render();return true;
+}
+/** The keyboard-accessible move control on every card and subtask row: a small select whose
+ *  options are the OTHER three statuses (localized), under a neutral placeholder. */
+function moveSel(tk){
+ const sel=el('<select class=movesel title="'+esc(t('task.move'))+'" aria-label="'+esc(t('task.move'))+'"><option value="">'+esc(t('task.move'))+'…</option>'
+  +BOARD_COLS.filter(st=>st!==tk.status).map(st=>'<option value="'+st+'">'+esc(t('task.status.'+st))+'</option>').join('')+'</select>');
+ sel.onchange=()=>{if(sel.value)moveTask(tk,sel.value)};
+ return sel;
+}
+/** A subtask row inside its parent's card: ✓/○ status marker + title + its own move control.
+ *  Subtasks never become column cards of their own. */
+function boardSubRow(sub){
+ const row=el('<div class="bsub'+(sub.status==='done'?' mut':'')+'"><span class=bmark>'+(sub.status==='done'?'✓':'○')+'</span><span class=bt>'+esc(sub.title)+'</span></div>');
+ row.appendChild(moveSel(sub));
+ return row;
+}
+/** A board card: one TOP-LEVEL task — title, priority dot, blocked-by badge, label chips,
+ *  assignee, its subtasks, the move select. Draggable; the drag carries the task id. */
+function boardCard(s,tk,subs){
+ const d=el('<div class=bcard draggable="true" data-id="'+esc(tk.id)+'">'
+  +'<div style="display:flex;gap:6px;align-items:flex-start">'+prioDot(tk.priority)+'<span class=btitle>'+esc(tk.title)+'</span></div>'
+  +'<div style="margin-top:5px;display:flex;gap:2px;align-items:center;flex-wrap:wrap">'+blockedBadge(s,tk)+labelChips(tk)
+  +(tk.assignee?'<span class=mut style="font-size:12px">'+esc(tk.assignee)+'</span>':'')+'</div></div>');
+ d.ondragstart=(e)=>{e.dataTransfer.setData('text/plain',tk.id);e.dataTransfer.effectAllowed='move'};
+ subs.forEach(sub=>d.appendChild(boardSubRow(sub)));
+ d.appendChild(moveSel(tk));
+ return d;
+}
+/** The board itself: one column per status, header = status name + honest TOP-LEVEL count.
+ *  A column is a drop target that maps itself to its status. */
+function taskBoard(s,tasks){
+ const tops=tasks.filter(x=>!x.parentId);
+ const board=el('<div class=board></div>');
+ BOARD_COLS.forEach(st=>{
+  const colTasks=tops.filter(x=>x.status===st);
+  const col=el('<div class=bcol data-status="'+st+'"></div>');
+  col.appendChild(el('<div class=bcolh>'+esc(t('task.status.'+st))+' <span class=bcnt>'+colTasks.length+'</span></div>'));
+  colTasks.forEach(tk=>col.appendChild(boardCard(s,tk,tasks.filter(y=>y.parentId===tk.id))));
+  if(!colTasks.length)col.appendChild(el('<div class=mut style="font-size:12px;padding:6px 2px">'+esc(t('board.empty'))+'</div>'));
+  col.ondragover=(e)=>{e.preventDefault();col.classList.add('over')};
+  col.ondragleave=()=>{col.classList.remove('over')};
+  col.ondrop=(e)=>{e.preventDefault();col.classList.remove('over');
+   const id=e.dataTransfer.getData('text/plain');
+   const tk=tops.find(x=>x.id===id);
+   if(tk&&tk.status!==st)moveTask(tk,st)};
+  board.appendChild(col);
+ });
+ return board;
 }
 // Theme: LIGHT is the default (business look); the toggle persists a dark choice.
 try{if(localStorage.getItem('bo_theme')==='dark')document.body.classList.add('dark')}catch{}
@@ -608,18 +681,31 @@ function projectView(proj){
  const flat=tops.flatMap(x=>[x,...tasks.filter(y=>y.parentId===x.id)]);
  const doneN=flat.filter(x=>x.status==='done'&&!tasks.some(y=>y.parentId===x.id&&y.status!=='done')).length;
  const pct=flat.length?Math.round(doneN/flat.length*100):0;
- const threads=(s.conversations||[]).filter(c=>c.projectId===proj.id);
- const d=el('<div class="cardx"><h3>'+esc(proj.name)+' · <span class=mut>'+doneN+'/'+flat.length+' '+esc(t('project.done'))+'</span></h3>'
-  +'<div style="background:#0b0d11;border-radius:8px;height:7px;overflow:hidden;margin-bottom:10px"><div style="background:var(--ok);height:100%;width:'+pct+'%"></div></div>'
-  +'<div class=mut style="font-size:13px;margin:8px 0 2px">'+esc(t('project.tasks'))+'</div>'
-  +'<div id=ptasks></div>'
+  const threads=(s.conversations||[]).filter(c=>c.projectId===proj.id);
+  const taskView=taskViewOf(s,proj.id);
+  const d=el('<div class="cardx"><h3>'+esc(proj.name)+' · <span class=mut>'+doneN+'/'+flat.length+' '+esc(t('project.done'))+'</span></h3>'
+   +'<div style="background:#0b0d11;border-radius:8px;height:7px;overflow:hidden;margin-bottom:10px"><div style="background:var(--ok);height:100%;width:'+pct+'%"></div></div>'
+   +'<div style="display:flex;align-items:center;gap:8px;margin:8px 0 2px"><span class=mut style="font-size:13px">'+esc(t('project.tasks'))+'</span>'
+   +'<div class="seg" id=tview style="margin-left:auto">'
+   +'<button data-v="list"'+(taskView==='list'?' class=on':'')+'>'+esc(t('project.view.list'))+'</button>'
+   +'<button data-v="board"'+(taskView==='board'?' class=on':'')+'>'+esc(t('project.view.board'))+'</button></div></div>'
+   +'<div id=ptasks></div>'
   +'<div style="display:flex;gap:8px;margin-top:10px"><input class=inp id=nt placeholder="'+esc(t('project.addTask'))+'" style="margin-top:0"><button class=ghost id=ntb>+</button></div>'
   +(threads.length?'<div class=mut style="font-size:13px;margin:14px 0 4px">'+esc(t('project.threads'))+'</div>':'')
   +'</div>');
- const pt=d.querySelector('#ptasks');
- tops.slice(0,25).forEach(tk=>pt.appendChild(taskRow(tk,tasks.filter(y=>y.parentId===tk.id))));
- if(tops.length>25)pt.appendChild(el('<div class=mut style="font-size:12px;padding:4px 0">+ '+(tops.length-25)+' more</div>'));
- if(!tops.length)pt.appendChild(el('<div class=mut style="font-size:13px;padding:4px 0">—</div>'));
+  const pt=d.querySelector('#ptasks');
+  if(taskView==='board')pt.appendChild(taskBoard(s,tasks));
+  else{
+   tops.slice(0,25).forEach(tk=>pt.appendChild(taskRow(tk,tasks.filter(y=>y.parentId===tk.id))));
+   if(tops.length>25)pt.appendChild(el('<div class=mut style="font-size:12px;padding:4px 0">+ '+(tops.length-25)+' more</div>'));
+   if(!tops.length)pt.appendChild(el('<div class=mut style="font-size:13px;padding:4px 0">—</div>'));
+  }
+  // The list/board choice is per project and persists server-side (settings.taskViewByProject).
+  d.querySelectorAll('#tview button').forEach(b=>b.onclick=async()=>{
+   if(b.dataset.v===taskView)return;
+   const r=await api('/api/settings',{taskViewByProject:{[proj.id]:b.dataset.v}});
+   if(r.error){alert(r.error);return}
+   S.state=r;render()});
  const add=async()=>{const v=d.querySelector('#nt').value.trim();if(!v)return;
   const r=await api('/api/task/new',{title:v,projectId:proj.id});if(r.error){alert(r.error);return}await refresh()};
  d.querySelector('#ntb').onclick=add;
