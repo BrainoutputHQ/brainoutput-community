@@ -30,6 +30,21 @@ export function looksLikeWork(text = "") {
     || /^(i\s+)?(need|want)\s+(a|an|un|une|eine?)\s+\S*(campaign|pdf|document|brochure|report|post|page|site|deck|presentation|visuel|image)\b/i.test(s);
 }
 
+/**
+ * Is this message asking about ROOM OCCUPANCY (hotel)? Deterministic intent for the Lodgify
+ * connector (task-pm-12) — en/fr/de. An occupancy NOUN alone (occupancy/occupation/Belegung/
+ * Auslastung) is ambiguous ("what's your occupation?"), so it still needs a room- or time-word;
+ * the verb forms (occupied/occupée/belegt) need a room-word. Callers must check looksLikeWork
+ * first — "build me a hotel occupancy dashboard" is work, never a question.
+ */
+export function looksLikeOccupancy(text = "") {
+  const t = String(text).toLowerCase();
+  const room = /(rooms?|units?|chambres?|zimmer|appartements?|suites?|taux|rate)/i.test(t);
+  const time = /(today|tonight|tomorrow|right now|aujourd|demain|ce soir|heute|morgen|jetzt)/i.test(t);
+  if (/(occupancy|occupation|belegung|auslastung)/i.test(t)) return room || time || /(hotel|hôtel|property|lodgify)/i.test(t);
+  return /(occup|beleg)/i.test(t) && room;
+}
+
 /** The recent conversation tail — the context follow-ups actually resolve against. Retrieval
  *  (term frequency) CANNOT resolve "do them" or "and the second one?" — nothing overlaps
  *  lexically. Recency can. Ask mode sends this alongside retrieval, never the whole transcript. */

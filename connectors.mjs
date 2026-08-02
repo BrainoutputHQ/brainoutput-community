@@ -35,6 +35,8 @@ export const CONNECTOR_CATALOG = {
   "medusa":  { label: "Medusa",  mechanism: "api-key-local", category: "commerce", openSource: true, altTo: ["shopify"], worksWith: "Medusa", scopes: RWS },
   "stripe":  { label: "Stripe",  mechanism: "api-key-local", category: "payments", openSource: false, worksWith: "Stripe", scopes: ["read", "sensitive"] },
   "lago":    { label: "Lago",    mechanism: "api-key-local", category: "billing",  openSource: true, altTo: ["stripe-billing"], worksWith: "Lago", scopes: ["read", "write", "sensitive"] },
+  // — Hospitality — Lodgify is READ-ONLY by construction: the client (lodgify.mjs) has no write verb.
+  "lodgify": { label: "Lodgify", mechanism: "api-key-local", category: "hospitality", openSource: false, worksWith: "Lodgify", scopes: ["read"] },
   // — Workplace chat —
   "microsoft-teams": { label: "Microsoft Teams", mechanism: "oauth", category: "chat", openSource: false, worksWith: "Microsoft Teams", scopes: ["read", "draft", "write", "communicate", "sensitive"] },
   "slack":   { label: "Slack",    mechanism: "oauth",         category: "chat", openSource: false, worksWith: "Slack", scopes: ["read", "draft", "write", "communicate", "sensitive"] },

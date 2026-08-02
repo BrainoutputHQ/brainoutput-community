@@ -954,6 +954,31 @@ function settingsView(){
  wrap.appendChild(UF.el);
  // The sources catalog lives in Settings (the menu stays lean); the sidebar keeps the rollup.
  wrap.appendChild(sourcesView());
+ // Lodgify (hotel PMS) — a first-class READ-ONLY connection: the API key is probed live, sealed
+ // like every other secret, and removable anytime. "How many rooms are occupied today?" then
+ // answers from the real availability calendar, with no model involved.
+ const LG=fold(t('sources.kind.lodgify'),(s.lodgify&&s.lodgify.connected)?t('sources.connected'):t('sources.notConnected'));
+ const lb=LG.body;
+ const lh=el('<div style="margin-top:10px"></div>');
+ lh.appendChild(el('<div class=mut style="font-size:12.5px">'+esc(t('sources.benefit.lodgify'))+'</div>'));
+ if(s.lodgify&&s.lodgify.connected){
+  const d=el('<div style="margin-top:6px;font-size:12.5px"><span class=ok>✓ '+esc(t('sources.lodgify.connected'))+'</span> '
+   +'<button class=ghost style="padding:2px 9px;font-size:11.5px">'+esc(t('sources.disconnect'))+'</button></div>');
+  d.querySelector('button').onclick=async()=>{if(!confirm(t('sources.disconnectConfirm')))return;const r=await api('/api/connector/lodgify/disconnect',{});if(r.error){alert(r.error);return}S.state=r.state;await refresh()};
+  lh.appendChild(d);
+ }else{
+  const f=el('<div style="margin-top:6px"><div style="font-size:12.5px" class=mut>'+esc(t('sources.lodgify.how'))+'</div>'
+   +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px"><input class=inp id=lk type="password" placeholder="'+esc(t('sources.appKey'))+'" style="margin-top:0;flex:1;min-width:220px">'
+   +'<button class=ghost style="font-size:12.5px">'+esc(t('sources.connect'))+'</button></div>'
+   +'<div class=mut id=lmsg style="font-size:12px;margin-top:4px"></div></div>');
+  f.querySelector('button').onclick=async()=>{
+   const m=f.querySelector('#lmsg');m.textContent='…';
+   const r=await api('/api/connector/lodgify',{apiKey:f.querySelector('#lk').value.trim()});
+   m.textContent=r.error||'✓';if(!r.error){S.state=r.state;await refresh()}};
+  lh.appendChild(f);
+ }
+ lb.appendChild(lh);
+ wrap.appendChild(LG.el);
  const MF=fold(t('models.assignments'),conns.length+' '+t('models.connections').toLowerCase());
  const MB=MF.body;
  const a=el('<div style="margin-top:10px"><div class=mut style="font-size:12.5px;margin-bottom:8px">'+esc(t('models.hint'))+'</div></div>');

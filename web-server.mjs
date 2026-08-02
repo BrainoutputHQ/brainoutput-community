@@ -22,6 +22,7 @@ import { runtimeCards, runtimeConnection, runtimeToConnection } from "./runtimes
 import { applyAdvancedAgentConfig } from "./onboarding.mjs";
 import { newConversation, addMessage, pin, resolveMention, rollSummary, compactContext, draftMissionSpec,
   editMissionSpec, approveMission, rejectMission, modeAllows, missionComposer, reviewMission, saveAsWorkflow, looksLikeWork,
+  looksLikeOccupancy,
   askTail, inferDepartment, missionWorkerPrompt, unmetDeliverables, deliverableGapNote, planStepsFor,
   isGoal, parsePlanDraft, PLAN_DRAFT_INSTRUCTION } from "./chat.mjs";
 import { connectRagSource, indexDocuments, searchRag } from "./rag.mjs";
@@ -32,6 +33,7 @@ import { createWorkTwin, setMode as twinSetMode, connectWorkSource, grantTwinSco
   disconnectWorkSource, sourceCatalog, familyStatus } from "./worktwin.mjs";
 import { connectMailSource, workSourceOptions, smtpSend } from "./mail-sources.mjs";
 import { draftConnectorSpec, connectorGuide, missingConfig, connectorBuildPlan } from "./connector-builder.mjs";
+import { lodgifyClient, occupancyToday, LODGIFY_BASE_URL } from "./lodgify.mjs";
 import { LocalNodes, POLL_HOLD_MS } from "./local-bridge.mjs";
 import { PLAN_TASKS_INSTRUCTION, parsePlannedTasks, workerPartPrompt, parseWorkerQuestion, autoAnswerPrompt } from "./plan-tasks.mjs";
 import { FILES_SPEC_INSTRUCTION, writeFilesSpec } from "./file-spec.mjs";
@@ -110,6 +112,42 @@ const googleStatus = () => ({
   connectedAt: store.def.settings?.googleConnectedAt || null,
   scopes: store.def.settings?.googleScopes || null,
 });
+
+// ── Lodgify (hotel PMS, read-only; task-pm-12) ─────────────────────────────────────────────────
+// The API key lives in the sealed named vault (NEVER in the exportable definition, never logged)
+// and resolves at EXECUTION time only. BO_LODGIFY_BASE_URL exists so tests can point the client
+// at a stub — production code never sets it.
+const LODGIFY_SECRET = "lodgify-api-key";
+const lodgifyBaseUrl = () => process.env.BO_LODGIFY_BASE_URL || LODGIFY_BASE_URL;
+const lodgifyStatus = () => ({
+  connected: store.hasSecret(LODGIFY_SECRET),
+  connectedAt: store.def.settings?.lodgifyConnectedAt || null,
+});
+
+/**
+ * The deterministic "rooms occupied today" answer — NO model call, ever. Three honest outcomes:
+ * no connection → say how to connect (never a fabricated number); API error → the real Lodgify
+ * error, loud; success → the number, a per-property breakdown and a sources line (Lodgify · time).
+ */
+async function occupancyAnswer() {
+  let apiKey = null;
+  try { apiKey = await store.secretResolver()(LODGIFY_SECRET); } catch { apiKey = null; }
+  if (!apiKey) return { text: tChat("chat.occupancyConnect"), sources: [] };
+  try {
+    const client = lodgifyClient({ apiKey, baseUrl: lodgifyBaseUrl() });
+    const occ = await occupancyToday({ client });
+    const lines = [tChat("chat.occupancySummary")
+      .replace("{occupied}", String(occ.occupied)).replace("{total}", String(occ.total)).replace("{date}", occ.date)];
+    for (const p of occ.properties) {
+      lines.push(`• ${p.name || `property ${p.propertyId}`}: ${p.occupied}/${p.total}`);
+      for (const rt of p.roomTypes || [])
+        lines.push(`  – ${rt.name || `room type ${rt.roomTypeId}`}: ${rt.occupied}/${rt.units}`);
+    }
+    return { text: lines.join("\n"), sources: [`Lodgify · ${occ.at}`] };
+  } catch (e) {
+    return { text: tChat("chat.occupancyError").replace("{error}", String(e.message || e).slice(0, 300)), sources: [] };
+  }
+}
 
 // ── server-side model detection (user LOCAL only; never a BrainOutput account) ────────────────
 function probe(host, port, path) {
@@ -649,6 +687,27 @@ async function api(req, res, url) {
     store.saveRuntime();
     return json(res, { removed: before - store.runtime.customConnectors.length, state: publicState() });
   }
+  // ── Lodgify (hotel PMS) — connect with an API key, sealed like every other secret. The key is
+  // PROBED live before it is stored: a rejected key is an error shown to the user, never a green
+  // "connected". Read-only by construction (lodgify.mjs has no write verb). Removable anytime.
+  if (url.pathname === "/api/connector/lodgify") {
+    const apiKey = String(b.apiKey || "").trim();
+    if (!apiKey) return json(res, { error: "a Lodgify API key is required" }, 400);
+    try {
+      await lodgifyClient({ apiKey, baseUrl: lodgifyBaseUrl() }).getProperties({ limit: 1, maxPages: 1 });
+    } catch (e) { return json(res, { error: String(e.message || e).slice(0, 300) }, 400); }
+    store.putSecret(LODGIFY_SECRET, apiKey);
+    store.setSettings({ ...(store.def.settings || {}), lodgifyConnectedAt: Date.now() });
+    store.saveDefinition();
+    return json(res, { lodgify: lodgifyStatus(), state: publicState() });
+  }
+  if (url.pathname === "/api/connector/lodgify/disconnect") {
+    store.deleteSecret(LODGIFY_SECRET);
+    const s = { ...(store.def.settings || {}) };
+    delete s.lodgifyConnectedAt;
+    store.setSettings(s).saveDefinition();
+    return json(res, { lodgify: lodgifyStatus(), state: publicState() });
+  }
   // ── Local devices (UI side of the bridge; session-guarded) ──
   if (url.pathname === "/api/local/pair-code") return json(res, localNodes.issueCode());
   // ── Google OAuth client setup (guarded). The client secret is sealed; state shows only status. ──
@@ -1120,6 +1179,13 @@ async function chatSend(res, b) {
         reply += `\n\n(permission: ${perm.scope} in ${t.mode} mode${perm.requiresApproval ? " · approval required" : ""})`;
       }
     }
+  } else if (mode === "ask" && looksLikeOccupancy(b.text || "") && !looksLikeWork(b.text || "")) {
+    // "Rooms occupied today?" — the deterministic Lodgify intent (task-pm-12). NO model call;
+    // routed BEFORE plan refinement, looksLikeWork and the RAG path so it can never be swallowed.
+    // The !looksLikeWork guard keeps "build me a hotel occupancy dashboard" on the mission path.
+    const occ = await occupancyAnswer();
+    reply = occ.text;
+    rag = occ.sources.map((citation) => ({ citation }));
   } else if (mode === "ask" && latestDraftPlan(conv.id)) {
     // Plan refinement loop: this thread holds a DRAFT plan, so a normal chat message refines it
     // (ONE bounded planner pass over the draft). Never auto-validate, never auto-materialize —
@@ -2063,6 +2129,7 @@ function publicState() {
     customConnectors: (store.runtime.customConnectors || []).map(publicCustomConnector),
     localNodes: localNodes.listPublic(),
     google: googleStatus(),
+    lodgify: lodgifyStatus(),
     brainoutputFundedTokens: funded };
 }
 
