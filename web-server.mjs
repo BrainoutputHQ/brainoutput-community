@@ -22,7 +22,8 @@ import { runtimeCards, runtimeConnection, runtimeToConnection } from "./runtimes
 import { applyAdvancedAgentConfig } from "./onboarding.mjs";
 import { newConversation, addMessage, pin, resolveMention, rollSummary, compactContext, draftMissionSpec,
   editMissionSpec, approveMission, rejectMission, modeAllows, missionComposer, reviewMission, saveAsWorkflow, looksLikeWork,
-  askTail, inferDepartment, missionWorkerPrompt, unmetDeliverables, deliverableGapNote } from "./chat.mjs";
+  askTail, inferDepartment, missionWorkerPrompt, unmetDeliverables, deliverableGapNote,
+  isGoal, parsePlanDraft, PLAN_DRAFT_INSTRUCTION } from "./chat.mjs";
 import { connectRagSource, indexDocuments, searchRag } from "./rag.mjs";
 import { createWorkTwin, setMode as twinSetMode, connectWorkSource, grantTwinScope, twinPermission,
   indexMessages as twinIndex, retrieveForRequest, prioritySummary, unansweredThreads, extractCommitments,
@@ -43,7 +44,8 @@ import { selectModel } from "./ce-core.mjs";
 import { CATALOG, LOCALES, SLOT_LABELS } from "./i18n.mjs";
 import { SHELL_PAGE } from "./shell.mjs";
 import { newProject, listProjects, promoteConversation, projectBrief } from "./projects.mjs";
-import { newTask, newSubtask, setTaskStatus, reportMissionToTask } from "./tasks.mjs";
+import { newTask, newSubtask, setTaskStatus, reportMissionToTask, assertTaskDeps } from "./tasks.mjs";
+import { newPlan, updateDraft, validatePlan, rejectPlan, markMaterialized, planById } from "./plans.mjs";
 import { pickFreeModel, freeConnection, FREE_PRIVACY_NOTE } from "./free-models.mjs";
 import { t as i18nT } from "./i18n.mjs";
 import { newRoutine, isDue, markFired, parseFeed, unseenItems, ROUTINE_TEMPLATES } from "./routines.mjs";
@@ -472,6 +474,72 @@ async function api(req, res, url) {
       return json(res, { ...publicState(), task: t });
     } catch (e) { return json(res, { error: e.message }, 400); }
   }
+  // ── Plans: draft → (owner validates) → materialized tasks. The owner-validation gate is the
+  // point: /api/plan/materialize REFUSES an unvalidated plan (409), always.
+  if (url.pathname === "/api/plan/new") {
+    try {
+      const p = { ...newPlan({ id: uid("plan"), projectId: b.projectId || null, objective: b.objective,
+        decisions: b.decisions ?? null, taskDrafts: Array.isArray(b.taskDrafts) ? b.taskDrafts : [],
+        context: b.context ?? null, reporter: b.reporter || "you", at: Date.now() }),
+        conversationId: b.conversationId || null };
+      store.addPlan(p); store.saveRuntime();
+      return json(res, { ...publicState(), plan: p });
+    } catch (e) { return json(res, { error: e.message }, 400); }
+  }
+  if (url.pathname === "/api/plan/update") {
+    try {
+      const p = updateDraft(store.runtime, b.id, { objective: b.objective, decisions: b.decisions,
+        taskDrafts: b.taskDrafts, context: b.context, at: Date.now() });
+      store.addPlan(p); store.saveRuntime();
+      return json(res, { ...publicState(), plan: p });
+    } catch (e) { return json(res, { error: e.message }, 400); }
+  }
+  if (url.pathname === "/api/plan/validate") {
+    try {
+      const p = validatePlan(store.runtime, b.id, { at: Date.now() });
+      store.addPlan(p); store.saveRuntime();
+      return json(res, { ...publicState(), plan: p });
+    } catch (e) { return json(res, { error: e.message }, 400); }
+  }
+  if (url.pathname === "/api/plan/reject") {
+    try {
+      const p = rejectPlan(store.runtime, b.id, { at: Date.now() });
+      store.addPlan(p); store.saveRuntime();
+      return json(res, { ...publicState(), plan: p });
+    } catch (e) { return json(res, { error: e.message }, 400); }
+  }
+  if (url.pathname === "/api/plan/materialize") {
+    const plan = planById(store.runtime, b.id);
+    if (!plan) return json(res, { error: `no plan '${b.id}'` }, 404);
+    // THE GATE: owner validation is explicit and mandatory — an unvalidated plan never becomes tasks.
+    if (plan.status !== "validated")
+      return json(res, { error: `plan '${plan.id}' is ${plan.status} — only a validated plan can be materialized; the owner must validate it first` }, 409);
+    try {
+      // Validate-then-write: build EVERY task record first — directive fields + plan/project link —
+      // translating each draft's dependsOn INDEXES against the COMPLETE set of created ids (a draft
+      // may depend on a later index — forward references resolve here). Nothing persists until all
+      // records validate, so a failure leaves zero tasks in the store and the plan untouched.
+      const tasks = plan.taskDrafts.map((d) => newTask({ id: uid("task"), projectId: plan.projectId,
+        title: d.title, objective: d.objective, skills: d.skills, agentSlot: d.agentSlot,
+        restrictions: d.restrictions, priority: d.priority, acceptanceCriteria: d.acceptanceCriteria,
+        planId: plan.id, reporter: plan.reporter || "you", at: Date.now() }));
+      const ids = tasks.map((t) => t.id);
+      const withDeps = tasks.map((t, i) => {
+        const dependsOn = (plan.taskDrafts[i].dependsOn || []).map((di) => ids[di]);
+        if (dependsOn.some((d) => !d))
+          throw new Error(`task draft ${i} depends on a draft index that does not exist`);
+        return { ...t, dependsOn };
+      });
+      // Dependency assertions run against a runtime that ALREADY holds every new task — never
+      // against the store mid-write (that refused forward refs and leaked partial writes).
+      const staged = { ...store.runtime, tasks: [...(store.runtime.tasks || []), ...withDeps] };
+      for (const t of withDeps) assertTaskDeps(staged, t);
+      for (const t of withDeps) store.addTask(t);
+      const frozen = markMaterialized(store.runtime, plan.id, ids, { at: Date.now() });
+      store.addPlan(frozen); store.saveRuntime();
+      return json(res, { ...publicState(), plan: frozen, tasks: withDeps });
+    } catch (e) { return json(res, { error: e.message }, 400); }
+  }
   if (url.pathname === "/api/agent-advanced") {
     const agents = store.def.agents || [];
     const i = agents.findIndex((a) => a.id === b.agentId);
@@ -826,6 +894,31 @@ function chatModelFor({ department = null, agentId = null } = {}) {
 function getConversation(id) { return (store.runtime.conversations || []).find((c) => c.id === id) || null; }
 function saveConversation(c) { store.addConversation({ ...c, updatedAt: Date.now() }); store.saveRuntime(); return c; }
 
+/** The thread's current DRAFT plan, if it has one (latest wins) — drives the refinement loop. */
+const latestDraftPlan = (conversationId) =>
+  (store.runtime.plans || []).filter((p) => p.conversationId === conversationId && p.status === "draft").at(-1) || null;
+
+/**
+ * ONE bounded planner pass over a plan draft — the smallest graph (a single conversation-model
+ * call), never a routed mission. Returns parsed draft fields or null; the caller stays honest
+ * (the previous draft is kept, never a half-written one).
+ */
+async function plannerDraftPass({ conv, text, model, current = null }) {
+  const tail = askTail(conv, { n: 6 });
+  const prompt = `${current
+    ? "Refine the draft plan below using the user's latest message. Keep what still applies; change what the user asked for."
+    : "Draft the plan for the work below."}
+
+User: ${text}
+${current ? `\nCurrent draft plan:\n${JSON.stringify({ objective: current.objective, decisions: current.decisions, taskDrafts: current.taskDrafts })}\n` : ""}
+Recent conversation (oldest first):
+${tail.map((m) => `${m.role}: ${m.text}`).join("\n") || "(none yet)"}
+${PLAN_DRAFT_INSTRUCTION}`;
+  const r = await runNode({ node: "chat", slot: model.slot }, model, { prompt },
+    { maxTokens: 1200, timeoutMs: 120000, localCall: localNodeModelCall });
+  return parsePlanDraft(r.output);
+}
+
 /**
  * Work Twin chat: map a natural request to a Work Twin capability. Deterministic intent matching so it
  * works with no model configured; the model only writes prose (e.g. a draft body). Every reply carries
@@ -895,7 +988,7 @@ async function chatSend(res, b) {
     meta: attachIds.length ? { artifacts: attachIds } : {} });
 
   const model = chatModelFor(conv);
-  let reply = null, mission = null, rag = [];
+  let reply = null, mission = null, plan = null, rag = [];
 
   if (conv.scope === "work-twin" || b.scope === "work-twin") {
     const t = getTwin(conv.twinId || b.twinId);
@@ -985,6 +1078,30 @@ async function chatSend(res, b) {
         reply += `\n\n(permission: ${perm.scope} in ${t.mode} mode${perm.requiresApproval ? " · approval required" : ""})`;
       }
     }
+  } else if (mode === "ask" && latestDraftPlan(conv.id)) {
+    // Plan refinement loop: this thread holds a DRAFT plan, so a normal chat message refines it
+    // (ONE bounded planner pass over the draft). Never auto-validate, never auto-materialize —
+    // the owner gate on the plan card is the only way tasks come into existence.
+    const draft = latestDraftPlan(conv.id);
+    if (model.connection && !model.needsConfiguration) {
+      try {
+        const fields = await plannerDraftPass({ conv, text: b.text || "", model, current: draft });
+        if (fields) {
+          const edits = { at: Date.now() };
+          if (fields.objective) edits.objective = fields.objective;
+          if (fields.decisions !== undefined) edits.decisions = fields.decisions;
+          if (fields.taskDrafts?.length) edits.taskDrafts = fields.taskDrafts;
+          store.addPlan(updateDraft(store.runtime, draft.id, edits));
+          reply = tChat("chat.planRefined");
+        } else {
+          reply = tChat("chat.planRefineUnclear");
+        }
+      } catch {
+        reply = tChat("chat.planRefineUnclear");   // the draft is untouched — say so honestly
+      }
+    } else {
+      reply = tChat("chat.planNeedModel");
+    }
   } else if (mode === "ask" && looksLikeWork(b.text || "")) {
     // Auto-plan: a build request in Ask mode is work, not chat — draft the mission directly
     // (the user should never have to think about modes). Same draft path as Plan mode.
@@ -1054,7 +1171,23 @@ User: ${b.text}`;
     if (conv.projectId) mission = { ...mission, projectId: conv.projectId };
     store.addMission(mission);
     conv = { ...conv, missionId: mission.id };
+    // Multi-step work in a PROJECT thread also lands as a DRAFT Plan artifact (task-pm-03): the
+    // plan card is refined in this thread and only ever becomes real tasks through the owner
+    // gate (validate → materialize). The mission draft above is the existing flow, unchanged.
+    const objText = String(b.text || "").trim();
+    if (conv.projectId && objText && isGoal(objText)) {
+      let fields = null;
+      if (model.connection && !model.needsConfiguration) {
+        try { fields = await plannerDraftPass({ conv, text: objText, model }); } catch {}
+      }
+      plan = { ...newPlan({ id: uid("plan"), projectId: conv.projectId,
+        objective: safeSlice(fields?.objective || objText, 4000),
+        decisions: fields?.decisions ?? null, taskDrafts: fields?.taskDrafts || [],
+        reporter: "you", at: Date.now() }), conversationId: conv.id };
+      store.addPlan(plan);
+    }
     reply = `Drafted a mission for ${mission.department}. Review it below — edit anything, then approve to launch.`;
+    if (plan) reply += tChat("chat.planDrafted");
   } else if (mode === "review") {
     const m = (store.runtime.missions || []).find((x) => x.id === (b.missionId || conv.missionId));
     const exec = (store.runtime.executions || []).filter((e) => e.missionId === m?.id).at(-1);
@@ -1074,7 +1207,7 @@ User: ${b.text}`;
   conv = rollSummary(conv, { every: 10, keepTail: 4 });
   saveConversation(conv);
   return json(res, { conversation: conv, mission: mission || (conv.missionId ? (store.runtime.missions || []).find((m) => m.id === conv.missionId) : null),
-    composer: mission ? missionComposer(mission) : null, model, citations: rag.map((r) => r.citation) });
+    composer: mission ? missionComposer(mission) : null, plan, model, citations: rag.map((r) => r.citation) });
 }
 
 /**
@@ -1564,7 +1697,7 @@ function publicState() {
   return { recovered: store.recovered || null, company: store.def.company, settings: store.def.settings || { mode: "regular" }, departments: store.def.departments, agents: store.def.agents,
     connections: store.def.modelConnections, assignments: store.def.modelAssignments,
     agentViews: store.def.agents.map((a) => renderAgentView(a, store.def.modelAssignments, store.def.modelConnections)),
-    tasks: store.runtime.tasks, executions: store.runtime.executions, approvals: store.runtime.approvals,
+    tasks: store.runtime.tasks, plans: store.runtime.plans || [], executions: store.runtime.executions, approvals: store.runtime.approvals,
     artifacts: store.runtime.artifacts || [],
     routines: store.runtime.routines || [],
     errorPatterns: errorPatterns(store.runtime.errors || [], { minCount: 1 }).slice(0, 5),

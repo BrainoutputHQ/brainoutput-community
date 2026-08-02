@@ -380,6 +380,48 @@ function approvalCard(a){
  d.querySelector('#ar').onclick=async()=>{await api('/api/approval',{id:a.id,decision:'rejected'});await refresh()};
  return d;
 }
+/** A durable Plan: objective, the shared DECISIONS, status badge, task drafts with priority and
+ *  skills — and the owner gate. draft → [Validate]; validated → [Create tasks]; materialized →
+ *  read-only links to the created tasks. The card never validates or materializes on its own. */
+function planCard(p){
+ const st=p.status||'draft';
+ const drafts=p.taskDrafts||[];
+ const badgeCls=st==='validated'||st==='materialized'?'ok':'dormant';
+ const d=el('<div class="cardx"><h3>'+esc(t('plan.title'))+' · <span class="pill '+badgeCls+'">'+esc(t('plan.status.'+st))+'</span></h3>'
+  +'<div style="font-size:14px;white-space:pre-wrap">'+esc(p.objective||'')+'</div>'
+  +(p.decisions?'<div style="margin-top:8px"><b style="font-size:13px">'+esc(t('plan.decisions'))+'</b><div class=mut style="font-size:13px;white-space:pre-wrap">'+esc(p.decisions)+'</div></div>':'')
+  +(drafts.length?'<div style="margin-top:8px"><b style="font-size:13px">'+esc(t('plan.tasks'))+'</b><ol style="margin:6px 0 0;padding-left:22px;font-size:13.5px">'
+    +drafts.map((td)=>'<li>'+esc(td.title)
+      +(td.priority&&td.priority!=='none'?' <span class="pill dormant">'+esc(td.priority)+'</span>':'')
+      +((td.skills||[]).length?' <span class=mut style="font-size:12px">'+esc(td.skills.join(', '))+'</span>':'')
+      +((td.dependsOn||[]).length?' <span class=mut style="font-size:12px">'+esc(t('plan.dependsOn'))+' '+td.dependsOn.map((x)=>x+1).join(', ')+'</span>':'')
+      +'</li>').join('')+'</ol></div>':'')
+  +'<div style="margin-top:12px" id=pb></div>'
+  +'<div class=mut id=pmsg style="font-size:12px;margin-top:6px"></div></div>');
+ const bar=d.querySelector('#pb');
+ const fail=(r)=>{if(r.error)d.querySelector('#pmsg').textContent=r.error;return !r.error};
+ if(st==='draft'){
+  const v=el('<button class=act>'+esc(t('plan.validate'))+'</button>');
+  v.title=t('plan.validateHint');
+  v.onclick=async()=>{if(fail(await api('/api/plan/validate',{id:p.id})))await refresh()};
+  bar.appendChild(v);
+  const rj=el('<button class=ghost style="margin-left:8px">'+esc(t('plan.reject'))+'</button>');
+  rj.onclick=async()=>{if(fail(await api('/api/plan/reject',{id:p.id})))await refresh()};
+  bar.appendChild(rj);
+ }else if(st==='validated'){
+  const c=el('<button class=act>'+esc(t('plan.createTasks'))+'</button>');
+  c.onclick=async()=>{if(fail(await api('/api/plan/materialize',{id:p.id})))await refresh()};
+  bar.appendChild(c);
+ }else if(st==='materialized'){
+  bar.appendChild(el('<div class=mut style="font-size:12.5px;margin-bottom:4px">'+esc(t('plan.createdTasks'))+':</div>'));
+  (p.taskIds||[]).forEach(tid=>{
+   const tk=((S.state||{}).tasks||[]).find(x=>x.id===tid);
+   const b=el('<button class="pitem" style="padding:5px 10px">'+I('work')+'<span class=lab>'+esc(tk?tk.title:tid)+'</span>'+(tk?'<span class=cnt>'+esc(t('task.status.'+tk.status))+'</span>':'')+'</button>');
+   b.onclick=()=>{if(!tk)return;S.projectId=tk.projectId||null;S.convId=null;S.openTask=tk.id;S.view='chat';render()};
+   bar.appendChild(b)});
+ }
+ return d;
+}
 /** A finished run is a card in the thread too: graph, who ran each stage, tokens, artifacts,
  *  and the OUTPUT ITSELF — a produced site must be previewable, not just described in logs. */
 const extractHtml=(txt)=>{const m=String(txt||'').match(/\`\`\`html\s*([\s\S]*?)\`\`\`/);if(m)return m[1];
@@ -486,6 +528,8 @@ function projectView(proj){
   const label=c.title||(c.messages[0]?String(c.messages[0].text).slice(0,50):c.id);
   const b=el('<button class="pitem'+(S.convId===c.id?' on':'')+'">'+esc(label)+'</button>');
   b.onclick=()=>{S.convId=c.id;render()};d.appendChild(b)});
+ // The project's plans live on the project too — same card, same owner gate as in the thread.
+ (s.plans||[]).filter(p=>p.projectId===proj.id).slice(-5).forEach(p=>d.appendChild(planCard(p)));
  return d;
 }
 
@@ -910,6 +954,7 @@ function thread(){
  const proj=conv.projectId?(s.projects||[]).find(p=>p.id===conv.projectId):null;
  if(proj)box.appendChild(projectView(proj));
  conv.messages.forEach(m=>box.appendChild(bubble(m)));
+ (s.plans||[]).filter(p=>p.conversationId===conv.id).forEach(p=>box.appendChild(planCard(p)));
  const mission=(s.missions||[]).find(m=>m.id===conv.missionId);
  if(mission&&['draft','approved','failed'].includes(mission.status))box.appendChild(missionCard(mission));
  (s.approvals||[]).filter(a=>a.status==='pending'&&(mission&&a.missionId===mission.id)).forEach(a=>box.appendChild(approvalCard(a)));

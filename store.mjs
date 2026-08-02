@@ -15,11 +15,11 @@ import { join } from "node:path";
 const DEFAULT_DIR = process.env.BO_CE_DATA || join(process.env.HOME || ".", ".local", "share", "bo-community");
 
 const EMPTY_DEF = { company: { name: "", brainoutputFundedInference: "forbidden" }, departments: [], agents: [], modelConnections: [], modelAssignments: {}, policies: {}, settings: { mode: "regular" } };
-const EMPTY_RUNTIME = { projects: [], tasks: [], executions: [], artifacts: [], approvals: [], conversations: [], missions: [], workTwins: [], infraTwins: [], routines: [], errors: [], secrets: {} };
+const EMPTY_RUNTIME = { projects: [], tasks: [], plans: [], executions: [], artifacts: [], approvals: [], conversations: [], missions: [], workTwins: [], infraTwins: [], routines: [], errors: [], secrets: {} };
 
 // Runtime history bounds: runtime.json must not grow without limit. Oldest records are dropped
 // first; ACTIVE records (running/pending tasks, pending approvals) are never dropped.
-export const HISTORY_LIMITS = { projects: 100, tasks: 200, executions: 200, artifacts: 500, approvals: 200, conversations: 100, missions: 200, workTwins: 50, infraTwins: 50, routines: 50, errors: 200 };
+export const HISTORY_LIMITS = { projects: 100, tasks: 200, plans: 100, executions: 200, artifacts: 500, approvals: 200, conversations: 100, missions: 200, workTwins: 50, infraTwins: 50, routines: 50, errors: 200 };
 const ACTIVE_STATUS = new Set(["running", "pending"]);
 
 // Fields that must NEVER be written into a connection (defense in depth — apiKeyEnv is a NAME, not a key).
@@ -196,6 +196,7 @@ export class Store {
   _upsert(coll, rec) { const i = this.runtime[coll].findIndex((x) => x.id === rec.id); if (i >= 0) this.runtime[coll][i] = { ...this.runtime[coll][i], ...rec }; else this.runtime[coll].push(rec); return rec; }
   addProject(rec) { return this._upsert("projects", rec); }
   addTask(rec) { return this._upsert("tasks", rec); }
+  addPlan(rec) { this.runtime.plans ||= []; return this._upsert("plans", rec); }
   addExecution(rec) { return this._upsert("executions", rec); }
   addArtifact(rec) { return this._upsert("artifacts", rec); }
   addApproval(rec) { return this._upsert("approvals", rec); }

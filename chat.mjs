@@ -231,6 +231,67 @@ export function compactContext(conversation, { query = "", k = 4, artifacts = []
   };
 }
 
+// ── Plan drafts — the planner pass that fills a durable Plan (plans.mjs) ─────────────────────────
+
+/**
+ * The structured-output contract for ONE bounded planner pass over a plan draft (task-pm-03).
+ * Same style as PLAN_TASKS_INSTRUCTION (plan-tasks.mjs, mission flow) but adapted to the draft
+ * shape: a refined objective, the shared DECISIONS, and task drafts with directive fields.
+ */
+export const PLAN_DRAFT_INSTRUCTION = `
+
+You are the PLANNER. Reply in exactly this form:
+OBJECTIVE: <one line — the refined objective>
+DECISIONS: <one or two lines of shared choices every step must respect — stack, style, names>
+\`\`\`tasks
+[{"title": "step one", "priority": "high", "skills": ["research"], "dependsOn": [], "acceptanceCriteria": ["done means …"]}]
+\`\`\`
+Rules: 2 to 6 steps; each step is one concrete, completable task; titles under 80 characters;
+priority is one of urgent, high, medium, low, none; dependsOn holds INDEXES of earlier steps in
+the same block; no nesting, no commentary inside the block.`;
+
+const DRAFT_PRIORITIES = ["urgent", "high", "medium", "low", "none"];
+
+/**
+ * Parse the planner's answer into plan-draft fields for plans.mjs. Deterministic and fail-closed:
+ * unusable output yields null (the caller keeps the previous draft and says so honestly). Every
+ * field is bounded to the plans.mjs limits so a wild model answer can never blow the store up.
+ */
+export function parsePlanDraft(output = "", { max = 6 } = {}) {
+  const text = String(output || "");
+  const block = text.match(/```tasks\s*([\s\S]*?)```/);
+  if (!block) return null;
+  let arr;
+  try { arr = JSON.parse(block[1]); } catch { return null; }
+  if (!Array.isArray(arr)) return null;
+  const taskDrafts = [];
+  for (const raw of arr) {
+    const title = String((typeof raw === "string" ? raw : raw?.title) || "").trim().slice(0, 120);
+    if (title.length < 3) continue;
+    const priority = DRAFT_PRIORITIES.includes(raw?.priority) ? raw.priority : "none";
+    const skills = [...(Array.isArray(raw?.skills) ? raw.skills : [])].map((s) => String(s)).filter(Boolean).slice(0, 12);
+    const dependsOn = [...(Array.isArray(raw?.dependsOn) ? raw.dependsOn : [])]
+      .filter((d) => Number.isInteger(d) && d >= 0 && d < arr.length);
+    const acceptanceCriteria = [...(Array.isArray(raw?.acceptanceCriteria) ? raw.acceptanceCriteria : [])]
+      .map((c) => String(c).slice(0, 500)).filter(Boolean).slice(0, 20);
+    taskDrafts.push({ title, objective: String(raw?.objective || title).slice(0, 4000), skills,
+      agentSlot: typeof raw?.agentSlot === "string" ? raw.agentSlot : null,
+      restrictions: raw?.restrictions && typeof raw.restrictions === "object" && !Array.isArray(raw.restrictions) ? raw.restrictions : {},
+      priority, dependsOn, acceptanceCriteria });
+  }
+  if (taskDrafts.length < 1) return null;
+  const sliced = taskDrafts.slice(0, max);
+  // Indexes shifted by filtering/slicing: re-clamp every dependsOn to the final list so the
+  // plans.mjs draft validation (in range, never a self-dependency) can never trip on model output.
+  const fields = { taskDrafts: sliced.map((d, i) => ({ ...d,
+    dependsOn: d.dependsOn.filter((x) => x >= 0 && x < sliced.length && x !== i) })) };
+  const obj = text.match(/^\s*OBJECTIVE:\s*(.+)$/m)?.[1]?.trim();
+  if (obj) fields.objective = obj.slice(0, 4000);
+  const dec = text.match(/^\s*DECISIONS:\s*(.+)$/m)?.[1]?.trim();
+  if (dec) fields.decisions = dec.slice(0, 4000);
+  return fields;
+}
+
 // ── MissionSpec — the structured, durable state the executor actually receives ───────────────────
 
 export const MISSION_STATUS = ["draft", "approved", "running", "done", "rejected"];
