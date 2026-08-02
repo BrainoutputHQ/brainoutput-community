@@ -90,12 +90,14 @@ const until = async (fn, ms = 45000) => {
 const task1Of = async (pid) => (await state()).tasks.find((t) => t.projectId === pid && t.parentId && t.title === "alpha step one") || null;
 
 /** Onboard + connect the stub free model, then launch a 2-task project mission whose plan
- *  carries `decisions` (the plan the subtasks link to, via the mission's conversation). */
+ *  carries `decisions` (the plan the subtasks link to, via the mission's conversation).
+ *  The mission drafts through the ask-mode fast path (plan-mode project asks no longer draft
+ *  missions — task-pm-11); its own planner still decomposes it into spine subtasks. */
 async function launchMission(marker, decisions) {
   const p = await post("/api/project", { name: `esc-${marker}` });
   const pid = p.body.project.id;
-  const send = await post("/api/chat/send", { scope: "department", department: "technical", mode: "plan",
-    text: `set up the ${marker} customer portal`, projectId: pid });
+  const send = await post("/api/chat/send", { scope: "department", department: "technical", mode: "ask",
+    text: `build me a platform for the ${marker} customer portal`, projectId: pid });
   assert.equal(send.status, 200, JSON.stringify(send.body).slice(0, 300));
   const m = send.body.mission;
   assert.ok(m, "mission drafted");

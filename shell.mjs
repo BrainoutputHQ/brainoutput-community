@@ -211,6 +211,10 @@ const prioDot=(p)=>(p&&p!=='none'&&PRIO_COLOR[p])
 /** Open dependsOn blockers — mirrors blockersOf/isBlocked in tasks.mjs (the page is standalone). */
 const taskById=(s,id)=>(s.tasks||[]).find(x=>x.id===id)||null;
 const openBlockers=(s,tk)=>(tk.dependsOn||[]).map(id=>taskById(s,id)).filter(x=>x&&x.status!=='done');
+/** Launchable (task-pm-11): not done, no RUNNING mission, no pending question, no open blocker.
+ *  A review-blocked or failed task IS launchable (a fresh attempt). Mirrors /api/task/launch. */
+const launchable=(s,tk)=>tk.status!=='done'&&!tk.pendingQuestion&&!openBlockers(s,tk).length
+ &&!(tk.missionId&&(((s.missions||[]).find(m=>m.id===tk.missionId)||{}).status==='running'));
 /** Blocked-by badge: shown exactly when the task has open blockers; the tooltip names them. */
 const blockedBadge=(s,tk)=>{
  const bl=openBlockers(s,tk);
@@ -742,6 +746,7 @@ function taskRow(tk,subs){
     +'<span class=mut style="font-size:12px">'+esc(t('task.reporter'))+': <b>'+esc(tk.reporter||'you')+'</b></span>'
     +(proj?'<span class=mut style="font-size:12px">'+esc(t('task.project'))+': '+esc(proj.name)+'</span>':'')
     +(tk.missionId?'<span class=mut style="font-size:12px">'+esc(t('task.mission'))+': '+esc(mission?mission.status:tk.missionId)+(execution&&execution.status==='running'?' <span class="sdot run"></span>':'')+'</span>':'<span class=mut style="font-size:12px">'+esc(t('task.manual'))+'</span>')
+    +(launchable(S.state||{},tk)?'<button class=act id=tklaunch style="padding:4px 12px;font-size:12.5px;margin-top:0">'+esc(t('task.launch'))+'</button>':'')
     +'</div>'
     +objectiveBlock(tk)
     +acChecklist(tk)
@@ -758,6 +763,12 @@ function taskRow(tk,subs){
  if(goc)goc.onclick=()=>{S.view='chat';S.convId=mission.conversationId;render()};
  const tst=d.querySelector('#tst');
  if(tst)tst.onchange=async()=>{await api('/api/task/status',{id:tk.id,status:tst.value});await refresh()};
+ const tlaunch=d.querySelector('#tklaunch');
+ if(tlaunch)tlaunch.onclick=async()=>{
+  tlaunch.disabled=true;
+  const r=await api('/api/task/launch',{id:tk.id});
+  if(r.error){tlaunch.disabled=false;alert(r.error);return}
+  await refresh()};
    // The activity trail: the task's whole record in one ordered list — plan, runs, review,
    // escalations, creation — built ONLY from real records (the review line folds in here:
    // verdict, note, by, at — no information lost).

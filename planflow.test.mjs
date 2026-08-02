@@ -147,7 +147,7 @@ test("/api/state carries plans (and the i18n catalogs stay at parity)", async ()
   for (const loc of LOCALES) assert.deepEqual(missingKeys(loc), [], `${loc} is missing keys`);
 });
 
-test("plan mode in a project thread drafts a Plan card — mission flow untouched, nothing auto-materializes", async () => {
+test("plan mode in a project thread drafts a Plan card ONLY — zero mission created (consolidated)", async () => {
   const p = await post("/api/project", { name: "plan-mode-proj" });
   const pid = p.body.project.id;
 
@@ -156,19 +156,36 @@ test("plan mode in a project thread drafts a Plan card — mission flow untouche
   const send = await post("/api/chat/send", { scope: "company", mode: "plan",
     text: "set up the customer portal end-to-end", projectId: pid });
   assert.equal(send.status, 200, JSON.stringify(send.body).slice(0, 300));
-  assert.ok(send.body.mission, "the mission draft (existing flow) still happens");
+  // CONSOLIDATED (task-pm-11): the plan-mode conversational ask no longer auto-drafts a mission.
+  assert.equal(send.body.mission, null, "no parallel mission draft — the Plan card is the only artifact");
   const plan = send.body.plan;
-  assert.ok(plan, "a DRAFT plan card lands too");
+  assert.ok(plan, "a DRAFT plan card lands");
   assert.equal(plan.status, "draft");
   assert.equal(plan.projectId, pid);
   assert.equal(plan.conversationId, send.body.conversation.id);
-  assert.match(send.body.conversation.messages.at(-1).text, /also drafted a plan/);
+  assert.match(send.body.conversation.messages.at(-1).text, /drafted a plan/);
+  assert.doesNotMatch(send.body.conversation.messages.at(-1).text, /Drafted a mission/);
+  // Zero mission persisted for this thread — not just absent from the reply.
+  const st1 = await state();
+  assert.equal(st1.missions.filter((m) => m.conversationId === send.body.conversation.id).length, 0,
+    "no mission record leaked into the store");
 
   // The gate holds for chat-drafted plans exactly the same.
   const refused = await post("/api/plan/materialize", { id: plan.id });
   assert.equal(refused.status, 409);
   // …and a plan with no task drafts cannot be validated into existence either.
   assert.equal((await post("/api/plan/validate", { id: plan.id })).status, 400);
+
+  // The deliberate fast path is UNTOUCHED: an ask-mode build request in a project thread
+  // still auto-drafts a mission (and no plan card comes with it).
+  const plansBefore = (await state()).plans.length;
+  const ask = await post("/api/chat/send", { scope: "company", mode: "ask",
+    text: "crée-moi un jeu snake en html", projectId: pid });
+  assert.equal(ask.status, 200, JSON.stringify(ask.body).slice(0, 300));
+  assert.ok(ask.body.mission, "ask-mode looksLikeWork still drafts a mission");
+  assert.equal(ask.body.mission.projectId, pid);
+  assert.equal(ask.body.plan ?? null, null, "the fast path drafts no plan card");
+  assert.equal((await state()).plans.length, plansBefore, "no plan leaked either");
 });
 
 test("refinement loop: a normal message in a draft-plan thread — honest without a model, draft untouched", async () => {

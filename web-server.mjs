@@ -13,7 +13,7 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Store } from "./store.mjs";
-import { routeTask, makeCatalog, costReport, executionSummary, validateCompanyConfig, PRIVACY_POSTURES } from "./ce-core.mjs";
+import { routeTask, makeCatalog, costReport, executionSummary, validateCompanyConfig, PRIVACY_POSTURES, planGraph } from "./ce-core.mjs";
 import { executePlan, runNode, execLogLine } from "./adapters.mjs";
 import { runOpenCode, opencodeAvailable } from "./opencode-adapter.mjs";
 import { DEPARTMENT_TEMPLATES } from "./departments.mjs";
@@ -22,7 +22,7 @@ import { runtimeCards, runtimeConnection, runtimeToConnection } from "./runtimes
 import { applyAdvancedAgentConfig } from "./onboarding.mjs";
 import { newConversation, addMessage, pin, resolveMention, rollSummary, compactContext, draftMissionSpec,
   editMissionSpec, approveMission, rejectMission, modeAllows, missionComposer, reviewMission, saveAsWorkflow, looksLikeWork,
-  askTail, inferDepartment, missionWorkerPrompt, unmetDeliverables, deliverableGapNote,
+  askTail, inferDepartment, missionWorkerPrompt, unmetDeliverables, deliverableGapNote, planStepsFor,
   isGoal, parsePlanDraft, PLAN_DRAFT_INSTRUCTION } from "./chat.mjs";
 import { connectRagSource, indexDocuments, searchRag } from "./rag.mjs";
 import { createWorkTwin, setMode as twinSetMode, connectWorkSource, grantTwinScope, twinPermission,
@@ -44,7 +44,7 @@ import { selectModel } from "./ce-core.mjs";
 import { CATALOG, LOCALES, SLOT_LABELS } from "./i18n.mjs";
 import { SHELL_PAGE } from "./shell.mjs";
 import { newProject, listProjects, promoteConversation, projectBrief, projectUpdate } from "./projects.mjs";
-import { newTask, newSubtask, setTaskStatus, reportMissionToTask, assertTaskDeps, askTaskQuestion, answerTaskQuestion, reviewTask } from "./tasks.mjs";
+import { newTask, newSubtask, setTaskStatus, reportMissionToTask, assertTaskDeps, askTaskQuestion, answerTaskQuestion, reviewTask, blockersOf } from "./tasks.mjs";
 import { reviewTaskPrompt, parseTaskReview } from "./review-tasks.mjs";
 import { newPlan, updateDraft, validatePlan, rejectPlan, markMaterialized, planById, latestProjectPlan } from "./plans.mjs";
 import { pickFreeModel, freeConnection, FREE_PRIVACY_NOTE } from "./free-models.mjs";
@@ -499,6 +499,7 @@ async function api(req, res, url) {
       return json(res, { ...publicState(), task: t });
     } catch (e) { return json(res, { error: e.message }, 400); }
   }
+  if (url.pathname === "/api/task/launch") return taskLaunch(res, b);
   if (url.pathname === "/api/task/answer") {
     // The owner answers a worker's escalated question (the question card). Fail-closed all the
     // way: unknown task, empty answer, or no pending question → 400, nothing changes.
@@ -1199,24 +1200,13 @@ User: ${b.text}`;
   } else if (mode === "plan") {
     const gate = modeAllows(mode, "draft-plan");
     if (!gate.allowed) return json(res, { error: gate.reason }, 400);
-    const agent = conv.agentId ? (store.def.agents || []).find((a) => a.id === conv.agentId) : null;
-    const dept = conv.department || agent?.department
-      || inferDepartment(b.text || "", store.def.departments || [])
-      || (store.def.departments || [])[0] || null;
-    mission = draftMissionSpec(conv, {
-      department: dept,
-      agents: agent ? [agent.id] : (store.def.agents || []).filter((a) => a.department === dept).map((a) => a.id).slice(0, 1),
-      tools: agent?.tools || [], permissions: agent?.permissions || [], approvals: agent?.approvalThresholds || {},
-      policies: store.def.policies || {}, complexity: b.complex ? "high" : null, risk: b.risk || null,
-    });
-    if (conv.projectId) mission = { ...mission, projectId: conv.projectId };
-    store.addMission(mission);
-    conv = { ...conv, missionId: mission.id };
-    // Multi-step work in a PROJECT thread also lands as a DRAFT Plan artifact (task-pm-03): the
-    // plan card is refined in this thread and only ever becomes real tasks through the owner
-    // gate (validate → materialize). The mission draft above is the existing flow, unchanged.
     const objText = String(b.text || "").trim();
     if (conv.projectId && objText && isGoal(objText)) {
+      // CONSOLIDATED (task-pm-11): a plan-mode multi-step ask in a PROJECT thread drafts the
+      // Plan card ONLY — no parallel mission draft (task-pm-03 made both; the owner chose one).
+      // The plan is refined in this thread and only ever becomes real tasks through the owner
+      // gate (validate → materialize); a materialized task then launches on its own
+      // (/api/task/launch). Ask-mode build requests remain the mission fast path.
       let fields = null;
       if (model.connection && !model.needsConfiguration) {
         try { fields = await plannerDraftPass({ conv, text: objText, model }); } catch {}
@@ -1226,9 +1216,24 @@ User: ${b.text}`;
         decisions: fields?.decisions ?? null, taskDrafts: fields?.taskDrafts || [],
         reporter: "you", at: Date.now() }), conversationId: conv.id };
       store.addPlan(plan);
+      reply = tChat("chat.planDrafted");
+    } else {
+      // No project thread (or a one-step ask): the mission draft is the existing flow, unchanged.
+      const agent = conv.agentId ? (store.def.agents || []).find((a) => a.id === conv.agentId) : null;
+      const dept = conv.department || agent?.department
+        || inferDepartment(b.text || "", store.def.departments || [])
+        || (store.def.departments || [])[0] || null;
+      mission = draftMissionSpec(conv, {
+        department: dept,
+        agents: agent ? [agent.id] : (store.def.agents || []).filter((a) => a.department === dept).map((a) => a.id).slice(0, 1),
+        tools: agent?.tools || [], permissions: agent?.permissions || [], approvals: agent?.approvalThresholds || {},
+        policies: store.def.policies || {}, complexity: b.complex ? "high" : null, risk: b.risk || null,
+      });
+      if (conv.projectId) mission = { ...mission, projectId: conv.projectId };
+      store.addMission(mission);
+      conv = { ...conv, missionId: mission.id };
+      reply = `Drafted a mission for ${mission.department}. Review it below — edit anything, then approve to launch.`;
     }
-    reply = `Drafted a mission for ${mission.department}. Review it below — edit anything, then approve to launch.`;
-    if (plan) reply += tChat("chat.planDrafted");
   } else if (mode === "review") {
     const m = (store.runtime.missions || []).find((x) => x.id === (b.missionId || conv.missionId));
     const exec = (store.runtime.executions || []).filter((e) => e.missionId === m?.id).at(-1);
@@ -1504,6 +1509,79 @@ async function resumeTaskWorker(exec, taskId) {
   store.addExecution(exec); store.saveRuntime();
 }
 
+/**
+ * LAUNCH A TASK (task-pm-11): the task becomes its own mission — objective and project from the
+ * task record, single-worker shape (a launched task is never re-decomposed), approved by the
+ * explicit Launch click — then executed through the EXISTING chatLaunch machinery: the spine
+ * worker stage is bound by the task's directives and the per-task review judges its report.
+ * Fail-closed refusals, each naming the cause; a review-blocked or failed task MAY relaunch
+ * (a fresh mission replaces the old missionId).
+ */
+async function taskLaunch(res, b) {
+  const task = (store.runtime.tasks || []).find((t) => t.id === b.id);
+  if (!task) return json(res, { error: `no task '${b.id}'` }, 404);
+  if (task.status === "done")
+    return json(res, { error: `task '${task.title}' is already done` }, 409);
+  const running = task.missionId
+    ? (store.runtime.missions || []).find((m) => m.id === task.missionId && m.status === "running") : null;
+  if (running)
+    return json(res, { error: `task '${task.title}' is already running (mission '${running.id}')` }, 409);
+  if (task.pendingQuestion)
+    return json(res, { error: `task '${task.title}' has a pending question — answer the question first` }, 409);
+  const blockers = blockersOf(store.runtime, task);
+  if (blockers.length)
+    return json(res, { error: `task '${task.title}' is blocked by: ${blockers.map((x) => x.title).join(", ")}` }, 409);
+
+  const objective = String(task.objective || task.title).trim();
+  const assignee = task.assignee ? (store.def.agents || []).find((a) => a.id === task.assignee) : null;
+  const dept = assignee?.department
+    || inferDepartment(objective, store.def.departments || [])
+    || (store.def.departments || [])[0] || null;
+  // Route EXACTLY as chatLaunch will (the task's skills/agentSlot bind) — refuse BEFORE anything
+  // persists, so a refused launch leaves the task and the store untouched.
+  const probe = routeTask({ department: dept, task: { summary: objective, tags: [],
+    ...(task.skills?.length ? { skills: task.skills } : {}),
+    ...(task.agentSlot ? { agentSlot: task.agentSlot } : {}) } }, ctx());
+  if (!probe.ok) return json(res, { error: probe.reason }, 400);
+
+  // The thread the run reports into: the plan's thread first, else the project's latest thread,
+  // else a fresh project thread — the run must be visible where the work lives.
+  const tPlan = task.planId ? planById(store.runtime, task.planId) : null;
+  let conv = (tPlan?.conversationId ? getConversation(tPlan.conversationId) : null)
+    || (task.projectId ? [...(store.runtime.conversations || [])].reverse().find((c) => c.projectId === task.projectId) : null)
+    || null;
+  if (!conv) {
+    conv = newConversation({ scope: "company", projectId: task.projectId || null });
+    saveConversation(conv);
+  }
+
+  // The mission: the task's objective and acceptance criteria, single-worker shape (planGraph
+  // with no complexity/decompose flags → one worker, no planner to re-decompose the task).
+  const mtask = { summary: objective, tags: [], policies: [] };
+  const graph = planGraph(mtask);
+  let mission = {
+    id: uid("mission"), conversationId: conv.id, objective,
+    missionScope: conv.scope || "company", projectId: task.projectId || null,
+    constraints: [], decisions: [],
+    acceptanceCriteria: [...(Array.isArray(task.acceptanceCriteria) ? task.acceptanceCriteria : [])],
+    department: dept, agents: assignee ? [assignee.id] : [],
+    requiredCapabilities: [], modelAssignments: {}, tools: [], dataSources: [],
+    permissions: [], approvals: {}, artifacts: [], references: [],
+    graph: { shape: graph.shape, nodes: graph.nodes.map((n) => n.node) },
+    planPreview: [], policies: [], status: "draft", task: mtask,
+    taskId: task.id,                     // the binding chatLaunch keys the single-task path on
+  };
+  mission = { ...mission, planPreview: planStepsFor(mission) };
+  try { mission = approveMission(mission, { approvedBy: "owner", agents: store.def.agents || [] }); }
+  catch (e) { return json(res, { error: e.message }, 400); }
+  store.addMission(mission);
+  // The link lands BEFORE the launch: chatLaunch finds the spine task by missionId, and the
+  // task shows in-progress from this moment. A failed run flips it blocked via fail().
+  store.addTask({ ...task, missionId: mission.id, status: "in-progress", updatedAt: Date.now() });
+  store.saveRuntime();
+  return chatLaunch(res, { missionId: mission.id });
+}
+
 /** Execute an APPROVED mission through the existing direct executor — no management relay. */
 async function chatLaunch(res, b) {  const m = (store.runtime.missions || []).find((x) => x.id === b.missionId);
   if (!m) return json(res, { error: "mission not found" }, 404);
@@ -1644,6 +1722,30 @@ async function chatLaunch(res, b) {  const m = (store.runtime.missions || []).fi
           planRest = r.plan.filter((n) => n !== plannerNode);
           updateExec({});
         }
+      }
+
+      // TASK LAUNCH (task-pm-11): the mission is bound to ONE pre-existing spine task
+      // (/api/task/launch set mission.taskId). The task IS the work — it runs as its own spine
+      // item through the per-task worker stage below (its directives bind the prompt, the
+      // per-task review judges the report), NEVER re-decomposed by a planner.
+      if (!decomposed && m.taskId && spineTask && workerNode) {
+        decomposed = { subtasks: [spineTask], taskLaunch: true };
+        // The shared context the worker prompt renders: the DECISIONS of the plan this task was
+        // materialized from (binding), or an honest note when the task came from no plan.
+        const tp = spineTask.planId ? planById(store.runtime, spineTask.planId) : null;
+        pr = { node: "planner",
+          output: tp?.decisions ? `DECISIONS (from the plan this task was materialized from):\n${tp.decisions}`
+            : "(no shared plan — the task record below is the whole contract)" };
+        const wi = r.plan.findIndex((n) => n === workerNode);
+        exec.graph = [
+          ...exec.graph.slice(0, wi),
+          { node: "worker-1", slot: workerNode.slot, model: workerNode.model?.model || null,
+            provider: workerNode.model?.provider || null, costSource: workerNode.model?.costSource || null,
+            needsConfiguration: !!workerNode.model?.needsConfiguration, status: "pending" },
+          ...exec.graph.slice(wi + 1),
+        ];
+        updateExec({});
+        planRest = r.plan.filter((n) => n !== workerNode);
       }
 
       // Per-task workers: each plan step executes and its task flips todo → in-progress → done.
@@ -1805,7 +1907,8 @@ async function chatLaunch(res, b) {  const m = (store.runtime.missions || []).fi
     const pending = gates.length > 0 || results.some((x) => x.humanRequired || x.status === "pending-human-approval");
     const done = { ...m, status: pending ? "awaiting-approval" : "done", artifacts: eff.artifacts, pendingApprovals: gates.length };
     store.addMission(done);
-    if (spineTask && !pending) store.addTask(reportMissionToTask(store.runtime, spineTask.id, { missionId: m.id, ok: true,
+    // A task launch reports through the per-task review above — never overwritten here.
+    if (spineTask && !pending && !decomposed?.taskLaunch) store.addTask(reportMissionToTask(store.runtime, spineTask.id, { missionId: m.id, ok: true,
       summary: results.map((x) => x.output).filter(Boolean).join(" | ").slice(0, 200) || "done", artifacts: eff.artifacts, at: Date.now() }));
     const review = reviewMission(done, results);
     // Say what was NOT delivered. "Generate the pic" with no image-gen model configured produced

@@ -96,12 +96,14 @@ const until = async (fn, ms = 45000) => {
 };
 const subOf = async (pid, title) => (await state()).tasks.find((t) => t.projectId === pid && t.parentId && t.title === title) || null;
 
-/** Launch a 2-task project mission; the planner's steps carry acceptance criteria per MODE. */
+/** Launch a 2-task project mission; the planner's steps carry acceptance criteria per MODE.
+ *  The mission drafts through the ask-mode fast path (plan-mode project asks no longer draft
+ *  missions — task-pm-11); its own planner still decomposes it into spine subtasks. */
 async function launchMission(marker) {
   const p = await post("/api/project", { name: `rev-${marker}` });
   const pid = p.body.project.id;
-  const send = await post("/api/chat/send", { scope: "department", department: "technical", mode: "plan",
-    text: `set up the ${marker} customer portal`, projectId: pid });
+  const send = await post("/api/chat/send", { scope: "department", department: "technical", mode: "ask",
+    text: `build me a platform for the ${marker} customer portal`, projectId: pid });
   assert.equal(send.status, 200, JSON.stringify(send.body).slice(0, 300));
   const m = send.body.mission;
   assert.ok(m, "mission drafted");

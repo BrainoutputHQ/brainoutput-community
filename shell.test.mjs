@@ -614,8 +614,10 @@ test("google oauth: config seals the secret, start redirects with state, callbac
 test("plan → spine tasks: a goal mission decomposes into subtasks that flip done as workers report", async () => {
   const p = await post("/api/project", { name: "plan-spine-proj" });
   const pid = p.body.project.id;
-  const send = await post("/api/chat/send", { scope: "department", department: "technical", mode: "plan",
-    text: "set up the PLAN-SPINE customer portal", projectId: pid });
+  // Project-mission decomposition is UNTOUCHED by the plan-mode consolidation (task-pm-11):
+  // the ask-mode fast path still drafts the mission; its own planner decomposes it below.
+  const send = await post("/api/chat/send", { scope: "department", department: "technical", mode: "ask",
+    text: "build me a platform for the PLAN-SPINE customer portal", projectId: pid });
   const m = send.body.mission;
   assert.ok(m, JSON.stringify(send.body).slice(0, 200));
   assert.ok(m.graph.nodes.includes("planner"), "a goal gets a planner");
@@ -646,8 +648,8 @@ test("plan → spine tasks: a goal mission decomposes into subtasks that flip do
 
 test("a web build lands as REAL downloadable files, and every worker gets the planner's decisions", async () => {
   const p = await post("/api/project", { name: "dash-proj" });
-  const send = await post("/api/chat/send", { scope: "department", department: "technical", mode: "plan",
-    text: "set up the DASHBOARD-FILES-HERE room reservations dashboard", projectId: p.body.project.id });
+  const send = await post("/api/chat/send", { scope: "department", department: "technical", mode: "ask",
+    text: "build me a platform for the DASHBOARD-FILES-HERE room reservations dashboard", projectId: p.body.project.id });
   const m = send.body.mission;
   await post("/api/chat/mission", { missionId: m.id, action: "approve" });
   await post("/api/chat/launch", { missionId: m.id, timeoutMs: 30000 });
@@ -678,8 +680,8 @@ test("sidebar Tasks section lists issues Plane-style (status, who is in charge, 
   assert.match(shell, /task\.status\.in-progress/, "statuses are labeled");
   assert.match(shell, /task\.assignee|task\.reporter/, "detail shows who is in charge and who asked");
   // tasks created by missions carry assignee + reporter
-  const send = await post("/api/chat/send", { scope: "department", department: "technical", mode: "plan",
-    text: "set up the PLAN-MARKER customer portal", projectId: (await post("/api/project", { name: "issues-proj" })).body.project.id });
+  const send = await post("/api/chat/send", { scope: "department", department: "technical", mode: "ask",
+    text: "build me a platform for the PLAN-MARKER customer portal", projectId: (await post("/api/project", { name: "issues-proj" })).body.project.id });
   await post("/api/chat/mission", { missionId: send.body.mission.id, action: "approve" });
   await post("/api/chat/launch", { missionId: send.body.mission.id, timeoutMs: 30000 });
   const st = await until(async () => {
