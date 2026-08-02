@@ -44,7 +44,8 @@ import { selectModel } from "./ce-core.mjs";
 import { CATALOG, LOCALES, SLOT_LABELS } from "./i18n.mjs";
 import { SHELL_PAGE } from "./shell.mjs";
 import { newProject, listProjects, promoteConversation, projectBrief } from "./projects.mjs";
-import { newTask, newSubtask, setTaskStatus, reportMissionToTask, assertTaskDeps, askTaskQuestion, answerTaskQuestion } from "./tasks.mjs";
+import { newTask, newSubtask, setTaskStatus, reportMissionToTask, assertTaskDeps, askTaskQuestion, answerTaskQuestion, reviewTask } from "./tasks.mjs";
+import { reviewTaskPrompt, parseTaskReview } from "./review-tasks.mjs";
 import { newPlan, updateDraft, validatePlan, rejectPlan, markMaterialized, planById, latestProjectPlan } from "./plans.mjs";
 import { pickFreeModel, freeConnection, FREE_PRIVACY_NOTE } from "./free-models.mjs";
 import { t as i18nT } from "./i18n.mjs";
@@ -1381,6 +1382,67 @@ async function runSpineTaskWorker({ task, ctx, maxTokens = 1500, timeoutMs = 240
   }
 }
 
+// ── Per-task review (task-pm-06) ────────────────────────────────────────────────────────────────
+// Between a spine task's worker report and the task flipping done: a task WITH acceptance
+// criteria is judged against them first — ONE bounded reviewer-slot call (fail-closed: a
+// criterion fail or an unparseable review BLOCKS, never a silent pass). Without a configured
+// reviewer model the deterministic guard decides AND the record carries the honest note.
+
+/** Resolve the reviewer-slot model: the routed agent's capabilities.reviewer slot through the
+ *  same selectModel path as every slot. Null when the agent has no reviewer slot or it is not
+ *  configured — the caller then takes the deterministic path (never a silent model-free pass). */
+function reviewerModelFor(agentId) {
+  const agent = (store.def.agents || []).find((a) => a.id === agentId);
+  const slot = agent?.capabilities?.reviewer;
+  if (!slot) return null;
+  try {
+    const m = selectModel(slot, { assignments: store.def.modelAssignments, connections: store.def.modelConnections, catalog });
+    return m.connection && !m.needsConfiguration ? m : null;
+  } catch { return null; }
+}
+
+/** Report one finished spine task's worker result into its record — reviewing first when the
+ *  task carries acceptance criteria. Tasks WITHOUT criteria report exactly as before
+ *  (byte-compat). Persists the task and returns the persisted record. */
+async function reportOrReviewSpineTask({ task, out, missionId, agentId }) {
+  const cur = (store.runtime.tasks || []).find((t) => t.id === task.id) || task;
+  const criteria = Array.isArray(cur.acceptanceCriteria) ? cur.acceptanceCriteria : [];
+  if (out.error || !criteria.length) {
+    const reported = reportMissionToTask(store.runtime, cur.id, { missionId, ok: !out.error,
+      summary: String(out.output || out.error || "").slice(0, 200), artifacts: out.artifact ? [out.artifact] : [], at: Date.now() });
+    store.addTask(reported);
+    return reported;
+  }
+  const rm = reviewerModelFor(agentId);
+  // The review decides done/blocked; the mission link is recorded exactly as a report would.
+  const reviewed = (fields) => {
+    const t = { ...reviewTask(store.runtime, cur.id, { ...fields, at: Date.now() }), missionId: missionId || cur.missionId };
+    store.addTask(t);
+    return t;
+  };
+  if (!rm) {
+    return reviewed({ ok: true,
+      note: "deterministic checks only — no reviewer model configured", criteria: [], by: "deterministic" });
+  }
+  let parsed = null;
+  try {
+    const rr = await runNode({ node: "reviewer", slot: rm.slot || "reviewer" }, rm,
+      { prompt: reviewTaskPrompt({ objective: cur.objective || cur.title, acceptanceCriteria: criteria,
+          resultSummary: String(out.output || "").slice(0, 2000), artifacts: out.artifact ? [out.artifact] : [],
+          testEvidence: null }) },
+      { maxTokens: 600, timeoutMs: 60000, localCall: localNodeModelCall });
+    parsed = parseTaskReview(rr?.output, { acceptanceCriteria: criteria });
+  } catch { parsed = null; }                       // a failed call → no review → blocked, honestly
+  if (!parsed) {
+    return reviewed({ ok: false, note: "review could not be parsed", criteria: [], by: "reviewer" });
+  }
+  const failed = parsed.criteria.filter((c) => c.verdict === "fail").map((c) => c.criterion);
+  return reviewed({ ok: parsed.overall === "pass",
+    note: parsed.overall === "pass" ? parsed.note
+      : `failing criteria: ${failed.join("; ")}${parsed.note ? ` — ${parsed.note}` : ""}`,
+    criteria: parsed.criteria, by: "reviewer" });
+}
+
 /** Rebuild the paused worker stage from its persisted escalation record (the def holds the
  *  durable connection). Falls back to the conversation model; null when nothing can run. */
 function escalationWorkerNode(esc) {
@@ -1409,8 +1471,8 @@ async function resumeTaskWorker(exec, taskId) {
       codeWs: join(store.dir, "workspaces", exec.id) } });
   if (res.blocked) return;   // asked again — the card waits on the owner once more
   const out = res.out;
-  store.addTask(reportMissionToTask(store.runtime, taskId, { missionId: exec.missionId, ok: !out.error,
-    summary: String(out.output || out.error || "").slice(0, 200), artifacts: out.artifact ? [out.artifact] : [], at: Date.now() }));
+  // The resumed worker's report goes through the same per-task review as the launch loop.
+  await reportOrReviewSpineTask({ task, out, missionId: exec.missionId, agentId: task.assignee });
   exec.results.push(out);
   exec.logs.push(execLogLine(out));
   const gi = (exec.graph || []).findIndex((g) => g.node === `worker-${esc.index}`);
@@ -1598,8 +1660,14 @@ async function chatLaunch(res, b) {  const m = (store.runtime.missions || []).fi
           exec.logs.push(execLogLine(out));
           if (exec.graph[wi + i]) exec.graph[wi + i] = { ...exec.graph[wi + i], status: "done" };
           updateExec({});
-          store.addTask(reportMissionToTask(store.runtime, st.id, { missionId: m.id, ok: !out.error,
-            summary: String(out.output || out.error || "").slice(0, 200), artifacts: out.artifact ? [out.artifact] : [], at: Date.now() }));
+          // PER-TASK REVIEW (task-pm-06): a task with acceptance criteria is judged against
+          // them before it may flip done; a review-blocked task never stops the others.
+          const fin = await reportOrReviewSpineTask({ task: st, out, missionId: m.id, agentId: r.agent });
+          if (fin.status === "blocked" && fin.review) {
+            exec.logs.push(`worker-${i + 1}: review blocked the task — ${String(fin.review.note || "").slice(0, 120)}`);
+            updateExec({});
+            continue;
+          }
         }
       }
 

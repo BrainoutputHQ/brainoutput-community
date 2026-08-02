@@ -449,6 +449,16 @@ function questionCard(tk){
  }
  return d;
 }
+/** The per-task REVIEW line (task-pm-06): verdict, note, by whom — shown in the task detail
+ *  whenever task.review exists. Reviewer/deterministic text is model-influenced, so EVERY
+ *  field is esc()'d — a note can never inject markup into the owner's browser. */
+function reviewLine(rv){
+ const by=t('review.by.'+rv.by);
+ return '<div style="font-size:12.5px;margin-top:6px"><span class="'+(rv.ok?'ok':'warn')+'">'
+  +esc(t('review.title'))+': '+esc(rv.ok?t('review.pass'):t('review.fail'))+'</span>'
+  +(rv.note?' — '+esc(rv.note):'')
+  +' <span class=mut>· '+esc(by===('review.by.'+rv.by)?rv.by:by)+'</span></div>';
+}
 /** A finished run is a card in the thread too: graph, who ran each stage, tokens, artifacts,
  *  and the OUTPUT ITSELF — a produced site must be previewable, not just described in logs. */
 const extractHtml=(txt)=>{const m=String(txt||'').match(/\`\`\`html\s*([\s\S]*?)\`\`\`/);if(m)return m[1];
@@ -512,6 +522,7 @@ function taskRow(tk,subs){
     +'</div>'
     +(tk.result?'<div style="font-size:13px;margin-top:8px">'+esc(tk.result.summary)+'</div>'
       +(tk.result.artifacts&&tk.result.artifacts.length?'<div class=mut style="font-size:12px;margin-top:4px">'+tk.result.artifacts.map(esc).join('<br>')+'</div>':''):'')
+    +(tk.review?reviewLine(tk.review):'')
     +(execution&&execution.status==='running'?'<div class=mut style="font-size:12px;margin-top:6px">'+esc(t('task.liveRun'))+' ↓</div>':'')
     +(mission&&mission.conversationId?'<div style="margin-top:8px"><button class=ghost id=goc>'+esc(t('task.openThread'))+'</button></div>':'')
     +'</div>':'')

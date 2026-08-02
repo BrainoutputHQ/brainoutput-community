@@ -97,6 +97,30 @@ export function reportMissionToTask(runtime, taskId, { missionId, ok, summary = 
 }
 
 /**
+ * PER-TASK REVIEW (task-pm-06): record the verdict of the review stage that judges a worker's
+ * report against the task's acceptance criteria. The task flips done (review passed) or
+ * blocked (a criterion failed — the failing criteria are named in the result-style summary).
+ * Migration-safe: `review` appears on a record only once a review ran. Throws on unknown task.
+ */
+export function reviewTask(runtime, id, { ok, note = null, criteria = [], by = "reviewer", at = null } = {}) {
+  const task = byId(runtime, id);
+  if (!task) throw new Error(`no task '${id}'`);
+  const crits = (Array.isArray(criteria) ? criteria : []).map((c) => ({
+    criterion: String(c?.criterion ?? ""),
+    verdict: c?.verdict === "fail" ? "fail" : "pass",
+    evidence: String(c?.evidence ?? "") }));
+  const failed = crits.filter((c) => c.verdict === "fail").map((c) => c.criterion);
+  const n = note == null ? null : String(note);
+  return { ...task, status: ok ? "done" : "blocked",
+    review: { ok: !!ok, note: n, criteria: crits, by: String(by || "reviewer"), at },
+    result: { ok: !!ok,
+      summary: ok ? (n || "review passed")
+        : failed.length ? `review failed — unmet: ${failed.join("; ")}` : `review failed — ${n || "no detail"}`,
+      artifacts: [...(task.result?.artifacts || [])], at },
+    updatedAt: at };
+}
+
+/**
  * WORKER ESCALATION (task-pm-05): a worker may pause its task with ONE question instead of
  * guessing. The task flips to blocked with the question pending on the record — other spine
  * tasks keep running; the planner or the owner answers; the worker re-runs with the answer.

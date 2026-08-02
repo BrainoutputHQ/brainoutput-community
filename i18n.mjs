@@ -271,6 +271,11 @@ export const CATALOG = {
     "q.history": "previous questions",
     "q.q": "Q:",
     "q.a": "— A:",
+    "review.title": "Review",
+    "review.pass": "passed",
+    "review.fail": "failed",
+    "review.by.reviewer": "the reviewer",
+    "review.by.deterministic": "deterministic checks",
   },
   fr: {
     "app.tagline": "Vos modèles · vos clés",
@@ -538,6 +543,11 @@ export const CATALOG = {
     "q.history": "questions précédentes",
     "q.q": "Q :",
     "q.a": "— R :",
+    "review.title": "Revue",
+    "review.pass": "réussie",
+    "review.fail": "échouée",
+    "review.by.reviewer": "le relecteur",
+    "review.by.deterministic": "vérifications déterministes",
   },
   de: {
     "app.tagline": "Ihre Modelle · Ihre Schlüssel",
@@ -805,6 +815,11 @@ export const CATALOG = {
     "q.history": "frühere Fragen",
     "q.q": "F:",
     "q.a": "— A:",
+    "review.title": "Prüfung",
+    "review.pass": "bestanden",
+    "review.fail": "fehlgeschlagen",
+    "review.by.reviewer": "der Prüfer",
+    "review.by.deterministic": "deterministische Prüfungen",
   },
 };
 
