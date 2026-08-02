@@ -42,6 +42,11 @@ aside select{background:var(--inp);border:1px solid var(--line);color:var(--fg);
 .sdot{width:8px;height:8px;border-radius:50%;flex:none}
 .sdot.run{background:var(--acc);animation:boPulse 1.1s ease-in-out infinite}
 .sdot.attn{background:var(--warn)}
+.pdot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;flex:none}
+.bbadge{color:var(--warn);border-color:var(--warn);font-size:10px;padding:0 6px;margin-left:5px;flex:none}
+.tchip{font-size:10px;padding:0 6px;margin-left:4px;flex:none}
+#taskfilters{display:flex;gap:4px;padding:0 4px 6px;flex-wrap:wrap}
+#taskfilters select{background:var(--inp);border:1px solid var(--line);color:var(--fg);border-radius:7px;font-size:11px;padding:2px 3px;max-width:118px}
 .vmenu button svg{vertical-align:-2px;margin-right:5px}
 .pitem{display:block;width:100%;text-align:left;background:none;border:1px solid transparent;border-radius:10px;padding:9px 12px;color:var(--fg);cursor:pointer;font-size:14px;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .pitem:hover{background:var(--card2)}.pitem.on{background:var(--card2);border-color:var(--line)}
@@ -128,6 +133,7 @@ pre{background:var(--pre)!important}
   <div class=shead><span id=lprojects></span></div>
   <div id=projects></div>
   <div class=shead><span id=ltasks></span></div>
+  <div id=taskfilters></div>
   <div id=tasks></div>
   <div class=shead><span id=ladhoc></span></div>
   <div id=adhoc></div>
@@ -185,14 +191,61 @@ const ICONS={
 };
 const I=(n,sz=15)=>'<svg width="'+sz+'" height="'+sz+'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'+(ICONS[n]||'')+'</svg>';
 const FAMILY_ICON={mail:'mail',files:'drive',apps:'apps'};
-/** A Plane-style issue row for the sidebar Tasks list: status dot, title, who is in charge. */
+// ── task list helpers (task-pm-07): priority dots, blocked-by badge, label chips, filters ──
+/** Priority indicator: one colored dot per priority (urgent red, high amber — visually
+ *  distinct; medium blue, low gray) with the localized name as tooltip; "none" renders nothing. */
+const PRIO_COLOR={urgent:'#dc2626',high:'var(--warn)',medium:'var(--acc)',low:'var(--mut)'};
+const prioDot=(p)=>(p&&p!=='none'&&PRIO_COLOR[p])
+ ?'<span class=pdot title="'+esc(t('task.priority.'+p))+'" style="background:'+PRIO_COLOR[p]+'"></span>':'';
+/** Open dependsOn blockers — mirrors blockersOf/isBlocked in tasks.mjs (the page is standalone). */
+const taskById=(s,id)=>(s.tasks||[]).find(x=>x.id===id)||null;
+const openBlockers=(s,tk)=>(tk.dependsOn||[]).map(id=>taskById(s,id)).filter(x=>x&&x.status!=='done');
+/** Blocked-by badge: shown exactly when the task has open blockers; the tooltip names them. */
+const blockedBadge=(s,tk)=>{
+ const bl=openBlockers(s,tk);
+ return bl.length?'<span class="pill bbadge" title="'+esc(t('task.blockedBy')+': '+bl.map(x=>x.title).join(', '))+'">'+esc(t('task.blockedBy'))+'</span>':'';
+};
+/** Label chips — every label is esc()'d: a stored label can never inject markup. */
+const labelChips=(tk)=>(tk.labels||[]).map(l=>'<span class="pill dormant tchip">'+esc(l)+'</span>').join('');
+/** The three Tasks filters combine (AND). Pure — the bar below only wires it to S. */
+function taskFilter(tasks,f){
+ const st=(f&&f.status)||'all',pid=(f&&f.projectId)||'all',asg=(f&&f.assignee)||'all';
+ return (tasks||[]).filter(tk=>(st==='all'||tk.status===st)&&(pid==='all'||tk.projectId===pid)&&(asg==='all'||tk.assignee===asg));
+}
+/** The filter bar: status × project (with tasks) × assignee (distinct). The selection lives in
+ *  S.taskFilter — in-memory session state: it survives render() (the bar is rebuilt reading S),
+ *  never a reload. */
+function taskFilterBar(s){
+ const f=S.taskFilter||(S.taskFilter={status:'all',projectId:'all',assignee:'all'});
+ const bar=el('<div style="display:contents"></div>');
+ const mk=(id,title,opts,cur,set)=>{
+  if(cur!=='all'&&!opts.includes('value="'+esc(cur)+'"')){cur='all';set('all')}   // stale pick auto-heals
+  const sel=el('<select id='+id+' title="'+esc(title)+'">'+opts+'</select>');
+  sel.value=cur;sel.onchange=()=>{set(sel.value);render()};bar.appendChild(sel)};
+ mk('tf-status',t('tasks.filter.status'),
+  '<option value="all">'+esc(t('tasks.filter.allStatuses'))+'</option>'
+  +['todo','in-progress','blocked','done'].map(x=>'<option value="'+x+'">'+esc(t('task.status.'+x))+'</option>').join(''),
+  f.status,(v)=>{f.status=v});
+ const pids=[...new Set((s.tasks||[]).map(tk=>tk.projectId).filter(Boolean))];
+ mk('tf-project',t('tasks.filter.project'),
+  '<option value="all">'+esc(t('tasks.filter.allProjects'))+'</option>'
+  +pids.map(pid=>{const p=(s.projects||[]).find(x=>x.id===pid);return '<option value="'+esc(pid)+'">'+esc(p?p.name:pid)+'</option>'}).join(''),
+  f.projectId,(v)=>{f.projectId=v});
+ const asgs=[...new Set((s.tasks||[]).map(tk=>tk.assignee).filter(Boolean))].sort();
+ mk('tf-assignee',t('tasks.filter.assignee'),
+  '<option value="all">'+esc(t('tasks.filter.allAssignees'))+'</option>'
+  +asgs.map(a=>'<option value="'+esc(a)+'">'+esc(a)+'</option>').join(''),
+  f.assignee,(v)=>{f.assignee=v});
+ return bar;
+}
+/** A Plane-style issue row for the sidebar Tasks list: status dot, priority, blocked-by, who. */
 function issueRow(tk){
  const dot=tk.status==='in-progress'?'<span class="sdot run"></span>'
   :tk.status==='blocked'?'<span class="sdot attn"></span>'
   :tk.status==='done'?'<span class="sdot" style="background:var(--ok)"></span>'
   :'<span class="sdot" style="background:var(--mut);opacity:.5"></span>';
  const who=tk.assignee?esc(String(tk.assignee).split('-').pop()):'';
- const b=el('<button class="pitem">'+dot+'<span class=lab>'+esc(tk.title)+'</span>'+(who?'<span class=cnt>'+who+'</span>':'')+'</button>');
+ const b=el('<button class="pitem">'+dot+prioDot(tk.priority)+'<span class=lab>'+esc(tk.title)+'</span>'+blockedBadge(S.state||{},tk)+(who?'<span class=cnt>'+who+'</span>':'')+'</button>');
  b.onclick=()=>{S.projectId=tk.projectId||null;S.openTask=tk.id;S.view='chat';render()};
  return b;
 }
@@ -252,11 +305,15 @@ function sidebar(){
  document.getElementById('adhoc').style.display=searching?'none':'';
  document.getElementById('sources').style.display=searching?'none':'';
  document.getElementById('tasks').style.display=searching?'none':'';
+ document.getElementById('taskfilters').style.display=searching?'none':'flex';
  // Tasks — the cross-project issues list (Plane-style): in-progress first, assignee on the right,
- // running sessions pulse. Click deep-links into the project's issue detail.
+ // running sessions pulse. Click deep-links into the project's issue detail. The three filters
+ // (status × project × assignee) combine and live in S for the session.
  const tBox=document.getElementById('tasks');tBox.innerHTML='';
+ const tfBox=document.getElementById('taskfilters');tfBox.innerHTML='';
+ tfBox.appendChild(taskFilterBar(s));
  const order={'in-progress':0,'blocked':1,'todo':2,'done':3};
- const allT=(s.tasks||[]).slice().sort((a,b)=>(order[a.status]??4)-(order[b.status]??4)||(b.updatedAt||b.createdAt||0)-(a.updatedAt||a.createdAt||0));
+ const allT=taskFilter((s.tasks||[]).slice().sort((a,b)=>(order[a.status]??4)-(order[b.status]??4)||(b.updatedAt||b.createdAt||0)-(a.updatedAt||a.createdAt||0)),S.taskFilter);
  allT.filter(x=>x.status!=='done').slice(0,10).forEach(tk=>tBox.appendChild(issueRow(tk)));
  allT.filter(x=>x.status==='done').slice(0,3).forEach(tk=>tBox.appendChild(issueRow(tk)));
  if(!allT.length)tBox.appendChild(el('<div class=mut style="font-size:13px;padding:4px 6px">'+esc(t('shell.noTasks'))+'</div>'));
@@ -505,7 +562,10 @@ function taskRow(tk,subs){
  const d=el('<div style="padding:8px 0;border-bottom:1px solid var(--line)">'
   +'<label style="display:flex;gap:9px;align-items:center;color:var(--fg);font-size:14px;margin:0;cursor:pointer">'
   +'<input type=checkbox style="width:auto" '+(done?'checked':'')+'> '
+  +prioDot(tk.priority)
   +'<span class=tlink style="'+(done?'text-decoration:line-through;color:var(--mut)':'')+'cursor:pointer">'+esc(tk.title)+'</span>'
+  +blockedBadge(S.state||{},tk)
+  +labelChips(tk)
   +(tk.status==='blocked'?'<span class=warn style="font-size:12px">blocked</span>':'')
   +(tk.assignee?'<span class=mut style="font-size:12px">· '+esc(tk.assignee)+'</span>':'')+'</label>'
   +(tk.result?'<div class="'+(tk.result.ok?'ok':'warn')+'" style="font-size:12px;margin-left:26px">'+esc(tk.result.summary)+(tk.result.artifacts&&tk.result.artifacts.length?' · '+tk.result.artifacts.length+' artifact(s)':'')+'</div>':'')

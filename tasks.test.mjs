@@ -102,6 +102,39 @@ test("directive field shapes are validated: arrays of strings, bounded sizes", (
   assert.throws(() => newTask({ title: "x", dependsOn: [null] }), /dependsOn/);
 });
 
+test("labels: default empty, trimmed, deduped — bounded like skills", () => {
+  assert.deepEqual(newTask({ title: "x" }).labels, []);
+
+  const t = newTask({ title: "x", labels: [" web ", "ui", "web", " ui "] });
+  assert.deepEqual(t.labels, ["web", "ui"], "trimmed + deduped, first occurrence order kept");
+
+  assert.throws(() => newTask({ title: "x", labels: "web" }), /labels/);
+  assert.throws(() => newTask({ title: "x", labels: [42] }), /labels/);
+  assert.throws(() => newTask({ title: "x", labels: Array(7).fill("l") }), /labels/);   // 7 labels throw
+  assert.deepEqual(newTask({ title: "x", labels: Array(6).fill("l") }).labels, ["l"]);   // 6 pass, dedupe to 1
+  assert.throws(() => newTask({ title: "x", labels: ["y".repeat(25)] }), /labels/);      // 25-char label throws
+  assert.equal(newTask({ title: "x", labels: ["y".repeat(24)] }).labels[0].length, 24);  // the bound itself is allowed
+  assert.throws(() => newTask({ title: "x", labels: ["   "] }), /labels/);               // empty after trim
+  assert.throws(() => newTask({ title: "x", labels: [""] }), /labels/);
+});
+
+test("migration: an old record without labels gains NO labels key through updates", () => {
+  const old = { id: "old-l", projectId: "p1", parentId: null, title: "Legacy", status: "todo", result: null };
+  const runtime = { tasks: [old] };
+
+  const moved = setTaskStatus(runtime, "old-l", "in-progress", { at: 5 });
+  assert.ok(!("labels" in moved), "no labels key materializes on old records");
+  assert.ok(!Object.values(moved).includes(undefined));
+
+  const reported = reportMissionToTask(runtime, "old-l", { missionId: "m1", ok: true, summary: "s", at: 6 });
+  assert.ok(!("labels" in reported));
+  assert.ok(!Object.values(reported).includes(undefined));
+
+  // Readers tolerate the missing key — an unlabeled old task behaves exactly as before.
+  assert.deepEqual(moved.labels || [], []);
+  assert.deepEqual(old, { id: "old-l", projectId: "p1", parentId: null, title: "Legacy", status: "todo", result: null });
+});
+
 test("assertTaskDeps: unknown ids and self-dependency throw, valid deps pass", () => {
   const t = newTask({ id: "t9", title: "x", dependsOn: ["t1", "t2"] });
   assert.equal(assertTaskDeps(rt(), t), t);

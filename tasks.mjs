@@ -14,6 +14,8 @@ export const TASK_STATUSES = ["todo", "in-progress", "blocked", "done"];
 export const TASK_PRIORITIES = ["urgent", "high", "medium", "low", "none"];
 const MAX_DEPTH = 2;
 const MAX_ACCEPTANCE = 20, MAX_ACCEPTANCE_CHARS = 500, MAX_SKILLS = 12;
+// Labels (task-pm-07): short triage tags — bounded like skills so lists stay readable.
+const MAX_LABELS = 6, MAX_LABEL_CHARS = 24;
 // Worker escalation (task-pm-05): a worker question is short, an answer is bounded too.
 const MAX_QUESTION_CHARS = 500, MAX_ANSWER_CHARS = 2000;
 
@@ -22,7 +24,7 @@ const isStringArray = (v) => Array.isArray(v) && v.every((x) => typeof x === "st
 export function newTask({ id, projectId = null, parentId = null, title, assignee = null,
   objective = null, status = "todo", reporter = null, at = null,
   acceptanceCriteria = [], skills = [], agentSlot = null, restrictions = {},
-  priority = "none", dependsOn = [], planId = null } = {}) {
+  priority = "none", dependsOn = [], planId = null, labels = [] } = {}) {
   const t = String(title || objective || "").trim();
   if (!t) throw new Error("a task needs a title");
   if (!TASK_STATUSES.includes(status)) throw new Error(`unknown task status '${status}'`);
@@ -33,6 +35,11 @@ export function newTask({ id, projectId = null, parentId = null, title, assignee
   if (!isStringArray(skills)) throw new Error("skills must be an array of strings");
   if (skills.length > MAX_SKILLS) throw new Error(`skills is capped at ${MAX_SKILLS} items`);
   if (!isStringArray(dependsOn)) throw new Error("dependsOn must be an array of task ids");
+  if (!isStringArray(labels)) throw new Error("labels must be an array of strings");
+  if (labels.length > MAX_LABELS) throw new Error(`labels is capped at ${MAX_LABELS} items`);
+  const cleanLabels = labels.map((l) => l.trim());
+  if (cleanLabels.some((l) => !l)) throw new Error("labels must be non-empty strings");
+  if (cleanLabels.some((l) => l.length > MAX_LABEL_CHARS)) throw new Error(`labels are capped at ${MAX_LABEL_CHARS} characters`);
   if (agentSlot !== null && typeof agentSlot !== "string") throw new Error("agentSlot must be a string or null");
   if (planId !== null && typeof planId !== "string") throw new Error("planId must be a string or null");
   if (typeof restrictions !== "object" || restrictions === null || Array.isArray(restrictions))
@@ -42,6 +49,7 @@ export function newTask({ id, projectId = null, parentId = null, title, assignee
     objective: objective || t, assignee, reporter, status, missionId: null, result: null,
     acceptanceCriteria: [...acceptanceCriteria], skills: [...skills], agentSlot,
     restrictions: { ...restrictions }, priority, dependsOn: [...dependsOn], planId,
+    labels: [...new Set(cleanLabels)],
     createdAt: at, updatedAt: at };
 }
 
