@@ -12,12 +12,13 @@ export const TASK_STATUSES = ["todo", "in-progress", "blocked", "done"];
 const MAX_DEPTH = 2;
 
 export function newTask({ id, projectId = null, parentId = null, title, assignee = null,
-  objective = null, status = "todo", at = null } = {}) {
+  objective = null, status = "todo", reporter = null, at = null } = {}) {
   const t = String(title || objective || "").trim();
   if (!t) throw new Error("a task needs a title");
   if (!TASK_STATUSES.includes(status)) throw new Error(`unknown task status '${status}'`);
+  // Issue parameters (Plane-style): assignee = who is in charge, reporter = who asked.
   return { id: id || `task-${Date.now().toString(36)}`, projectId, parentId, title: t,
-    objective: objective || t, assignee, status, missionId: null, result: null,
+    objective: objective || t, assignee, reporter, status, missionId: null, result: null,
     createdAt: at, updatedAt: at };
 }
 

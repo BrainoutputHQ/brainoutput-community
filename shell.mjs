@@ -127,6 +127,8 @@ pre{background:var(--pre)!important}
   <input id=qsearch class=inp style="margin:4px 0 8px;width:100%" placeholder="">
   <div class=shead><span id=lprojects></span></div>
   <div id=projects></div>
+  <div class=shead><span id=ltasks></span></div>
+  <div id=tasks></div>
   <div class=shead><span id=ladhoc></span></div>
   <div id=adhoc></div>
   <div class=shead><span id=lsources></span></div>
@@ -183,6 +185,17 @@ const ICONS={
 };
 const I=(n,sz=15)=>'<svg width="'+sz+'" height="'+sz+'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'+(ICONS[n]||'')+'</svg>';
 const FAMILY_ICON={mail:'mail',files:'drive',apps:'apps'};
+/** A Plane-style issue row for the sidebar Tasks list: status dot, title, who is in charge. */
+function issueRow(tk){
+ const dot=tk.status==='in-progress'?'<span class="sdot run"></span>'
+  :tk.status==='blocked'?'<span class="sdot attn"></span>'
+  :tk.status==='done'?'<span class="sdot" style="background:var(--ok)"></span>'
+  :'<span class="sdot" style="background:var(--mut);opacity:.5"></span>';
+ const who=tk.assignee?esc(String(tk.assignee).split('-').pop()):'';
+ const b=el('<button class="pitem">'+dot+'<span class=lab>'+esc(tk.title)+'</span>'+(who?'<span class=cnt>'+who+'</span>':'')+'</button>');
+ b.onclick=()=>{S.projectId=tk.projectId||null;S.openTask=tk.id;S.view='chat';render()};
+ return b;
+}
 /** A foldable settings section — folded by default, with a status subtitle in the summary line. */
 function fold(title, sub, { open = false } = {}) {
  const d=el('<details class="fold"'+(open?' open':'')+'><summary>'+esc(title)+(sub?'<span class=sub>'+esc(sub)+'</span>':'')+'</summary><div class=fb></div></details>');
@@ -205,6 +218,7 @@ function sidebar(){
  document.getElementById('lprojects').innerHTML=I('folder',12)+esc(t('shell.projects'));
  document.getElementById('lnewproj').textContent=t('shell.newProject');
  document.getElementById('lnewchat').textContent=t('shell.newChat');
+ document.getElementById('ltasks').innerHTML=I('work',12)+esc(t('shell.tasks'));
  document.getElementById('na-chat').querySelector('.ic').innerHTML=I('plus');
  document.getElementById('na-proj').querySelector('.ic').innerHTML=I('folderplus');
  document.getElementById('ladhoc').innerHTML=I('chat',12)+esc(t('shell.adHoc'));
@@ -237,6 +251,15 @@ function sidebar(){
  document.getElementById('projects').style.display=searching?'none':'';
  document.getElementById('adhoc').style.display=searching?'none':'';
  document.getElementById('sources').style.display=searching?'none':'';
+ document.getElementById('tasks').style.display=searching?'none':'';
+ // Tasks — the cross-project issues list (Plane-style): in-progress first, assignee on the right,
+ // running sessions pulse. Click deep-links into the project's issue detail.
+ const tBox=document.getElementById('tasks');tBox.innerHTML='';
+ const order={'in-progress':0,'blocked':1,'todo':2,'done':3};
+ const allT=(s.tasks||[]).slice().sort((a,b)=>(order[a.status]??4)-(order[b.status]??4)||(b.updatedAt||b.createdAt||0)-(a.updatedAt||a.createdAt||0));
+ allT.filter(x=>x.status!=='done').slice(0,10).forEach(tk=>tBox.appendChild(issueRow(tk)));
+ allT.filter(x=>x.status==='done').slice(0,3).forEach(tk=>tBox.appendChild(issueRow(tk)));
+ if(!allT.length)tBox.appendChild(el('<div class=mut style="font-size:13px;padding:4px 6px">'+esc(t('shell.noTasks'))+'</div>'));
  // The Sources rollup — always visible, connected or not (the carousel's intranet display, for
  // real): one row per family, status chip, click opens the Sources catalog.
  const srcBox=document.getElementById('sources');srcBox.innerHTML='';
@@ -398,6 +421,8 @@ function taskRow(tk,subs){
  const done=tk.status==='done';
  const open=S.openTask===tk.id;
  const mission=tk.missionId?((S.state||{}).missions||[]).find(m=>m.id===tk.missionId):null;
+ const execution=tk.missionId?[...((S.state||{}).executions||[])].reverse().find(e=>e.missionId===tk.missionId):null;
+ const proj=tk.projectId?((S.state||{}).projects||[]).find(p=>p.id===tk.projectId):null;
  const d=el('<div style="padding:8px 0;border-bottom:1px solid var(--line)">'
   +'<label style="display:flex;gap:9px;align-items:center;color:var(--fg);font-size:14px;margin:0;cursor:pointer">'
   +'<input type=checkbox style="width:auto" '+(done?'checked':'')+'> '
@@ -405,10 +430,20 @@ function taskRow(tk,subs){
   +(tk.status==='blocked'?'<span class=warn style="font-size:12px">blocked</span>':'')
   +(tk.assignee?'<span class=mut style="font-size:12px">· '+esc(tk.assignee)+'</span>':'')+'</label>'
   +(tk.result?'<div class="'+(tk.result.ok?'ok':'warn')+'" style="font-size:12px;margin-left:26px">'+esc(tk.result.summary)+(tk.result.artifacts&&tk.result.artifacts.length?' · '+tk.result.artifacts.length+' artifact(s)':'')+'</div>':'')
-  +(open?'<div class=cardx style="margin:8px 0 4px 26px;padding:12px 14px">'
-    +'<div class=mut style="font-size:12px">status: <b>'+esc(tk.status)+'</b>'+(tk.assignee?' · '+esc(tk.assignee):'')+(tk.missionId?' · mission '+esc(tk.missionId)+(mission?' ('+esc(mission.status)+')':''):' · manual task')+'</div>'
-    +(tk.result?'<div style="font-size:13px;margin-top:6px">'+esc(tk.result.summary)+'</div>'
+  +(open?'<div class="cardx" style="margin:8px 0 4px 26px;padding:12px 14px">'
+    // Issue parameters (Plane-style): status select · in charge · asked by · project · mission
+    +'<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
+    +'<select id=tst class=inp style="width:auto;margin-top:0;padding:4px 8px;font-size:12.5px">'
+    +['todo','in-progress','blocked','done'].map(st=>'<option value="'+st+'" '+(tk.status===st?'selected':'')+'>'+esc(t('task.status.'+st))+'</option>').join('')
+    +'</select>'
+    +'<span class=mut style="font-size:12px">'+esc(t('task.assignee'))+': <b>'+esc(tk.assignee||'—')+'</b></span>'
+    +'<span class=mut style="font-size:12px">'+esc(t('task.reporter'))+': <b>'+esc(tk.reporter||'you')+'</b></span>'
+    +(proj?'<span class=mut style="font-size:12px">'+esc(t('task.project'))+': '+esc(proj.name)+'</span>':'')
+    +(tk.missionId?'<span class=mut style="font-size:12px">'+esc(t('task.mission'))+': '+esc(mission?mission.status:tk.missionId)+(execution&&execution.status==='running'?' <span class="sdot run"></span>':'')+'</span>':'<span class=mut style="font-size:12px">'+esc(t('task.manual'))+'</span>')
+    +'</div>'
+    +(tk.result?'<div style="font-size:13px;margin-top:8px">'+esc(tk.result.summary)+'</div>'
       +(tk.result.artifacts&&tk.result.artifacts.length?'<div class=mut style="font-size:12px;margin-top:4px">'+tk.result.artifacts.map(esc).join('<br>')+'</div>':''):'')
+    +(execution&&execution.status==='running'?'<div class=mut style="font-size:12px;margin-top:6px">'+esc(t('task.liveRun'))+' ↓</div>':'')
     +(mission&&mission.conversationId?'<div style="margin-top:8px"><button class=ghost id=goc>'+esc(t('task.openThread'))+'</button></div>':'')
     +'</div>':'')
   +subs.map(srow).join('')+'</div>');
@@ -416,6 +451,10 @@ function taskRow(tk,subs){
  d.querySelector('.tlink').onclick=()=>{S.openTask=open?null:tk.id;render()};
  const goc=d.querySelector('#goc');
  if(goc)goc.onclick=()=>{S.view='chat';S.convId=mission.conversationId;render()};
+ const tst=d.querySelector('#tst');
+ if(tst)tst.onchange=async()=>{await api('/api/task/status',{id:tk.id,status:tst.value});await refresh()};
+ // A running mission shows its live session right inside the issue (Plane's activity, real-time).
+ if(open&&execution&&execution.status==='running')d.appendChild(runCard(execution));
  return d;
 }
 const srow=(s)=>'<div style="margin-left:26px;padding:3px 0;font-size:13px" class="'+(s.status==='done'?'mut':'')+'">'+(s.status==='done'?'✓ ':'○ ')+esc(s.title)+(s.result?' <span class=ok>— '+esc(s.result.summary)+'</span>':'')+'</div>';

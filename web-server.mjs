@@ -460,7 +460,7 @@ async function api(req, res, url) {
   if (url.pathname === "/api/task/new") {
     try {
       const t = b.parentId ? newSubtask(store.runtime, b.parentId, { title: b.title, assignee: b.assignee || null, at: Date.now() })
-        : newTask({ title: b.title, projectId: b.projectId || null, assignee: b.assignee || null, at: Date.now() });
+        : newTask({ title: b.title, projectId: b.projectId || null, assignee: b.assignee || null, reporter: b.reporter || "you", at: Date.now() });
       store.addTask(t); store.saveRuntime();
       return json(res, { ...publicState(), task: t });
     } catch (e) { return json(res, { error: e.message }, 400); }
@@ -1167,7 +1167,7 @@ async function chatLaunch(res, b) {
   let spineTask = (store.runtime.tasks || []).find((t) => t.missionId === m.id) || null;
   if (!spineTask && m.projectId) {
     spineTask = { ...newTask({ projectId: m.projectId, title: String(m.objective || "").slice(0, 90),
-      assignee: r.agent, status: "in-progress", at: Date.now() }), missionId: m.id };
+      assignee: r.agent, status: "in-progress", reporter: "you", at: Date.now() }), missionId: m.id };
     store.addTask(spineTask);
   }
   // ASYNC LAUNCH: the execution record exists from this moment (status running, nodes pending)
@@ -1263,7 +1263,7 @@ async function chatLaunch(res, b) {
           for (const t of planned) {
             // Explicit unique id: newTask's default is millisecond-grained — several subtasks
             // created in one ms would COLLIDE and only the last would survive.
-            const st = newSubtask(store.runtime, spineTask.id, { id: uid("task"), title: t.title, assignee: r.agent, status: "todo", at: Date.now() });
+            const st = newSubtask(store.runtime, spineTask.id, { id: uid("task"), title: t.title, assignee: r.agent, status: "todo", reporter: "you", at: Date.now() });
             store.addTask(st);
             decomposed.subtasks.push(st);
           }

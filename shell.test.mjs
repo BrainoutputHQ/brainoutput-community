@@ -670,3 +670,25 @@ test("a web build lands as REAL downloadable files, and every worker gets the pl
   for (const b of workerBodies)
     assert.ok(b.includes("The plan and decisions (shared, binding"), "every worker prompt carries the shared plan+decisions");
 });
+
+test("sidebar Tasks section lists issues Plane-style (status, who is in charge, reporter on tasks)", async () => {
+  const shell = await (await fetch(`${BASE}/`)).text();
+  assert.match(shell, /id=tasks/, "the Tasks section is in the sidebar");
+  assert.match(shell, /function issueRow/, "issue rows are a shared component");
+  assert.match(shell, /task\.status\.in-progress/, "statuses are labeled");
+  assert.match(shell, /task\.assignee|task\.reporter/, "detail shows who is in charge and who asked");
+  // tasks created by missions carry assignee + reporter
+  const send = await post("/api/chat/send", { scope: "department", department: "technical", mode: "plan",
+    text: "set up the PLAN-MARKER customer portal", projectId: (await post("/api/project", { name: "issues-proj" })).body.project.id });
+  await post("/api/chat/mission", { missionId: send.body.mission.id, action: "approve" });
+  await post("/api/chat/launch", { missionId: send.body.mission.id, timeoutMs: 30000 });
+  const st = await until(async () => {
+    const s = await state();
+    return (s.tasks || []).some((t) => t.parentId && t.missionId === send.body.mission.id && t.status === "done") ? s : null;
+  }, 60000);
+  const spine = (st.tasks || []).find((t) => t.missionId === send.body.mission.id && !t.parentId);
+  assert.equal(spine.assignee, "technical-architect", "the assignee is who is in charge");
+  assert.equal(spine.reporter, "you", "the reporter is who asked");
+  const sub = (st.tasks || []).find((t) => t.parentId === spine.id);
+  assert.ok(sub.assignee && sub.reporter, "planner-created tasks carry both parameters");
+});
