@@ -14,6 +14,8 @@ export const TASK_STATUSES = ["todo", "in-progress", "blocked", "done"];
 export const TASK_PRIORITIES = ["urgent", "high", "medium", "low", "none"];
 const MAX_DEPTH = 2;
 const MAX_ACCEPTANCE = 20, MAX_ACCEPTANCE_CHARS = 500, MAX_SKILLS = 12;
+// Worker escalation (task-pm-05): a worker question is short, an answer is bounded too.
+const MAX_QUESTION_CHARS = 500, MAX_ANSWER_CHARS = 2000;
 
 const isStringArray = (v) => Array.isArray(v) && v.every((x) => typeof x === "string");
 
@@ -92,6 +94,39 @@ export function reportMissionToTask(runtime, taskId, { missionId, ok, summary = 
     status: ok ? "done" : "blocked",
     result: { ok: !!ok, summary: summary || (ok ? "done" : "failed"), artifacts: [...artifacts], at },
     updatedAt: at };
+}
+
+/**
+ * WORKER ESCALATION (task-pm-05): a worker may pause its task with ONE question instead of
+ * guessing. The task flips to blocked with the question pending on the record — other spine
+ * tasks keep running; the planner or the owner answers; the worker re-runs with the answer.
+ * Migration-safe: qna/pendingQuestion only appear on a record once a question was asked.
+ */
+export function askTaskQuestion(runtime, id, question, { at = null } = {}) {
+  const task = byId(runtime, id);
+  if (!task) throw new Error(`no task '${id}'`);
+  const q = String(question || "").trim();
+  if (!q) throw new Error("a task question needs text");
+  if (q.length > MAX_QUESTION_CHARS) throw new Error(`a task question is capped at ${MAX_QUESTION_CHARS} characters`);
+  if (task.pendingQuestion) throw new Error(`task '${id}' already has a pending question`);
+  return { ...task, status: "blocked", pendingQuestion: { question: q, at }, updatedAt: at };
+}
+
+/**
+ * Answer a task's pending question: appended to the durable qna history ({question, answer,
+ * by, at}), the pending question clears, and the task goes back to in-progress so its worker
+ * stage re-runs with the answer in its prompt. `by` is "owner" or "planner" (auto-answer).
+ */
+export function answerTaskQuestion(runtime, id, answer, { by = "owner", at = null } = {}) {
+  const task = byId(runtime, id);
+  if (!task) throw new Error(`no task '${id}'`);
+  const a = String(answer || "").trim();
+  if (!a) throw new Error("a task answer needs text");
+  if (a.length > MAX_ANSWER_CHARS) throw new Error(`a task answer is capped at ${MAX_ANSWER_CHARS} characters`);
+  if (!task.pendingQuestion) throw new Error(`task '${id}' has no pending question`);
+  const qna = [...(Array.isArray(task.qna) ? task.qna : []),
+    { question: task.pendingQuestion.question, answer: a, by: String(by || "owner"), at }];
+  return { ...task, status: "in-progress", pendingQuestion: null, qna, updatedAt: at };
 }
 
 export const subtasksOf = (runtime, id) => (runtime.tasks || []).filter((t) => t.parentId === id);

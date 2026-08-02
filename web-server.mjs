@@ -33,7 +33,7 @@ import { createWorkTwin, setMode as twinSetMode, connectWorkSource, grantTwinSco
 import { connectMailSource, workSourceOptions, smtpSend } from "./mail-sources.mjs";
 import { draftConnectorSpec, connectorGuide, missingConfig, connectorBuildPlan } from "./connector-builder.mjs";
 import { LocalNodes, POLL_HOLD_MS } from "./local-bridge.mjs";
-import { PLAN_TASKS_INSTRUCTION, parsePlannedTasks, workerPartPrompt } from "./plan-tasks.mjs";
+import { PLAN_TASKS_INSTRUCTION, parsePlannedTasks, workerPartPrompt, parseWorkerQuestion, autoAnswerPrompt } from "./plan-tasks.mjs";
 import { FILES_SPEC_INSTRUCTION, writeFilesSpec } from "./file-spec.mjs";
 import { safeSlice } from "./ce-core.mjs";
 import { GoogleOAuth } from "./oauth-google.mjs";
@@ -44,8 +44,8 @@ import { selectModel } from "./ce-core.mjs";
 import { CATALOG, LOCALES, SLOT_LABELS } from "./i18n.mjs";
 import { SHELL_PAGE } from "./shell.mjs";
 import { newProject, listProjects, promoteConversation, projectBrief } from "./projects.mjs";
-import { newTask, newSubtask, setTaskStatus, reportMissionToTask, assertTaskDeps } from "./tasks.mjs";
-import { newPlan, updateDraft, validatePlan, rejectPlan, markMaterialized, planById } from "./plans.mjs";
+import { newTask, newSubtask, setTaskStatus, reportMissionToTask, assertTaskDeps, askTaskQuestion, answerTaskQuestion } from "./tasks.mjs";
+import { newPlan, updateDraft, validatePlan, rejectPlan, markMaterialized, planById, latestProjectPlan } from "./plans.mjs";
 import { pickFreeModel, freeConnection, FREE_PRIVACY_NOTE } from "./free-models.mjs";
 import { t as i18nT } from "./i18n.mjs";
 import { newRoutine, isDue, markFired, parseFeed, unseenItems, ROUTINE_TEMPLATES } from "./routines.mjs";
@@ -472,6 +472,22 @@ async function api(req, res, url) {
       const t = setTaskStatus(store.runtime, b.id, b.status, { at: Date.now() });
       store.addTask(t); store.saveRuntime();
       return json(res, { ...publicState(), task: t });
+    } catch (e) { return json(res, { error: e.message }, 400); }
+  }
+  if (url.pathname === "/api/task/answer") {
+    // The owner answers a worker's escalated question (the question card). Fail-closed all the
+    // way: unknown task, empty answer, or no pending question → 400, nothing changes.
+    try {
+      const t = answerTaskQuestion(store.runtime, b.id, b.answer, { by: "owner", at: Date.now() });
+      store.addTask(t); store.saveRuntime();
+      // RESUME: the paused worker stage re-runs with the Q&A in its prompt (async — the API
+      // never waits on a model). No live escalation context → recorded, honestly not resumed.
+      const ex = [...(store.runtime.executions || [])].reverse().find((e) => e.escalations?.[t.id]);
+      const resumable = !!(ex && escalationWorkerNode(ex.escalations[t.id]));
+      if (resumable) resumeTaskWorker(ex, t.id)
+        .catch((e) => recordError(store, { source: "resume", message: e.message, stack: e.stack }));
+      return json(res, { ...publicState(), task: t, resumed: resumable,
+        ...(resumable ? {} : { note: "Answer recorded; this task has no live worker to resume — flip its status or re-run the mission when ready." }) });
     } catch (e) { return json(res, { error: e.message }, 400); }
   }
   // ── Plans: draft → (owner validates) → materialized tasks. The owner-validation gate is the
@@ -1286,9 +1302,124 @@ function launchFailed(res, m, spineTask, e) {
   return json(res, { error: `execution failed: ${msg}`, mission: failed }, 500);
 }
 
+// ── Worker escalation (task-pm-05) ──────────────────────────────────────────────────────────────
+// A per-task worker may pause its task with ONE fenced ```question block instead of guessing.
+// The task flips to blocked with the question pending; the PLANNER auto-answers ONLY what the
+// plan's DECISIONS already settle (bounded, capped at 3 per task — the 4th goes to the owner);
+// anything else waits on the owner (question card) and the worker re-runs on the answer.
+const MAX_TASK_AUTO_ANSWERS = 3;
+
+/** One per-task worker stage: the sandboxed coding runtime when the slot calls for it, else the
+ *  chat adapter (with the same honest fallback note as before). Shared by the launch loop and
+ *  the owner-answer resume so an escalated task re-runs EXACTLY the stage it paused in. */
+async function runWorkerStage({ node, wprompt, codeWs, index, maxTokens = 1500, timeoutMs = 240000 }) {
+  const isCoding = typeof node.slot === "string" && node.slot.startsWith("coding") && node.model?.connection && opencodeAvailable();
+  if (isCoding) {
+    try {
+      const oc = await runOpenCode({ connection: node.model.connection, workspace: codeWs,
+        timeoutMs: Math.min(timeoutMs, 240000), approvedRoots: [join(store.dir, "workspaces")],
+        prompt: `${wprompt}\nUse the write tool to create the file(s) with RELATIVE paths in the current directory, then stop.` });
+      const files = (oc.changedFiles || []).map((f) => { try { return { name: f, content: readFileSync(join(codeWs, f), "utf8").slice(0, 4000) }; } catch { return { name: f, content: "" }; } });
+      return { node: `worker-${index}`, executor: "opencode", model: oc.model, provider: oc.provider, costSource: oc.costSource, funder: oc.funder,
+        tokens: oc.tokens, tokenScope: oc.tokenScope, changedFiles: oc.changedFiles, files,
+        artifact: oc.changedFiles?.length ? `opencode:${oc.changedFiles.join(",")}` : null,
+        output: oc.changedFiles?.length ? `wrote ${oc.changedFiles.join(", ")}` : "(no files produced for this task)" };
+    } catch (e) {
+      const fb = await runNode(node, node.model, { prompt: wprompt }, { maxTokens, timeoutMs, localCall: localNodeModelCall });
+      return { ...fb, node: `worker-${index}`, codingFallback: `coding runtime failed (${String(e.message || e).slice(0, 60)}) — delivered as text` };
+    }
+  }
+  const out = await runNode(node, node.model, { prompt: wprompt }, { maxTokens, timeoutMs, localCall: localNodeModelCall });
+  return { ...out, node: `worker-${index}` };
+}
+
+/**
+ * The bounded auto-answer: ONE planner-slot call whose entire context is the plan's DECISIONS +
+ * the question. Returns the answered task (by:"planner", persisted), or null — NOT_COVERED, no
+ * model, no plan/decisions, a call failure, or the cap (the 4th+ question NEVER reaches a model).
+ */
+async function maybeAutoAnswer(task, model) {
+  if ((task.qna || []).length >= MAX_TASK_AUTO_ANSWERS) return null;   // the cap — BEFORE any model work
+  if (!model?.connection || model.needsConfiguration) return null;
+  if (!task.pendingQuestion) return null;
+  const plan = task.planId ? planById(store.runtime, task.planId) : null;
+  if (!plan || !String(plan.decisions || "").trim()) return null;
+  let out;
+  try {
+    const r = await runNode({ node: "planner", slot: model.slot || "planner" }, model,
+      { prompt: autoAnswerPrompt({ decisions: plan.decisions, question: task.pendingQuestion.question }) },
+      { maxTokens: 400, timeoutMs: 60000, localCall: localNodeModelCall });
+    out = String(r?.output || "").trim();
+  } catch { return null; }                                  // a failed call → the owner answers
+  if (!out || out.startsWith("NOT_COVERED")) return null;   // the decisions do not settle it → the owner
+  const answered = answerTaskQuestion(store.runtime, task.id, safeSlice(out, 2000), { by: "planner", at: Date.now() });
+  store.addTask(answered); store.saveRuntime();
+  return answered;
+}
+
+/**
+ * Run one spine task's worker stage, handling escalations. A question flips the task to blocked
+ * (persisted); an auto-answer re-runs the worker with the Q&A in its prompt; otherwise the task
+ * stays blocked for the owner. Returns { out } on completion or { blocked } when the owner must
+ * answer — the caller moves on: other spine tasks continue.
+ */
+async function runSpineTaskWorker({ task, ctx, maxTokens = 1500, timeoutMs = 240000 }) {
+  // ctx: { prompt, planOutput, index, total, workerNode, autoModel, codeWs }
+  let cur = task;
+  for (;;) {
+    const wprompt = workerPartPrompt({ objective: ctx.prompt, planOutput: ctx.planOutput,
+      part: cur.title, index: ctx.index, total: ctx.total, task: cur });
+    const out = await runWorkerStage({ node: ctx.workerNode, wprompt, codeWs: ctx.codeWs,
+      index: ctx.index, maxTokens, timeoutMs });
+    const question = parseWorkerQuestion(out.output);
+    if (!question) return { out };
+    cur = askTaskQuestion(store.runtime, cur.id, question, { at: Date.now() });
+    store.addTask(cur); store.saveRuntime();
+    const answered = await maybeAutoAnswer(cur, ctx.autoModel);
+    if (!answered) return { blocked: cur };
+    cur = answered;   // in-progress again, the qna recorded — the worker re-runs with it
+  }
+}
+
+/** Rebuild the paused worker stage from its persisted escalation record (the def holds the
+ *  durable connection). Falls back to the conversation model; null when nothing can run. */
+function escalationWorkerNode(esc) {
+  const conn = esc?.worker?.connectionId
+    ? (store.def.modelConnections || []).find((c) => c.id === esc.worker.connectionId) : null;
+  if (conn) return { node: "worker", slot: esc.worker.slot,
+    model: { slot: esc.worker.slot, connection: conn, provider: conn.provider, model: conn.model, costSource: conn.costSource, funder: conn.funder } };
+  const cm = chatModelFor({});
+  return cm.connection && !cm.needsConfiguration ? { node: "worker", slot: cm.slot, model: cm } : null;
+}
+
+/** RESUME on an owner answer: the paused worker stage re-runs with the Q&A in its prompt, then
+ *  reports into the task and the execution exactly as the launch loop would have. */
+async function resumeTaskWorker(exec, taskId) {
+  const esc = exec.escalations?.[taskId];
+  const task = (store.runtime.tasks || []).find((t) => t.id === taskId);
+  if (!esc || !task || task.pendingQuestion) return;
+  const workerNode = escalationWorkerNode(esc);
+  if (!workerNode) return;
+  const cm = chatModelFor({});
+  const res = await runSpineTaskWorker({ task,
+    ctx: { prompt: exec.escalationCtx?.prompt || task.objective || task.title,
+      planOutput: exec.escalationCtx?.planOutput || "(plan output no longer available)",
+      index: esc.index, total: esc.total, workerNode,
+      autoModel: cm.connection && !cm.needsConfiguration ? cm : null,
+      codeWs: join(store.dir, "workspaces", exec.id) } });
+  if (res.blocked) return;   // asked again — the card waits on the owner once more
+  const out = res.out;
+  store.addTask(reportMissionToTask(store.runtime, taskId, { missionId: exec.missionId, ok: !out.error,
+    summary: String(out.output || out.error || "").slice(0, 200), artifacts: out.artifact ? [out.artifact] : [], at: Date.now() }));
+  exec.results.push(out);
+  exec.logs.push(execLogLine(out));
+  const gi = (exec.graph || []).findIndex((g) => g.node === `worker-${esc.index}`);
+  if (gi >= 0) exec.graph[gi] = { ...exec.graph[gi], status: "done" };
+  store.addExecution(exec); store.saveRuntime();
+}
+
 /** Execute an APPROVED mission through the existing direct executor — no management relay. */
-async function chatLaunch(res, b) {
-  const m = (store.runtime.missions || []).find((x) => x.id === b.missionId);
+async function chatLaunch(res, b) {  const m = (store.runtime.missions || []).find((x) => x.id === b.missionId);
   if (!m) return json(res, { error: "mission not found" }, 404);
   const gate = modeAllows("execute", "execute", { mission: m });
   if (!gate.allowed) return json(res, { error: gate.reason }, 400);
@@ -1397,6 +1528,10 @@ async function chatLaunch(res, b) {
         if (planned.length >= 2) {
           // Real subtasks on the spine + per-task worker graph entries (live progress).
           decomposed = { subtasks: [] };
+          // The mission's plan (its DECISIONS) is what the planner may auto-answer worker
+          // questions from — link it onto every subtask (task-pm-05).
+          const mPlan = (store.runtime.plans || []).filter((p) => p.conversationId === m.conversationId).at(-1)
+            || (m.projectId ? latestProjectPlan(store.runtime, m.projectId) : null);
           for (const t of planned) {
             // Explicit unique id: newTask's default is millisecond-grained — several subtasks
             // created in one ms would COLLIDE and only the last would survive. The planner's
@@ -1404,6 +1539,7 @@ async function chatLaunch(res, b) {
             // they BIND this task's worker (prompt + routing are fail-closed on them).
             const st = newSubtask(store.runtime, spineTask.id, { id: uid("task"), title: t.title,
               acceptanceCriteria: t.acceptanceCriteria || [], skills: t.skills || [], restrictions: t.restrictions || {},
+              planId: mPlan?.id || null,
               assignee: r.agent, status: "todo", reporter: "you", at: Date.now() });
             store.addTask(st);
             decomposed.subtasks.push(st);
@@ -1425,34 +1561,39 @@ async function chatLaunch(res, b) {
       }
 
       // Per-task workers: each plan step executes and its task flips todo → in-progress → done.
+      // A worker may ESCALATE one question per output (```question block): the task pauses
+      // blocked, the planner auto-answers what the plan's DECISIONS settle (cap 3), the owner
+      // answers the rest on the question card — other spine tasks keep running (task-pm-05).
       if (decomposed) {
         const wi = r.plan.findIndex((n) => n === workerNode);
-        const isCodingWorker = typeof workerNode.slot === "string" && workerNode.slot.startsWith("coding") && workerNode.model?.connection && opencodeAvailable();
         const codeWs = join(store.dir, "workspaces", exec.id);
+        // The planner slot made the decisions, so it is who may auto-answer from them; else the
+        // conversation model; else nothing (every question goes to the owner).
+        const cm = chatModelFor({});
+        const autoModel = plannerNode?.model?.connection && !plannerNode.model.needsConfiguration ? plannerNode.model
+          : cm.connection && !cm.needsConfiguration ? cm : null;
+        // Persist enough to RESUME a task whose question waits on the owner (the owner may
+        // answer long after this run finished — the context must outlive the closure).
+        exec.escalationCtx = { prompt: safeSlice(prompt, 6000), planOutput: safeSlice(pr.output, 1200) };
+        exec.escalations = {};
         for (const [i, st] of decomposed.subtasks.entries()) {
           store.addTask(setTaskStatus(store.runtime, st.id, "in-progress", { at: Date.now() }));
+          exec.escalations[st.id] = { index: i + 1, total: decomposed.subtasks.length,
+            worker: { slot: workerNode.slot, connectionId: workerNode.model?.connection?.id || null } };
+          updateExec({});
           // The task record's directives (acceptanceCriteria/restrictions/skills) are passed in —
           // the worker is BOUND by them; a directive-less task gets the same prompt as always.
-          const wprompt = workerPartPrompt({ objective: prompt, planOutput: safeSlice(pr.output, 1200), part: st.title, index: i + 1, total: decomposed.subtasks.length, task: st });
-          let out;
-          if (isCodingWorker) {
-            try {
-              const oc = await runOpenCode({ connection: workerNode.model.connection, workspace: codeWs,
-                timeoutMs: Math.min(b.timeoutMs || 240000, 240000), approvedRoots: [join(store.dir, "workspaces")],
-                prompt: `${wprompt}\nUse the write tool to create the file(s) with RELATIVE paths in the current directory, then stop.` });
-              const files = (oc.changedFiles || []).map((f) => { try { return { name: f, content: readFileSync(join(codeWs, f), "utf8").slice(0, 4000) }; } catch { return { name: f, content: "" }; } });
-              out = { node: `worker-${i + 1}`, executor: "opencode", model: oc.model, provider: oc.provider, costSource: oc.costSource, funder: oc.funder,
-                tokens: oc.tokens, tokenScope: oc.tokenScope, changedFiles: oc.changedFiles, files,
-                artifact: oc.changedFiles?.length ? `opencode:${oc.changedFiles.join(",")}` : null,
-                output: oc.changedFiles?.length ? `wrote ${oc.changedFiles.join(", ")}` : "(no files produced for this task)" };
-            } catch (e) {
-              const fb = await runNode(workerNode, workerNode.model, { prompt: wprompt }, { maxTokens: b.maxTokens || 1500, timeoutMs: b.timeoutMs || 240000, localCall: localNodeModelCall });
-              out = { ...fb, node: `worker-${i + 1}`, codingFallback: `coding runtime failed (${String(e.message || e).slice(0, 60)}) — delivered as text` };
-            }
-          } else {
-            out = await runNode(workerNode, workerNode.model, { prompt: wprompt }, { maxTokens: b.maxTokens || 1500, timeoutMs: b.timeoutMs || 240000, localCall: localNodeModelCall });
-            out = { ...out, node: `worker-${i + 1}` };
+          const res = await runSpineTaskWorker({
+            task: (store.runtime.tasks || []).find((t) => t.id === st.id) || st,
+            ctx: { prompt, planOutput: safeSlice(pr.output, 1200), index: i + 1, total: decomposed.subtasks.length,
+              workerNode, autoModel, codeWs },
+            maxTokens: b.maxTokens || 1500, timeoutMs: b.timeoutMs || 240000 });
+          if (res.blocked) {
+            exec.logs.push(`worker-${i + 1}: escalated a question — task blocked, waiting on the owner`);
+            updateExec({});
+            continue;   // paused; the question card carries it — other spine tasks continue
           }
+          const out = res.out;
           results.push(out);
           exec.logs.push(execLogLine(out));
           if (exec.graph[wi + i]) exec.graph[wi + i] = { ...exec.graph[wi + i], status: "done" };
@@ -1518,9 +1659,14 @@ async function chatLaunch(res, b) {
     }
 
     // "Complete" must mean WORK (see sync-path comment): clarification-only/near-empty is a failure.
+    // EXCEPT a run whose tasks escalated and are WAITING ON THE OWNER — that is a pause with a
+    // question card outstanding, never "no work"; the verdict says so (chat.tasksWaiting).
+    const waitingOnOwner = decomposed
+      ? decomposed.subtasks.filter((s) => (store.runtime.tasks || []).find((t) => t.id === s.id)?.pendingQuestion).length
+      : 0;
     const CLARIFY = /haven't provided|could you please clarif|can you provide|please provide|need more (info|context|detail)|pourriez-vous (préciser|fournir)|besoin de plus/i;
     const isFileArtifact = (a) => a && !String(a).startsWith("completion:");
-    if (!results.some((x) => isFileArtifact(x.artifact) || ((x.output || "").trim().length > 120 && !CLARIFY.test(x.output || ""))))
+    if (!waitingOnOwner && !results.some((x) => isFileArtifact(x.artifact) || ((x.output || "").trim().length > 120 && !CLARIFY.test(x.output || ""))))
       return fail(tChat("chat.noWork"));
 
     const rep = costReport(results);
@@ -1575,7 +1721,7 @@ async function chatLaunch(res, b) {
     const imageGenAvailable = !!(store.def.modelAssignments || {})["image-gen"];
     const gaps = unmetDeliverables(m.objective, eff.artifacts, { imageGenAvailable });
     const c2 = conv ? addMessage(conv, { role: "assistant", mode: "execute", at: Date.now(),
-      text: `Mission complete${retried ? " (after a retry with a bigger output budget)" : ""} — graph ${eff.graph}${eff.stagesSkipped.length ? `, stages not used: ${eff.stagesSkipped.join(", ")}` : ""}. ${review.allMet ? "Acceptance criteria met." : review.unmet.length ? `Unmet: ${review.unmet.join("; ")}` : ""}${decomposed ? ` Planned tasks: ${decomposed.subtasks.filter((s) => (store.runtime.tasks || []).find((t) => t.id === s.id)?.status === "done").length}/${decomposed.subtasks.length} done.` : ""}${writtenFiles.length ? ` Files written: ${writtenFiles.map((f) => f.name).join(", ")}.` : ""}${fileErrors.length ? ` File errors: ${fileErrors.join("; ")}.` : ""}${deliverableGapNote(gaps)}`,
+      text: `Mission complete${retried ? " (after a retry with a bigger output budget)" : ""} — graph ${eff.graph}${eff.stagesSkipped.length ? `, stages not used: ${eff.stagesSkipped.join(", ")}` : ""}. ${review.allMet ? "Acceptance criteria met." : review.unmet.length ? `Unmet: ${review.unmet.join("; ")}` : ""}${decomposed ? ` Planned tasks: ${decomposed.subtasks.filter((s) => (store.runtime.tasks || []).find((t) => t.id === s.id)?.status === "done").length}/${decomposed.subtasks.length} done.` : ""}${waitingOnOwner ? tChat("chat.tasksWaiting").replace("{n}", waitingOnOwner) : ""}${writtenFiles.length ? ` Files written: ${writtenFiles.map((f) => f.name).join(", ")}.` : ""}${fileErrors.length ? ` File errors: ${fileErrors.join("; ")}.` : ""}${deliverableGapNote(gaps)}`,
       meta: { executionId: exec.id, efficiency: eff } }) : null;
     if (c2) saveConversation(c2);
     store.saveRuntime();

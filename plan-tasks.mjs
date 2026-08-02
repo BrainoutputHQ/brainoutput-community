@@ -22,7 +22,8 @@ Rules: 2 to 6 steps; each step is one concrete, completable task; titles under 8
  *  (a real run produced React+Vite, "vanilla HTML", and Next.js for ONE dashboard).
  *  The optional `task` binding is the spine task record's directives: acceptance criteria render
  *  as the checklist the worker MUST satisfy, restrictions as binding rules, skills verbatim.
- *  Omitted/empty directives → byte-identical to the pre-directives prompt. */
+ *  The task's qna history (worker escalation answers) renders as binding previous Q&A.
+ *  Omitted/empty directives AND no qna → byte-identical to the pre-directives prompt. */
 export function workerPartPrompt({ objective, planOutput, part, index, total, task = null }) {
   const base = `${objective}
 
@@ -35,9 +36,11 @@ Complete ONLY your part, fully, and stay inside the shared decisions.`;
   const criteria = Array.isArray(task?.acceptanceCriteria) ? task.acceptanceCriteria.filter((c) => typeof c === "string" && c) : [];
   const restrictions = task?.restrictions && typeof task.restrictions === "object" && !Array.isArray(task.restrictions)
     ? Object.entries(task.restrictions) : [];
-  if (!skills.length && !criteria.length && !restrictions.length) return base;
+  const qna = (Array.isArray(task?.qna) ? task.qna : [])
+    .filter((x) => x && typeof x.question === "string" && typeof x.answer === "string").slice(-6);
+  if (!skills.length && !criteria.length && !restrictions.length && !qna.length) return base;
   const val = (v) => (v !== null && typeof v === "object" ? JSON.stringify(v) : String(v));
-  return `${base}
+  return `${base}${!skills.length && !criteria.length && !restrictions.length ? "" : `
 
 TASK DIRECTIVES (binding on YOUR part — from the task record):${skills.length ? `
 Skills this task requires: ${skills.join(", ")}` : ""}${criteria.length ? `
@@ -46,7 +49,35 @@ Acceptance criteria — your part is done only when EVERY item holds:
 ${criteria.map((c) => `- [ ] ${c}`).join("\n")}` : ""}${restrictions.length ? `
 
 Restrictions — binding rules; never violate them:
-${restrictions.map(([k, v]) => `- ${k}: ${val(v)}`).join("\n")}` : ""}`;
+${restrictions.map(([k, v]) => `- ${k}: ${val(v)}`).join("\n")}` : ""}`}${!qna.length ? "" : `
+
+Previous questions and answers (you asked earlier on this task; the answers are binding):
+${qna.map((x) => `- Q: ${x.question}\n  A: ${x.answer}`).join("\n")}`}`;
+}
+
+/** Parse a worker's escalation: at most ONE fenced ```question block, bounded and tolerant —
+ *  over-long or empty questions fail CLOSED (no question detected, the output stands as-is).
+ *  Returns the question text, or null. */
+export function parseWorkerQuestion(output = "", { maxChars = 500 } = {}) {
+  const text = String(output || "");
+  const block = text.match(/```question\s*([\s\S]*?)```/);
+  if (!block) return null;
+  const q = block[1].trim();
+  if (!q || q.length > maxChars) return null;
+  return q;
+}
+
+/** The bounded planner auto-answer prompt (task-pm-05). Its ONLY variable content is the plan's
+ *  decisions and the worker's question — nothing else may enter the context (pinned by tests):
+ *  the planner answers strictly from what the decisions already settle, or replies NOT_COVERED. */
+export function autoAnswerPrompt({ decisions, question }) {
+  return `A worker on your plan paused with a question. Answer it using ONLY the plan decisions below — they are your entire context. If the decisions do not settle the question, reply with exactly this token and nothing else: NOT_COVERED
+
+PLAN DECISIONS:
+${decisions}
+
+WORKER QUESTION:
+${question}`;
 }
 
 /** Sanitize the OPTIONAL directive fields of one planner-emitted step. Planner output is

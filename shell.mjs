@@ -286,8 +286,10 @@ function sidebar(){
  qs.onchange=()=>{S.q=qs.value;render()};
  qs.oninput=()=>{S.q=qs.value;clearTimeout(S._q);S._q=setTimeout(render,250)};
  const runningPids=new Set((s.executions||[]).filter(e=>e.status==='running').map(e=>e.projectId).filter(Boolean));
- // Attention = a mission in that project waits on the user (draft or post-run approval).
- const attnPids=new Set((s.missions||[]).filter(m=>m.projectId&&(m.status==='awaiting-approval'||m.status==='draft')).map(m=>m.projectId));
+  // Attention = a mission in that project waits on the user (draft or post-run approval).
+  const attnPids=new Set((s.missions||[]).filter(m=>m.projectId&&(m.status==='awaiting-approval'||m.status==='draft')).map(m=>m.projectId));
+  // …or a worker's escalated question waits on the owner's answer.
+  (s.tasks||[]).filter(tk=>tk.pendingQuestion&&tk.projectId).forEach(tk=>attnPids.add(tk.projectId));
  const proj=document.getElementById('projects');proj.innerHTML='';
  (s.projects||[]).forEach(p=>{
   const n=convs.filter(c=>c.projectId===p.id).length;
@@ -422,6 +424,31 @@ function planCard(p){
  }
  return d;
 }
+/** A worker's escalated question (task-pm-05): the question, who asked (the task), and the
+ *  status — awaiting you (answer inline) or answered (with by whom). Renders from the durable
+ *  task record, in the project thread and in the task detail. Worker-controlled text is always
+ *  esc()'d — a question or answer can never inject markup into the owner's browser. */
+function questionCard(tk){
+ const pq=tk.pendingQuestion||null;
+ const hist=(tk.qna||[]);
+ const last=hist.length?hist[hist.length-1]:null;
+ const d=el('<div class="cardx'+(pq?' warn':'')+'"><h3>'+esc(t('q.title'))+' · <span class="pill '+(pq?'dormant':'ok')+'">'+esc(pq?t('q.awaiting'):t('q.answered'))+'</span></h3>'
+  +'<div class=mut style="font-size:12.5px">'+esc(t('q.askedBy'))+': '+esc(tk.title)+'</div>'
+  +'<div style="font-size:14px;margin-top:6px;white-space:pre-wrap">'+esc(pq?pq.question:(last?last.question:''))+'</div>'
+  +(!pq&&last?'<div style="font-size:13px;margin-top:6px;white-space:pre-wrap"><b>'+esc(last.answer)+'</b> <span class=mut>— '+esc(t('q.by.'+last.by)||last.by)+'</span></div>':'')
+  +(hist.length>1?'<div class=mut style="font-size:12px;margin-top:6px">'+esc(t('q.history'))+': '+hist.slice(0,-1).map(function(x){return esc(t('q.q'))+' '+esc(x.question)+' '+esc(t('q.a'))+' '+esc(x.answer)}).join(' | ')+'</div>':'')
+  +'<div id=qa></div></div>');
+ if(pq){
+  const f=el('<div style="margin-top:10px"><textarea class=inp id=qt rows=2 placeholder="'+esc(t('q.answerPlaceholder'))+'"></textarea>'
+   +'<div style="margin-top:8px"><button class=act>'+esc(t('q.answer'))+'</button> <span class=mut id=qmsg style="font-size:12px"></span></div></div>');
+  f.querySelector('button').onclick=async()=>{
+   const r=await api('/api/task/answer',{id:tk.id,answer:f.querySelector('#qt').value});
+   if(r.error){f.querySelector('#qmsg').textContent=r.error;return}
+   await refresh()};
+  d.querySelector('#qa').appendChild(f);
+ }
+ return d;
+}
 /** A finished run is a card in the thread too: graph, who ran each stage, tokens, artifacts,
  *  and the OUTPUT ITSELF — a produced site must be previewable, not just described in logs. */
 const extractHtml=(txt)=>{const m=String(txt||'').match(/\`\`\`html\s*([\s\S]*?)\`\`\`/);if(m)return m[1];
@@ -495,9 +522,11 @@ function taskRow(tk,subs){
  if(goc)goc.onclick=()=>{S.view='chat';S.convId=mission.conversationId;render()};
  const tst=d.querySelector('#tst');
  if(tst)tst.onchange=async()=>{await api('/api/task/status',{id:tk.id,status:tst.value});await refresh()};
- // A running mission shows its live session right inside the issue (Plane's activity, real-time).
- if(open&&execution&&execution.status==='running')d.appendChild(runCard(execution));
- return d;
+  // A running mission shows its live session right inside the issue (Plane's activity, real-time).
+  if(open&&execution&&execution.status==='running')d.appendChild(runCard(execution));
+  // The task detail shows an escalated question too — same card as the project thread.
+  if(open&&(tk.pendingQuestion||(tk.qna||[]).length))d.appendChild(questionCard(tk));
+  return d;
 }
 const srow=(s)=>'<div style="margin-left:26px;padding:3px 0;font-size:13px" class="'+(s.status==='done'?'mut':'')+'">'+(s.status==='done'?'✓ ':'○ ')+esc(s.title)+(s.result?' <span class=ok>— '+esc(s.result.summary)+'</span>':'')+'</div>';
 
@@ -528,9 +557,11 @@ function projectView(proj){
   const label=c.title||(c.messages[0]?String(c.messages[0].text).slice(0,50):c.id);
   const b=el('<button class="pitem'+(S.convId===c.id?' on':'')+'">'+esc(label)+'</button>');
   b.onclick=()=>{S.convId=c.id;render()};d.appendChild(b)});
- // The project's plans live on the project too — same card, same owner gate as in the thread.
- (s.plans||[]).filter(p=>p.projectId===proj.id).slice(-5).forEach(p=>d.appendChild(planCard(p)));
- return d;
+  // The project's plans live on the project too — same card, same owner gate as in the thread.
+  (s.plans||[]).filter(p=>p.projectId===proj.id).slice(-5).forEach(p=>d.appendChild(planCard(p)));
+  // Workers' escalated questions render as cards in the project thread — the owner answers here.
+  (s.tasks||[]).filter(x=>x.projectId===proj.id&&(x.pendingQuestion||(x.qna||[]).length)).forEach(tk=>d.appendChild(questionCard(tk)));
+  return d;
 }
 
 // ── settings: company, models, connections — everything standard needs in one place ──────
