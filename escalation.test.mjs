@@ -149,8 +149,13 @@ test("owner cycle: question → blocked → planner NOT_COVERED → owner card �
   const resumePrompts = w1Since(bodiesBefore).map(promptOf).filter((p) => p.includes("Previous questions and answers"));
   assert.ok(resumePrompts.length >= 1, "the re-run prompt renders the qna section");
   assert.ok(resumePrompts[0].includes(QUESTION) && resumePrompts[0].includes(OWNER_ANSWER));
-  const exec = (await state()).executions.find((e) => e.missionId === m.id);
+  const exec = await until(async () => {
+    const e = (await state()).executions.find((x) => x.missionId === m.id);
+    return e?.finishedAt ? e : null;
+  });
   assert.equal(exec.graph.find((g) => g.node === "worker-1").status, "done");
+  assert.ok(Number.isFinite(exec.finishedAt) && exec.finishedAt >= exec.createdAt,
+    "a finished execution carries a real finishedAt (the task activity trail renders it)");
 });
 
 test("auto-answer: planner answers from DECISIONS — recorded by:'planner', prompt pinned", async () => {

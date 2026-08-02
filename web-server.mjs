@@ -1569,7 +1569,7 @@ async function chatLaunch(res, b) {  const m = (store.runtime.missions || []).fi
       recordError(store, { source: "launch", message: msg });
       store.addMission({ ...m, status: "approved", lastError: msg });
       if (spineTask) store.addTask(reportMissionToTask(store.runtime, spineTask.id, { missionId: m.id, ok: false, summary: msg.slice(0, 200), at: Date.now() }));
-      updateExec({ status: "failed" });
+      updateExec({ status: "failed", finishedAt: Date.now() });
       const cf = getConversation(m.conversationId);
       if (cf) saveConversation(addMessage(cf, { role: "assistant", mode: "execute", at: Date.now(),
         text: tChat("chat.launchFailed").replace("{error}", msg.slice(0, 300)) }));
@@ -1785,7 +1785,7 @@ async function chatLaunch(res, b) {  const m = (store.runtime.missions || []).fi
     // Logs stay SNIPPETS (exec.logs accumulated via execLogLine) — the run view renders full
     // outputs separately; writing them into logs too duplicated every deliverable in the thread.
     const codeFiles = results.flatMap((x) => x.files || []);
-    updateExec({ results, costBySource: rep.byCostSource, efficiency: eff, status: "done", ...(codeFiles.length ? { codeFiles } : {}) });
+    updateExec({ results, costBySource: rep.byCostSource, efficiency: eff, status: "done", finishedAt: Date.now(), ...(codeFiles.length ? { codeFiles } : {}) });
     const gates = r.plan.filter((n) => n.gate);
     for (const n of gates)
       store.addApproval({ id: uid("appr"), missionId: m.id, executionId: exec.id, kind: "action",

@@ -625,6 +625,96 @@ function runCard(ex){
  return d;
 }
 
+// ── task detail (task-pm-09): the issue page — objective, AC checklist, directives, activity ──
+/** Whitespace-tolerant, content-strict criterion identity — the SAME match-back semantics as
+ *  parseTaskReview (review-tasks.mjs): the page is standalone, so the norm is mirrored here. */
+const critNorm=(s)=>String(s==null?'':s).replace(/\\s+/g,' ').trim();
+/** The objective — shown only when it adds information over the title. */
+const objectiveBlock=(tk)=>tk.objective&&tk.objective!==tk.title
+ ?'<div style="margin-top:8px"><b style="font-size:13px">'+esc(t('task.objective'))+'</b><div style="font-size:13.5px;white-space:pre-wrap;margin-top:2px">'+esc(tk.objective)+'</div></div>':'';
+/** The acceptance-criteria checklist: EVERY criterion with its REAL state — pass/fail only
+ *  when the task's review judged that exact criterion (matched back verbatim, one-to-one),
+ *  pending otherwise (no review yet, or a review that never judged it). Never invented. */
+function acChecklist(tk){
+ const ac=tk.acceptanceCriteria||[];
+ if(!ac.length)return '';
+ const remaining=((tk.review&&Array.isArray(tk.review.criteria))?tk.review.criteria:[]).map(c=>({c,n:critNorm(c&&c.criterion)}));
+ const items=ac.map(crit=>{
+  const j=remaining.findIndex(x=>x.n===critNorm(crit));
+  const hit=j<0?null:remaining.splice(j,1)[0].c;
+  const state=hit&&(hit.verdict==='pass'||hit.verdict==='fail')?hit.verdict:'pending';
+  const mark=state==='pass'?'<span class=ok>✓</span>':state==='fail'?'<span class=warn>✗</span>':'<span class=mut>○</span>';
+  return '<div class=acitem data-state="'+state+'" style="display:flex;gap:7px;align-items:baseline;padding:3px 0;font-size:13px">'+mark
+   +'<span>'+esc(crit)+'</span><span class="pill dormant" style="font-size:10px;flex:none">'+esc(t('task.ac.'+state))+'</span></div>'
+   +(hit&&hit.evidence?'<div class=mut style="font-size:12px;margin:0 0 2px 22px">'+esc(t('task.evidence'))+': '+esc(hit.evidence)+'</div>':'');
+ }).join('');
+ return '<div style="margin-top:8px"><b style="font-size:13px">'+esc(t('task.criteria'))+'</b><div style="margin-top:3px">'+items+'</div></div>';
+}
+/** DIRECTIVES (read-only): skills · agent slot · restrictions · priority · labels — each line
+ *  rendered only when the task actually carries it; absent directives leave no empty chrome. */
+function directivesBlock(tk){
+ const lines=[];
+ if((tk.skills||[]).length)lines.push('<div><span class=mut>'+esc(t('task.skills'))+':</span> '+tk.skills.map(x=>'<span class="pill dormant tchip" style="margin:0 4px 0 0">'+esc(x)+'</span>').join('')+'</div>');
+ if(tk.agentSlot)lines.push('<div><span class=mut>'+esc(t('task.agentSlot'))+':</span> '+esc(tk.agentSlot)+'</div>');
+ const rk=Object.keys(tk.restrictions||{});
+ if(rk.length)lines.push('<div><span class=mut>'+esc(t('task.restrictions'))+':</span>'+rk.map(k=>'<div style="margin-left:12px">'+esc(k)+': '+esc(String(tk.restrictions[k]))+'</div>').join('')+'</div>');
+ if(tk.priority&&tk.priority!=='none'&&PRIO_COLOR[tk.priority])lines.push('<div><span class=mut>'+esc(t('task.priority'))+':</span> '+esc(t('task.priority.'+tk.priority))+'</div>');
+ if((tk.labels||[]).length)lines.push('<div><span class=mut>'+esc(t('task.labels'))+':</span> '+labelChips(tk)+'</div>');
+ if(!lines.length)return '';
+ return '<div style="margin-top:8px"><b style="font-size:13px">'+esc(t('task.directives'))+'</b><div style="margin-top:3px;display:flex;flex-direction:column;gap:3px;font-size:12.5px">'+lines.join('')+'</div></div>';
+}
+/** Known actors (review.by.*, q.by.*) translate; anything else shows raw, esc()'d — never a
+ *  broken i18n key on the page. */
+const actorName=(prefix,by)=>{const v=t(prefix+by);return v===prefix+by?String(by==null?'':by):v};
+/** The activity trail's entries, built ONLY from real records: the plan this task came from,
+ *  the mission runs that worked it, the review, the escalations (answered + pending), the
+ *  creation. Each entry: { kind, id, at (null = no timestamp → sorts last, stably), html,
+ *  onclick }. A category with no records produces NO entry — the trail never fabricates. */
+function activityEntries(s,tk){
+ const out=[];
+ const when=(at)=>' <span class=mut style="font-size:11.5px">'+esc(new Date(at).toLocaleString())+'</span>';
+ if(tk.createdAt)out.push({kind:'created',id:tk.id,at:tk.createdAt,
+  html:'<b>'+esc(t('task.act.created'))+'</b>'+when(tk.createdAt)});
+ if(tk.planId){
+  const p=((s||{}).plans||[]).find(x=>x.id===tk.planId)||null;
+  out.push({kind:'plan',id:tk.planId,at:p?(p.createdAt??null):null,
+   html:'<b>'+esc(t('task.act.plan'))+'</b> · '+(p?esc(p.objective||'')+' <span class="pill dormant" style="font-size:10px">'+esc(t('plan.status.'+(p.status||'draft')))+'</span>':'<span class=mut>'+esc(tk.planId)+'</span>')+(p&&p.createdAt?when(p.createdAt):''),
+   onclick:p?()=>{S.projectId=p.projectId||null;S.convId=p.conversationId||null;S.view='chat';render()}:null});
+ }
+ if(tk.missionId)((s||{}).executions||[]).filter(e=>e.missionId===tk.missionId).forEach(e=>{
+  out.push({kind:'run',id:e.id,at:e.createdAt??null,
+   html:'<b>'+esc(t('task.act.run'))+'</b> · '+esc(e.status||'')
+    +(e.createdAt?' <span class=mut style="font-size:11.5px">'+esc(t('task.started'))+' '+esc(new Date(e.createdAt).toLocaleString())+'</span>':'')
+    +(e.finishedAt?' <span class=mut style="font-size:11.5px">'+esc(t('task.finished'))+' '+esc(new Date(e.finishedAt).toLocaleString())+'</span>':''),
+   onclick:e.conversationId?()=>{S.projectId=e.projectId||S.projectId;S.convId=e.conversationId;S.view='chat';render()}:null});
+ });
+ if(tk.review)out.push({kind:'review',id:tk.id,at:tk.review.at??null,
+  html:'<b>'+esc(t('task.act.review'))+'</b> · <span class="'+(tk.review.ok?'ok':'warn')+'">'+esc(tk.review.ok?t('review.pass'):t('review.fail'))+'</span>'
+   +(tk.review.note?' — '+esc(tk.review.note):'')
+   +(tk.review.by?' <span class=mut>· '+esc(actorName('review.by.',tk.review.by))+'</span>':'')
+   +(tk.review.at?when(tk.review.at):'')});
+ (tk.qna||[]).forEach((q,i)=>out.push({kind:'qna',id:tk.id+'-q'+i,at:q.at??null,
+  html:'<b>'+esc(t('task.act.question'))+'</b> · '+esc(q.question)+' → <b>'+esc(q.answer)+'</b>'
+   +(q.by?' <span class=mut>· '+esc(actorName('q.by.',q.by))+'</span>':'')
+   +(q.at?when(q.at):'')}));
+ if(tk.pendingQuestion)out.push({kind:'question',id:tk.id+'-pq',at:tk.pendingQuestion.at??null,
+  html:'<b>'+esc(t('task.act.question'))+'</b> · '+esc(tk.pendingQuestion.question)+' <span class="pill dormant" style="font-size:10px">'+esc(t('q.awaiting'))+'</span>'
+   +(tk.pendingQuestion.at?when(tk.pendingQuestion.at):'')});
+ return out.slice().sort((a,b)=>a.at==null?(b.at==null?0:1):b.at==null?-1:a.at-b.at);
+}
+/** The trail itself: a card under the issue detail, one row per entry — or NOTHING at all when
+ *  the task has no records yet (a fresh manual task shows no empty chrome). */
+function activityTrail(s,tk){
+ const entries=activityEntries(s,tk);
+ if(!entries.length)return null;
+ const d=el('<div class="cardx" style="margin:0 0 4px 26px;padding:10px 14px"><b style="font-size:13px">'+esc(t('task.activity'))+'</b></div>');
+ entries.forEach(en=>{
+  const row=el('<div class=actitem data-kind="'+esc(en.kind)+'" data-id="'+esc(en.id||'')+'" style="font-size:12.5px;padding:4px 0;border-bottom:1px solid var(--line)">'+en.html+'</div>');
+  if(en.onclick){row.style.cursor='pointer';row.onclick=en.onclick}
+  d.appendChild(row)});
+ return d;
+}
+
 // ── project view: the task spine + its threads ───────────────────────────────
 function taskRow(tk,subs){
  const done=tk.status==='done';
@@ -653,9 +743,11 @@ function taskRow(tk,subs){
     +(proj?'<span class=mut style="font-size:12px">'+esc(t('task.project'))+': '+esc(proj.name)+'</span>':'')
     +(tk.missionId?'<span class=mut style="font-size:12px">'+esc(t('task.mission'))+': '+esc(mission?mission.status:tk.missionId)+(execution&&execution.status==='running'?' <span class="sdot run"></span>':'')+'</span>':'<span class=mut style="font-size:12px">'+esc(t('task.manual'))+'</span>')
     +'</div>'
+    +objectiveBlock(tk)
+    +acChecklist(tk)
+    +directivesBlock(tk)
     +(tk.result?'<div style="font-size:13px;margin-top:8px">'+esc(tk.result.summary)+'</div>'
       +(tk.result.artifacts&&tk.result.artifacts.length?'<div class=mut style="font-size:12px;margin-top:4px">'+tk.result.artifacts.map(esc).join('<br>')+'</div>':''):'')
-    +(tk.review?reviewLine(tk.review):'')
     +(execution&&execution.status==='running'?'<div class=mut style="font-size:12px;margin-top:6px">'+esc(t('task.liveRun'))+' ↓</div>':'')
     +(mission&&mission.conversationId?'<div style="margin-top:8px"><button class=ghost id=goc>'+esc(t('task.openThread'))+'</button></div>':'')
     +'</div>':'')
@@ -666,8 +758,12 @@ function taskRow(tk,subs){
  if(goc)goc.onclick=()=>{S.view='chat';S.convId=mission.conversationId;render()};
  const tst=d.querySelector('#tst');
  if(tst)tst.onchange=async()=>{await api('/api/task/status',{id:tk.id,status:tst.value});await refresh()};
-  // A running mission shows its live session right inside the issue (Plane's activity, real-time).
-  if(open&&execution&&execution.status==='running')d.appendChild(runCard(execution));
+   // The activity trail: the task's whole record in one ordered list — plan, runs, review,
+   // escalations, creation — built ONLY from real records (the review line folds in here:
+   // verdict, note, by, at — no information lost).
+   if(open){const trail=activityTrail(S.state||{},tk);if(trail)d.appendChild(trail)}
+   // A running mission shows its live session right inside the issue (Plane's activity, real-time).
+   if(open&&execution&&execution.status==='running')d.appendChild(runCard(execution));
   // The task detail shows an escalated question too — same card as the project thread.
   if(open&&(tk.pendingQuestion||(tk.qna||[]).length))d.appendChild(questionCard(tk));
   return d;
