@@ -9,7 +9,8 @@
 //     leading list marker are form; every WORD must still match (reworded/dropped → null).
 //   STRICT-REMINDER RETRY — parse failure → ONE extra bounded reviewer call with a stricter
 //     prompt. Not on reviewer-unavailable (its own transient retry), not on a judged FAIL.
-//   maxTokens 900 (reasoning-model headroom).
+//   maxTokens 1600 on the first call, 3200 on the strict retry (task-pm-22: the retry doubles the
+//     base so a truncated attempt gets room to finish).
 // Separate file from taskreview.test.mjs: that suite pins the review CONTRACT (byte-stable
 // pins, shared MODE stub); this one drives per-marker reviewer behaviors (prose→valid,
 // prose-always, contradiction, fail-stands, reviewer-down) — no mode cross-talk.
@@ -30,6 +31,9 @@ const AC1 = "the landing page exists as a real file";
 const AC2 = "the page names the company";
 const WORKER_OUT = "Built it for real. " + "Concrete work output follows: the file was written and checked. ".repeat(4);
 const PROSE = "I looked at the work and honestly it all seems fine to me, ship it. ".repeat(8); // >200 chars, no fence
+// A well-formed verdict cut off mid-JSON (task-pm-22 live evidence) — the fence never closes.
+const TRUNC = "```review\n" + JSON.stringify({ criteria: [{ criterion: AC1, verdict: "pass",
+  evidence: "the diff shows the file written and the head of the page naming the comp" }], overall: "pass" }).slice(0, -20);
 const bodies = [];
 const counts = new Map();
 const seen = (m) => { const n = (counts.get(m) || 0) + 1; counts.set(m, n); return n; };
@@ -67,6 +71,7 @@ before(async () => {
         if (d.includes("CONTRADICTMARK")) return say(reviewJson(promptOf(d), "contradict"));
         if (d.includes("FAILSTANDMARK")) return say(reviewJson(promptOf(d), "fail"));
         if (d.includes("PROSE2PASSMARK")) { const n = seen("PROSE2PASSMARK"); if (n === 1) return say(PROSE); return say(reviewJson(promptOf(d), "pass")); }
+        if (d.includes("TRUNC2PASSMARK")) { const n = seen("TRUNC2PASSMARK"); if (n === 1) return say(TRUNC); return say(reviewJson(promptOf(d), "pass")); }
         if (d.includes("PROSEALWAYSMARK")) return say(PROSE);
         return say(reviewJson(promptOf(d), "pass"));
       }
@@ -137,7 +142,24 @@ test("parse failure → ONE strict-reminder retry: prose then valid → 2 review
   assert.ok(promptOf(calls[1]).includes(REVIEW_STRICT_REMINDER), "the retry carries the full strict reminder");
   assert.ok(promptOf(calls[1]).includes("ONLY the fenced"), "only the fenced block, no commentary");
   assert.ok(promptOf(calls[1]).includes("EXACTLY as given"), "criteria copied exactly");
-  for (const d of calls) assert.equal(maxTokensOf(d), 900, "reasoning-model headroom on every review call");
+  assert.equal(maxTokensOf(calls[0]), 1600, "base budget on the first review call (task-pm-22)");
+  assert.equal(maxTokensOf(calls[1]), 3200, "the strict retry doubles the base budget");
+});
+
+// ── 1b · truncated-block first + valid second → PASSES, exactly 2 calls (task-pm-22) ──────────
+test("well-formed verdict truncated mid-JSON → strict retry recovers: task done, exactly 2 reviewer calls", async () => {
+  const T = await launchReviewed("build the TRUNC2PASSMARK page");
+  const fin = await until(async () => {
+    const t = await taskOf(T.id);
+    return t?.status === "done" && t.review ? t : null;
+  });
+  assert.equal(fin.review.ok, true);
+  assert.equal(fin.review.by, "reviewer");
+  assert.equal(fin.review.note, "every criterion is evidenced");
+  const calls = reviewerBodies("TRUNC2PASSMARK");
+  assert.equal(calls.length, 2, "the truncated attempt + one strict retry, no more");
+  assert.equal(maxTokensOf(calls[0]), 1600, "base budget on the first call");
+  assert.equal(maxTokensOf(calls[1]), 3200, "the retry gets double — room to finish the block");
 });
 
 // ── 2 · prose twice → blocked, the note carries the bounded labeled raw slice ─────────────────

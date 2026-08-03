@@ -1872,10 +1872,14 @@ async function reportOrReviewSpineTask({ task, out, missionId, agentId, codeWs =
     // The real change and the real test exit code — the reviewer judges these, not the prose.
     diff: evidence?.diff?.available ? evidence.diff.text : null,
     testEvidence: testEvidenceText(evidence?.tests) });
-  // maxTokens 900: reasoning-model headroom — a truncated review is an unparseable review.
+  // maxTokens 1600 (task-pm-22): reasoning-model headroom — a truncated review is an unparseable
+  // review, and head+tail evidence plus per-criterion quoted evidence overflowed the old 900 budget
+  // (live evidence: well-formed verdicts cut off mid-JSON). The strict-reminder retry gets DOUBLE
+  // the base — a truncated attempt gets room to finish (the existing double-budget lesson).
+  const REVIEW_MAX_TOKENS = 1600;
   const callReviewer = (strict) => runStageNode({ node: "reviewer", slot: rm.slot || "reviewer" }, rm,
     { prompt: strict ? `${reviewPrompt}\n\n${REVIEW_STRICT_REMINDER}` : reviewPrompt },
-    { maxTokens: 900, timeoutMs: 60000, localCall: localNodeModelCall });
+    { maxTokens: strict ? REVIEW_MAX_TOKENS * 2 : REVIEW_MAX_TOKENS, timeoutMs: 60000, localCall: localNodeModelCall });
   try {
     const rr = await callReviewer(false);
     rawOut = String(rr?.output ?? "");
