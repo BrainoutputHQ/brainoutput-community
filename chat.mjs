@@ -45,6 +45,33 @@ export function looksLikeOccupancy(text = "") {
   return /(occup|beleg)/i.test(t) && room;
 }
 
+/**
+ * RUN QUEUE intents (task-pm-13) — deterministic, zero model, routed BEFORE any plan/mission
+ * drafting (the founder asked to "list the tasks" and got a PLAN drafted; never again).
+ * "launch all the tasks" starts the project's run queue; "list the tasks / where are we" gets a
+ * direct answer built from the store. en/fr/de, anchored imperative forms only — a work request
+ * ("crée-moi un jeu snake") never matches.
+ */
+export function looksLikeLaunchAll(text = "") {
+  const s = String(text).toLowerCase().trim();
+  return /^(launch|start|run|execute)\s+(all|everything)\b/i.test(s)
+    || /^(lance|lancer|démarre|démarrer)\s+(tout|toutes)\b/i.test(s)
+    || /^(starte|starten|führe? aus)\s+(alle|alles)\b/i.test(s);
+}
+
+export function looksLikeTaskStatus(text = "") {
+  const s = String(text).toLowerCase().trim();
+  return /\blist(?:e|er)?\s+(?:the\s+|les\s+|des\s+|die\s+)?(?:tasks?|tâches?|aufgaben)\b/i.test(s)
+    || /\bquelles sont les tâches\b/i.test(s)
+    || /\boù en est[- ]on\b/i.test(s)
+    || /\bwhere are we\b/i.test(s)
+    || /\bwo stehen wir\b/i.test(s)
+    || /\baufgabenliste\b/i.test(s)
+    || /\btask status\b/i.test(s)
+    || /\bwhat'?s the status\b/i.test(s)
+    || /\bstatus\s+(?:of|der|des)\s+(?:the\s+)?(?:tasks?|tâches?|aufgaben)\b/i.test(s);
+}
+
 /** The recent conversation tail — the context follow-ups actually resolve against. Retrieval
  *  (term frequency) CANNOT resolve "do them" or "and the second one?" — nothing overlaps
  *  lexically. Recency can. Ask mode sends this alongside retrieval, never the whole transcript. */

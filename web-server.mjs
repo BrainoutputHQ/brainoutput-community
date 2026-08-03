@@ -22,7 +22,7 @@ import { runtimeCards, runtimeConnection, runtimeToConnection } from "./runtimes
 import { applyAdvancedAgentConfig } from "./onboarding.mjs";
 import { newConversation, addMessage, pin, resolveMention, rollSummary, compactContext, draftMissionSpec,
   editMissionSpec, approveMission, rejectMission, modeAllows, missionComposer, reviewMission, saveAsWorkflow, looksLikeWork,
-  looksLikeOccupancy,
+  looksLikeOccupancy, looksLikeLaunchAll, looksLikeTaskStatus,
   askTail, inferDepartment, missionWorkerPrompt, unmetDeliverables, deliverableGapNote, planStepsFor,
   isGoal, parsePlanDraft, PLAN_DRAFT_INSTRUCTION } from "./chat.mjs";
 import { connectRagSource, indexDocuments, searchRag } from "./rag.mjs";
@@ -46,7 +46,7 @@ import { selectModel } from "./ce-core.mjs";
 import { CATALOG, LOCALES, SLOT_LABELS } from "./i18n.mjs";
 import { SHELL_PAGE } from "./shell.mjs";
 import { newProject, listProjects, promoteConversation, projectBrief, projectUpdate } from "./projects.mjs";
-import { newTask, newSubtask, setTaskStatus, reportMissionToTask, assertTaskDeps, askTaskQuestion, answerTaskQuestion, reviewTask, blockersOf } from "./tasks.mjs";
+import { newTask, newSubtask, setTaskStatus, reportMissionToTask, assertTaskDeps, askTaskQuestion, answerTaskQuestion, reviewTask, blockersOf, projectTasks } from "./tasks.mjs";
 import { reviewTaskPrompt, parseTaskReview } from "./review-tasks.mjs";
 import { newPlan, updateDraft, validatePlan, rejectPlan, markMaterialized, planById, latestProjectPlan } from "./plans.mjs";
 import { pickFreeModel, freeConnection, FREE_PRIVACY_NOTE } from "./free-models.mjs";
@@ -534,16 +534,59 @@ async function api(req, res, url) {
     try {
       const t = setTaskStatus(store.runtime, b.id, b.status, { at: Date.now() });
       store.addTask(t); store.saveRuntime();
+      queueSyncSafe(t.projectId);   // a manual flip moves the queue too (done → advance, blocked → pause)
       return json(res, { ...publicState(), task: t });
     } catch (e) { return json(res, { error: e.message }, 400); }
   }
   if (url.pathname === "/api/task/launch") return taskLaunch(res, b);
+  // ── Run queue (task-pm-13): one deterministic, sequential queue per project. Fail-closed:
+  // unknown project/queue/task → 4xx naming the cause; starting while running → 409.
+  if (url.pathname === "/api/queue/start") {
+    const r = await queueStart(b.projectId);
+    if (r.error) return json(res, { error: r.error, ...(r.queue ? { queue: r.queue } : {}) }, r.code);
+    return json(res, { ...publicState(), queue: r.queue });
+  }
+  if (url.pathname === "/api/queue/pause") {
+    // Finish the current task, launch nothing more (kind "owner" — never confused with a problem pause).
+    const q = activeQueue(b.projectId);
+    if (!q) return json(res, { error: `no active queue for project '${b.projectId}'` }, 404);
+    if (q.status !== "running") return json(res, { error: `the queue for project '${b.projectId}' is already ${q.status}` }, 409);
+    saveQueue({ ...q, status: "paused", kind: "owner", reason: "owner: paused", updatedAt: Date.now() });
+    return json(res, { ...publicState(), queue: activeQueue(b.projectId) });
+  }
+  if (url.pathname === "/api/queue/stop") {
+    // Same as pause (the current task finishes) + the queue is marked stopped; a later start reseeds.
+    const q = activeQueue(b.projectId);
+    if (!q) return json(res, { error: `no active queue for project '${b.projectId}'` }, 404);
+    saveQueue({ ...q, status: "stopped", updatedAt: Date.now() });
+    return json(res, publicState());
+  }
+  if (url.pathname === "/api/queue/skip") {
+    // The owner's answer to a paused (or waiting) task: skip it, the queue continues.
+    const t = (store.runtime.tasks || []).find((x) => x.id === b.taskId);
+    if (!t) return json(res, { error: `no task '${b.taskId}'` }, 404);
+    const q = activeQueue(t.projectId);
+    if (!q) return json(res, { error: `no active queue for project '${t.projectId}'` }, 404);
+    if (!q.taskIds.includes(t.id)) return json(res, { error: `task '${t.title}' is not in this queue` }, 400);
+    if (t.status === "done") return json(res, { error: `task '${t.title}' is already done` }, 409);
+    const skipped = [...new Set([...(q.skippedTaskIds || []), t.id])];
+    saveQueue({ ...q, skippedTaskIds: skipped,
+      currentTaskId: q.currentTaskId === t.id ? null : q.currentTaskId,
+      status: "running", kind: null, reason: null, updatedAt: Date.now() });
+    const synced = await queueSync(t.projectId);
+    return json(res, { ...publicState(), queue: synced });
+  }
   if (url.pathname === "/api/task/answer") {
     // The owner answers a worker's escalated question (the question card). Fail-closed all the
     // way: unknown task, empty answer, or no pending question → 400, nothing changes.
     try {
       const t = answerTaskQuestion(store.runtime, b.id, b.answer, { by: "owner", at: Date.now() });
       store.addTask(t); store.saveRuntime();
+      // RUN QUEUE (task-pm-13): a queue paused on THIS question runs again — the resumed worker's
+      // completion advances it (the queueSync hook in resumeTaskWorker).
+      const q = activeQueue(t.projectId);
+      if (q && q.status === "paused" && q.kind === "question" && q.currentTaskId === t.id)
+        saveQueue({ ...q, status: "running", kind: null, reason: null, updatedAt: Date.now() });
       // RESUME: the paused worker stage re-runs with the Q&A in its prompt (async — the API
       // never waits on a model). No live escalation context → recorded, honestly not resumed.
       const ex = [...(store.runtime.executions || [])].reverse().find((e) => e.escalations?.[t.id]);
@@ -1186,6 +1229,31 @@ async function chatSend(res, b) {
     const occ = await occupancyAnswer();
     reply = occ.text;
     rag = occ.sources.map((citation) => ({ citation }));
+  } else if (looksLikeLaunchAll(b.text || "")) {
+    // RUN QUEUE intent (task-pm-13): deterministic, zero model, routed BEFORE any drafting —
+    // "launch all the tasks" starts the thread's project queue; no project → an honest pointer.
+    const pid = conv.projectId || null;
+    if (!pid) {
+      reply = tChat("chat.queueNoProject");
+    } else {
+      const r = await queueStart(pid);
+      if (r.error && !r.queue) {
+        reply = tChat("chat.queueNoProject");
+      } else {
+        const q = r.queue;
+        const cur = (store.runtime.tasks || []).find((x) => x.id === q.currentTaskId) || null;
+        if (r.code === 409) reply = tChat("chat.queueAlready")
+          .replace("{done}", String(q.completedTaskIds.length)).replace("{total}", String(q.taskIds.length))
+          .replace("{title}", cur?.title || "—");
+        else if (!q.taskIds.length) reply = tChat("chat.queueStartedEmpty");
+        else reply = tChat("chat.queueStarted").replace("{n}", String(q.taskIds.length)).replace("{title}", cur?.title || "—");
+      }
+    }
+  } else if (looksLikeTaskStatus(b.text || "")) {
+    // STATUS intent (task-pm-13): a direct answer built from the store — counts per status, the
+    // running task, blocked tasks with their blocker titles, the queue state when active.
+    // GATED: these phrasings must NEVER reach plan drafting (the founder got a PLAN for "list the tasks").
+    reply = taskStatusAnswer(conv.projectId || null);
   } else if (mode === "ask" && latestDraftPlan(conv.id)) {
     // Plan refinement loop: this thread holds a DRAFT plan, so a normal chat message refines it
     // (ONE bounded planner pass over the draft). Never auto-validate, never auto-materialize —
@@ -1564,15 +1632,168 @@ async function resumeTaskWorker(exec, taskId) {
       index: esc.index, total: esc.total, workerNode,
       autoModel: cm.connection && !cm.needsConfiguration ? cm : null,
       codeWs: join(store.dir, "workspaces", exec.id) } });
-  if (res.blocked) return;   // asked again — the card waits on the owner once more
+  if (res.blocked) { queueSyncSafe(task.projectId); return; }   // asked again — the card waits on the owner once more
   const out = res.out;
   // The resumed worker's report goes through the same per-task review as the launch loop.
   await reportOrReviewSpineTask({ task, out, missionId: exec.missionId, agentId: task.assignee });
+  queueSyncSafe(task.projectId);   // a queue paused on this question continues on the completion
   exec.results.push(out);
   exec.logs.push(execLogLine(out));
   const gi = (exec.graph || []).findIndex((g) => g.node === `worker-${esc.index}`);
   if (gi >= 0) exec.graph[gi] = { ...exec.graph[gi], status: "done" };
   store.addExecution(exec); store.saveRuntime();
+}
+
+// ── Run queue (task-pm-13) ──────────────────────────────────────────────────────────────────────
+// One deterministic, sequential queue per project: launchable top-level tasks, dependency-first,
+// ONE task at a time through the existing taskLaunch machinery. The queue PAUSES on problems —
+// a review-blocked task or a worker's pending question — and resumes on the owner's decision
+// (skip / relaunch / answer). Queue records are durable (runtime.queues) and surfaced in /api/state.
+const queues = () => store.runtime.queues || [];
+const activeQueue = (projectId) =>
+  queues().find((q) => q.projectId === projectId && (q.status === "running" || q.status === "paused")) || null;
+function saveQueue(q) { store.addQueue(q); store.saveRuntime(); return q; }
+
+const taskRunningMission = (t) => !!(t?.missionId
+  && (store.runtime.missions || []).some((m) => m.id === t.missionId && m.status === "running"));
+
+/** Seed order: the project's launchable top-level tasks (not done, not already running), ordered
+ *  dependency-first — a task is READY only when every dependsOn is done. A task whose dep can
+ *  never place (missing, or open outside the seed) sinks to the end; it is skipped until ready. */
+function queueSeedOrder(projectId) {
+  const tops = projectTasks(store.runtime, projectId).filter((t) => t.status !== "done" && !taskRunningMission(t));
+  const placed = [];
+  const remaining = [...tops];
+  while (remaining.length) {
+    const i = remaining.findIndex((t) => (t.dependsOn || []).every((d) => {
+      if (placed.some((p) => p.id === d)) return true;
+      const dt = (store.runtime.tasks || []).find((x) => x.id === d);
+      return dt && dt.status === "done";
+    }));
+    placed.push(i < 0 ? remaining.shift() : remaining.splice(i, 1)[0]);
+  }
+  return placed.map((t) => t.id);
+}
+
+/** READY right now — mirrors /api/task/launch's refusals so the queue never launches into one. */
+function queueTaskReady(t) {
+  if (!t || t.status === "done" || t.status === "blocked" || t.pendingQuestion) return false;
+  if (taskRunningMission(t)) return false;
+  return blockersOf(store.runtime, t).length === 0;
+}
+
+/** Launch a task through the EXISTING taskLaunch path, capturing the JSON outcome — the queue
+ *  drives the same machinery the Launch button does, never a parallel executor. */
+async function launchTaskInternal(id) {
+  const out = { code: 500, body: null };
+  const res = { writeHead(code) { out.code = code; return this; }, end(body) { try { out.body = JSON.parse(body); } catch {} } };
+  await taskLaunch(res, { id });
+  return out;
+}
+
+/**
+ * The queue state machine, called after every event that can move a task (a launch completing,
+ * an escalation, an owner answer/skip/relaunch). Reconciles the current task, then — only when
+ * running and idle — launches the NEXT ready task. ONE at a time, always: a launch only ever
+ * happens here, and only when currentTaskId is empty.
+ */
+async function queueSync(projectId) {
+  let q = activeQueue(projectId);
+  if (!q) return null;
+  const taskOf = (id) => (store.runtime.tasks || []).find((t) => t.id === id) || null;
+  const cur = q.currentTaskId ? taskOf(q.currentTaskId) : null;
+
+  // Reconcile the current task first: done → recorded; a problem → paused, naming the task.
+  if (cur && cur.status === "done" && !q.completedTaskIds.includes(cur.id)) {
+    q = saveQueue({ ...q, completedTaskIds: [...q.completedTaskIds, cur.id], currentTaskId: null, updatedAt: Date.now() });
+  } else if (cur && cur.pendingQuestion) {
+    return saveQueue({ ...q, status: "paused", kind: "question", reason: `question: ${cur.title}`, updatedAt: Date.now() });
+  } else if (cur && cur.status === "blocked") {
+    const kind = cur.review ? "review-blocked" : "failed";
+    return saveQueue({ ...q, status: "paused", kind, reason: `${kind}: ${cur.title}`, updatedAt: Date.now() });
+  }
+  if (q.status !== "running") return saveQueue({ ...q, updatedAt: Date.now() });
+
+  if (!q.currentTaskId) {
+    const next = q.taskIds.map(taskOf).find((t) =>
+      t && t.status !== "done" && !q.completedTaskIds.includes(t.id) && !q.skippedTaskIds.includes(t.id) && queueTaskReady(t));
+    if (next) {
+      q = saveQueue({ ...q, currentTaskId: next.id, updatedAt: Date.now() });
+      const r = await launchTaskInternal(next.id);
+      if (!r || r.code !== 200 || !r.body?.started) {
+        // A refused launch pauses the queue LOUD (never a silent stall, never a skip).
+        const msg = String(r?.body?.error || "launch refused").slice(0, 200);
+        const q2 = activeQueue(projectId);
+        if (q2 && q2.status === "running" && q2.currentTaskId === next.id)
+          return saveQueue({ ...q2, status: "paused", kind: "failed", reason: `failed: ${next.title} — ${msg}`, updatedAt: Date.now() });
+        return q2 || q;
+      }
+      return activeQueue(projectId) || q;
+    }
+    const open = q.taskIds.map(taskOf).filter((t) => t && t.status !== "done" && !q.skippedTaskIds.includes(t.id));
+    if (!open.length) return saveQueue({ ...q, status: "done", kind: null, reason: null, updatedAt: Date.now() });
+    // Everything left waits on something the queue cannot settle (e.g. a skipped dependency) —
+    // say so honestly instead of calling the queue done.
+    return saveQueue({ ...q, status: "paused", kind: "stuck",
+      reason: `stuck: ${open.map((t) => t.title).join(", ").slice(0, 200)}`, updatedAt: Date.now() });
+  }
+  return q;
+}
+
+const queueSyncSafe = (projectId) => {
+  if (!projectId) return;
+  queueSync(projectId).catch((e) => recordError(store, { source: "queue", message: e.message, stack: e.stack }));
+};
+
+/** Start (or resume) the project's queue. One ACTIVE queue per project: running → 409; paused →
+ *  resumed in place; stopped/done/none → a fresh queue reseeded from the still-open tasks. */
+async function queueStart(projectId) {
+  const p = (store.runtime.projects || []).find((x) => x.id === projectId && x.kind === "project");
+  if (!p) return { code: 404, error: `no project '${projectId}'` };
+  const active = activeQueue(p.id);
+  if (active?.status === "running")
+    return { code: 409, error: `project '${p.name}' already has a running queue`, queue: active };
+  if (active?.status === "paused") {
+    saveQueue({ ...active, status: "running", kind: null, reason: null, updatedAt: Date.now() });
+    return { code: 200, queue: await queueSync(p.id), resumed: true };
+  }
+  const q = { id: uid("queue"), projectId: p.id, taskIds: queueSeedOrder(p.id), status: "running",
+    currentTaskId: null, reason: null, kind: null, startedAt: Date.now(), updatedAt: Date.now(),
+    completedTaskIds: [], skippedTaskIds: [] };
+  saveQueue(q);
+  return { code: 200, queue: await queueSync(p.id) };
+}
+
+/** A successful /api/task/launch is the owner's decision: a queue paused on THAT task runs again
+ *  (it continues when the relaunched run completes); a skipped task is un-skipped. */
+function queueOnTaskLaunch(task) {
+  const q = activeQueue(task.projectId);
+  if (!q) return;
+  const patch = { skippedTaskIds: (q.skippedTaskIds || []).filter((id) => id !== task.id), updatedAt: Date.now() };
+  if (q.status === "paused" && q.currentTaskId === task.id)
+    Object.assign(patch, { status: "running", kind: null, reason: null });
+  saveQueue({ ...q, ...patch });
+}
+
+/** The deterministic "where are we" answer: counts per status, the running task, blocked tasks
+ *  with their blocker titles, the queue state when one is active. Zero model, store-only. */
+function taskStatusAnswer(projectId) {
+  const tops = (store.runtime.tasks || []).filter((x) => !x.parentId && (!projectId || x.projectId === projectId));
+  const lines = [];
+  if (!projectId) lines.push(tChat("chat.statusAll"));
+  if (!tops.length) { lines.push(tChat("chat.statusNone")); return lines.join("\n"); }
+  const count = (st) => tops.filter((x) => x.status === st).length;
+  lines.push(tChat("chat.statusCounts").replace("{todo}", String(count("todo")))
+    .replace("{running}", String(count("in-progress"))).replace("{blocked}", String(count("blocked"))).replace("{done}", String(count("done"))));
+  const running = tops.find((x) => taskRunningMission(x));
+  if (running) lines.push(tChat("chat.statusRunning").replace("{title}", running.title));
+  for (const x of tops.filter((x) => x.status === "blocked" || blockersOf(store.runtime, x).length).slice(0, 5))
+    lines.push(tChat("chat.statusBlocked").replace("{title}", x.title)
+      .replace("{blockers}", blockersOf(store.runtime, x).map((y) => y.title).join(", ") || x.result?.summary || x.review?.note || "—"));
+  const q = projectId ? activeQueue(projectId) : null;
+  if (q) lines.push(tChat("chat.statusQueue").replace("{status}", tChat(`queue.status.${q.status}`))
+    .replace("{done}", String(q.completedTaskIds.length)).replace("{total}", String(q.taskIds.length)));
+  return lines.join("\n");
 }
 
 /**
@@ -1645,6 +1866,7 @@ async function taskLaunch(res, b) {
   // task shows in-progress from this moment. A failed run flips it blocked via fail().
   store.addTask({ ...task, missionId: mission.id, status: "in-progress", updatedAt: Date.now() });
   store.saveRuntime();
+  queueOnTaskLaunch(task);   // a paused queue on THIS task counts the relaunch as the owner's decision
   return chatLaunch(res, { missionId: mission.id });
 }
 
@@ -1729,6 +1951,7 @@ async function chatLaunch(res, b) {  const m = (store.runtime.missions || []).fi
       if (cf) saveConversation(addMessage(cf, { role: "assistant", mode: "execute", at: Date.now(),
         text: tChat("chat.launchFailed").replace("{error}", msg.slice(0, 300)) }));
       store.saveRuntime();
+      if (decomposed?.taskLaunch) queueSyncSafe(spineTask?.projectId);   // a failed queue task pauses its queue
     };
     let results = [];
     let retried = false;
@@ -1986,6 +2209,10 @@ async function chatLaunch(res, b) {  const m = (store.runtime.missions || []).fi
       meta: { executionId: exec.id, efficiency: eff } }) : null;
     if (c2) saveConversation(c2);
     store.saveRuntime();
+    // RUN QUEUE (task-pm-13): the launched task reached its terminal state (done, review-blocked,
+    // or waiting on the owner) — the execution and mission are fully recorded, so the queue may
+    // advance or pause now (never mid-run: exactly one task runs at any moment).
+    if (decomposed?.taskLaunch) queueSyncSafe(spineTask?.projectId);
   };
   run().catch((e) => { try { store.addExecution({ ...exec, status: "failed", finishedAt: Date.now() }); store.saveRuntime(); } catch {} console.error(`async launch ${exec.id} crashed: ${e.message}`); });
 
@@ -2115,6 +2342,7 @@ function publicState() {
     connections: store.def.modelConnections, assignments: store.def.modelAssignments,
     agentViews: store.def.agents.map((a) => renderAgentView(a, store.def.modelAssignments, store.def.modelConnections)),
     tasks: store.runtime.tasks, plans: store.runtime.plans || [], executions: store.runtime.executions, approvals: store.runtime.approvals,
+    queues: store.runtime.queues || [],
     artifacts: store.runtime.artifacts || [],
     routines: store.runtime.routines || [],
     errorPatterns: errorPatterns(store.runtime.errors || [], { minCount: 1 }).slice(0, 5),

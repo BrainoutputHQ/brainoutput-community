@@ -215,6 +215,26 @@ const openBlockers=(s,tk)=>(tk.dependsOn||[]).map(id=>taskById(s,id)).filter(x=>
  *  A review-blocked or failed task IS launchable (a fresh attempt). Mirrors /api/task/launch. */
 const launchable=(s,tk)=>tk.status!=='done'&&!tk.pendingQuestion&&!openBlockers(s,tk).length
  &&!(tk.missionId&&(((s.missions||[]).find(m=>m.id===tk.missionId)||{}).status==='running'));
+/** RUNNING indicators (task-pm-13): a task is live when a RUNNING execution belongs to its
+ *  mission (running executions ↔ task.missionId — the data already flows via /api/state). */
+const runningMissionIds=(s)=>new Set((s.executions||[]).filter(e=>e.status==='running').map(e=>e.missionId));
+const taskRunning=(s,tk)=>!!(tk&&tk.missionId&&runningMissionIds(s).has(tk.missionId));
+/** The pulsing working-dot shown next to a live task's name (sidebar row, board card, run queue). */
+const workDot=(s,tk)=>taskRunning(s,tk)?'<span class="wdot" title="'+esc(t('run.running'))+'"></span>':'';
+/** A project is live when one of ITS executions runs, or any of its tasks has a running execution. */
+const projectRunning=(s,pid)=>(s.executions||[]).some(e=>e.status==='running'&&e.projectId===pid)
+ ||(s.tasks||[]).some(tk=>tk.projectId===pid&&taskRunning(s,tk));
+/** A project needs the user when a mission waits on approval, or a worker's question waits on an answer. */
+const projectAttn=(s,pid)=>(s.missions||[]).some(m=>m.projectId===pid&&(m.status==='awaiting-approval'||m.status==='draft'))
+ ||(s.tasks||[]).some(tk=>tk.projectId===pid&&tk.pendingQuestion);
+/** A sidebar project row: folder icon, name, live/attention dot, thread count. */
+function projectRow(s,p,n,on){
+ const dot=projectRunning(s,p.id)?'<span class="sdot run" title="'+esc(t('run.running'))+'"></span>'
+  :projectAttn(s,p.id)?'<span class="sdot attn" title="needs you"></span>':'';
+ const b=el('<button class="pitem'+(on?' on':'')+'">'+I('folder')+'<span class=lab>'+esc(p.name)+'</span>'+dot+'<span class=cnt>'+(n||'')+'</span></button>');
+ b.onclick=()=>{S.projectId=p.id;S.convId=null;S.view='chat';render()};
+ return b;
+}
 /** Blocked-by badge: shown exactly when the task has open blockers; the tooltip names them. */
 const blockedBadge=(s,tk)=>{
  const bl=openBlockers(s,tk);
@@ -260,7 +280,7 @@ function issueRow(tk){
   :tk.status==='done'?'<span class="sdot" style="background:var(--ok)"></span>'
   :'<span class="sdot" style="background:var(--mut);opacity:.5"></span>';
  const who=tk.assignee?esc(String(tk.assignee).split('-').pop()):'';
- const b=el('<button class="pitem">'+dot+prioDot(tk.priority)+'<span class=lab>'+esc(tk.title)+'</span>'+blockedBadge(S.state||{},tk)+(who?'<span class=cnt>'+who+'</span>':'')+'</button>');
+ const b=el('<button class="pitem">'+dot+prioDot(tk.priority)+'<span class=lab>'+esc(tk.title)+'</span>'+workDot(S.state||{},tk)+blockedBadge(S.state||{},tk)+(who?'<span class=cnt>'+who+'</span>':'')+'</button>');
  b.onclick=()=>{S.projectId=tk.projectId||null;S.openTask=tk.id;S.view='chat';render()};
  return b;
 }
@@ -302,7 +322,7 @@ function boardSubRow(sub){
  *  assignee, its subtasks, the move select. Draggable; the drag carries the task id. */
 function boardCard(s,tk,subs){
  const d=el('<div class=bcard draggable="true" data-id="'+esc(tk.id)+'">'
-  +'<div style="display:flex;gap:6px;align-items:flex-start">'+prioDot(tk.priority)+'<span class=btitle>'+esc(tk.title)+'</span></div>'
+  +'<div style="display:flex;gap:6px;align-items:flex-start">'+prioDot(tk.priority)+'<span class=btitle>'+esc(tk.title)+'</span>'+workDot(s,tk)+'</div>'
   +'<div style="margin-top:5px;display:flex;gap:2px;align-items:center;flex-wrap:wrap">'+blockedBadge(s,tk)+labelChips(tk)
   +(tk.assignee?'<span class=mut style="font-size:12px">'+esc(tk.assignee)+'</span>':'')+'</div></div>');
  d.ondragstart=(e)=>{e.dataTransfer.setData('text/plain',tk.id);e.dataTransfer.effectAllowed='move'};
@@ -419,18 +439,11 @@ function sidebar(){
  }
  qs.onchange=()=>{S.q=qs.value;render()};
  qs.oninput=()=>{S.q=qs.value;clearTimeout(S._q);S._q=setTimeout(render,250)};
- const runningPids=new Set((s.executions||[]).filter(e=>e.status==='running').map(e=>e.projectId).filter(Boolean));
-  // Attention = a mission in that project waits on the user (draft or post-run approval).
-  const attnPids=new Set((s.missions||[]).filter(m=>m.projectId&&(m.status==='awaiting-approval'||m.status==='draft')).map(m=>m.projectId));
-  // …or a worker's escalated question waits on the owner's answer.
-  (s.tasks||[]).filter(tk=>tk.pendingQuestion&&tk.projectId).forEach(tk=>attnPids.add(tk.projectId));
  const proj=document.getElementById('projects');proj.innerHTML='';
  (s.projects||[]).forEach(p=>{
   const n=convs.filter(c=>c.projectId===p.id).length;
-  const dot=runningPids.has(p.id)?'<span class="sdot run" title="running"></span>':attnPids.has(p.id)?'<span class="sdot attn" title="needs you"></span>':'';
-  const b=el('<button class="pitem'+(S.projectId===p.id?' on':'')+'">'+I('folder')+'<span class=lab>'+esc(p.name)+'</span>'+dot+'<span class=cnt>'+(n||'')+'</span></button>');
-  b.onclick=()=>{S.projectId=p.id;S.convId=null;S.view='chat';render()};
-  proj.appendChild(b)});
+  // The live dot: a running execution of the project OR of any of its tasks (task-pm-13).
+  proj.appendChild(projectRow(s,p,n,S.projectId===p.id))});
  if(!(s.projects||[]).length)proj.appendChild(el('<div class=mut style="font-size:13px;padding:4px 6px">'+esc(t('shell.emptyProjects'))+'</div>'));
  const ad=document.getElementById('adhoc');ad.innerHTML='';
  convs.filter(c=>!c.projectId).slice().reverse().slice(0,20).forEach(c=>{
@@ -605,6 +618,10 @@ function runCard(ex){
  const files=(ex.codeFiles||[]);
  const logs=(ex.logs||[]).slice(0,30);
  const outs=(ex.results||[]).map((r,i)=>({node:r.node||('output '+(i+1)),output:String(r.output||'')})).filter(r=>r.output.trim());
+ // The logs fold must STAY open while the run is live: the 3s poll re-renders the whole thread
+ // and used to destroy the native <details> state every time — the toggle looked dead on a
+ // running execution. The open state lives in S (session state) and is re-applied each render.
+ const logsOpen=!!((S.openLogs||{})[ex.id]);
  const d=el('<div class="cardx"><h3>'+esc(t('run.title'))+' · '+esc(ex.department||'')+' · <span class="'+(running?'warn':'ok')+'">'+(running?esc(t('run.running')):esc(ex.status||''))+'</span></h3>'
   +'<div class=mut style="font-size:13px">'+rows+'</div>'
    +'<div class=mut style="font-size:13px;margin-top:4px">'+(eff.tokensTotal!=null?esc(eff.tokensTotal)+' '+esc(t('run.tokens')):'')
@@ -613,8 +630,10 @@ function runCard(ex){
   +(artifacts.length?'<div style="margin-top:10px"><b style="font-size:13px">'+esc(t('run.artifacts'))+'</b><div class=mut style="font-size:13px">'+artifacts.map(esc).join('<br>')+'</div></div>':'')
   +(((S.state||{}).artifacts||[]).filter(a=>a.executionId===ex.id).map(a=>'<a href="/api/artifact/download?id='+esc(a.id)+'" target="_blank" title="'+esc(t('run.download'))+'" style="display:inline-flex;align-items:center;gap:6px;margin:8px 8px 0 0;padding:7px 12px;border:1px solid var(--acc);border-radius:10px;font-size:13px;text-decoration:none;color:var(--acc)"><span style="font-size:16px">📄</span><b>'+esc(a.name)+'</b><span class=mut>'+Math.round(a.size/1024)+' KB</span></a>').join(''))
   +(files.length?'<div style="margin-top:10px"><b style="font-size:13px">'+esc(t('run.files'))+'</b>'+files.map(f=>'<details style="margin-top:4px"><summary style="font-size:13px">'+esc(f.name)+'</summary><pre style="background:#0b0d11;border:1px solid var(--line);border-radius:8px;padding:10px;font-size:12px;overflow:auto;white-space:pre-wrap">'+esc(f.content)+'</pre></details>').join('')+'</div>':'')
-  +(logs.length?'<details style="margin-top:10px"><summary style="font-size:13px">'+esc(t('run.logs'))+'</summary><pre style="background:#0b0d11;border:1px solid var(--line);border-radius:8px;padding:10px;font-size:12px;overflow:auto;white-space:pre-wrap">'+logs.map(esc).join('\\n')+'</pre></details>':'')
+  +(logs.length||running?'<details'+(logsOpen?' open':'')+' style="margin-top:10px" id=runlogs><summary style="font-size:13px">'+esc(t('run.logs'))+'</summary><pre style="background:#0b0d11;border:1px solid var(--line);border-radius:8px;padding:10px;font-size:12px;overflow:auto;white-space:pre-wrap">'+(logs.map(esc).join('\\n')||'…')+'</pre></details>':'')
   +'</div>');
+ const runlogs=d.querySelector('#runlogs');
+ if(runlogs)runlogs.ontoggle=()=>{(S.openLogs||(S.openLogs={}))[ex.id]=!!runlogs.open};
  outs.forEach((r,i)=>{
   const html=extractHtml(r.output);
   const det=el('<details'+(html?' open':'')+' style="margin-top:10px"><summary style="font-size:13px">'+esc(r.node)+(html?' · html':'')+'</summary>'
@@ -844,7 +863,43 @@ function projectDecisions(s,proj){
   +'<span class="pill dormant" style="font-size:10px">'+esc(t('plan.status.'+plan.status))+'</span>'
   +'<div class=mut style="font-size:13px;white-space:pre-wrap;margin-top:2px">'+esc(plan.decisions)+'</div></div>');
 }
-/** The header itself: state row + objective + (when present) the binding decisions. */
+/** The RUN QUEUE card (task-pm-13): done/total progress, the current task, the state, the
+ *  controls (pause/resume/stop — start again on stopped/done), and the blocked reason when the
+ *  queue is paused on a problem. Rendered only when the project HAS a queue; every dynamic value
+ *  is esc()'d. */
+function queueCard(s,proj){
+ const q=[...(s.queues||[])].reverse().find(x=>x.projectId===proj.id)||null;
+ if(!q)return null;
+ const total=(q.taskIds||[]).length;
+ const done=(q.completedTaskIds||[]).length;
+ const cur=q.currentTaskId?(s.tasks||[]).find(x=>x.id===q.currentTaskId)||null:null;
+ const d=el('<div id=queuecard style="margin-top:8px;padding:9px 12px;border:1px solid var(--line);border-radius:10px;font-size:12.5px">'
+  +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b>'+esc(t('queue.title'))+'</b>'
+  +'<span class="pill '+(q.status==='running'?'ok':'dormant')+'">'+esc(t('queue.status.'+q.status))+'</span>'
+  +'<span class=mut>'+done+'/'+total+' '+esc(t('project.done'))+'</span>'
+  +(cur?'<span class=mut>'+esc(t('queue.now'))+':</span><span>'+esc(cur.title)+'</span>'+workDot(s,cur):'')
+  +'</div>'
+  +(q.status==='paused'&&q.kind?'<div class=warn style="margin-top:5px">'+esc(t('queue.kind.'+q.kind)||q.kind)+(cur?': '+esc(cur.title):'')+'</div>':'')
+  +'<div style="margin-top:7px;display:flex;gap:6px" id=qctrl></div></div>');
+ const ctrl=d.querySelector('#qctrl');
+ const post=async(path,body)=>{const r=await api(path,body);if(r.error){alert(r.error);return}S.state=r;render()};
+ if(q.status==='running'){
+  const b=el('<button class=ghost style="padding:3px 10px;font-size:12px">'+esc(t('queue.pause'))+'</button>');
+  b.onclick=()=>post('/api/queue/pause',{projectId:proj.id});ctrl.appendChild(b);
+ }else if(q.status==='paused'){
+  const b=el('<button class=act style="padding:3px 10px;font-size:12px">'+esc(t('queue.resume'))+'</button>');
+  b.onclick=()=>post('/api/queue/start',{projectId:proj.id});ctrl.appendChild(b);
+ }else{
+  const b=el('<button class=act style="padding:3px 10px;font-size:12px">'+esc(t('queue.start'))+'</button>');
+  b.onclick=()=>post('/api/queue/start',{projectId:proj.id});ctrl.appendChild(b);
+ }
+ if(q.status==='running'||q.status==='paused'){
+  const b=el('<button class=ghost style="padding:3px 10px;font-size:12px">'+esc(t('queue.stop'))+'</button>');
+  b.onclick=()=>post('/api/queue/stop',{projectId:proj.id});ctrl.appendChild(b);
+ }
+ return d;
+}
+/** The header itself: state row + objective + (when present) the binding decisions + the queue card. */
 function projectHeader(s,proj){
  const h=el('<div id=phead style="margin:2px 0 10px"></div>');
  const stateRow=el('<div style="display:flex;align-items:center;gap:8px;font-size:12.5px"><span class=mut>'+esc(t('project.state'))+'</span></div>');
@@ -853,6 +908,8 @@ function projectHeader(s,proj){
  h.appendChild(projectObjective(proj));
  const dec=projectDecisions(s,proj);
  if(dec)h.appendChild(dec);
+ const qc=queueCard(s,proj);
+ if(qc)h.appendChild(qc);
  return h;
 }
 
