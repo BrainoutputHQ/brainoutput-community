@@ -202,6 +202,25 @@ test("prompt contract: objective + every criterion verbatim + demand-evidence + 
   assert.ok(p.includes('"overall"'), "the overall verdict field");
   const noTests = reviewTaskPrompt({ objective: "O", acceptanceCriteria: ["c"], resultSummary: "s" });
   assert.ok(!noTests.includes("TEST EVIDENCE"), "no test-evidence section when absent");
+  assert.ok(!noTests.includes("CODE DIFF"), "no diff section when absent");
+});
+
+test("prompt contract: the DIFF is primary evidence and the worker's summary is only a claim", async () => {
+  const { reviewTaskPrompt } = await import("./review-tasks.mjs");
+  const p = reviewTaskPrompt({ objective: "O", acceptanceCriteria: [AC1],
+    resultSummary: "I did everything perfectly", artifacts: [],
+    diff: "--- NEW FILE: src/a.js ---\nexport const DIFF_MARKER = 1;", testEvidence: "exit code: 0 (PASSED)" });
+  assert.ok(p.includes("DIFF_MARKER"), "the real diff reaches the reviewer");
+  assert.ok(p.includes("CODE DIFF"), "labelled as the code diff");
+  assert.ok(/primary evidence/i.test(p), "the diff is named primary evidence");
+  assert.ok(/unverified claim/i.test(p), "the summary is labelled an unverified claim");
+  assert.ok(/is NOT evidence/i.test(p), "prose is explicitly not evidence");
+  assert.ok(/empty diff means no work was done/i.test(p), "an empty diff fails every criterion");
+  assert.ok(/TRUNCATED or INCOMPLETE/i.test(p), "partial evidence must fail, not be assumed");
+  assert.ok(p.includes("exit code: 0 (PASSED)"), "the real test exit code reaches the reviewer");
+  // The pre-existing rigour clauses must survive the rewrite.
+  assert.ok(p.includes("rigorous reviewer for THIS task") && /DEMAND EVIDENCE/.test(p));
+  assert.ok(/Never rubber-stamp/.test(p) && /absence of evidence is a fail/.test(p));
 });
 
 test("parser: fail-closed on missing/unknown verdict, tampered or missing criterion, contradiction", async () => {

@@ -50,6 +50,7 @@ import { newProject, listProjects, promoteConversation, projectBrief, projectUpd
 import { approvedWorkspaceRoots, removeConfined } from "./workspace-registry.mjs";
 import { newTask, newSubtask, setTaskStatus, reportMissionToTask, assertTaskDeps, askTaskQuestion, answerTaskQuestion, reviewTask, blockersOf, projectTasks } from "./tasks.mjs";
 import { reviewTaskPrompt, parseTaskReview } from "./review-tasks.mjs";
+import { collectWorkEvidence, testEvidenceText } from "./work-evidence.mjs";
 import { newPlan, updateDraft, validatePlan, rejectPlan, markMaterialized, planById, latestProjectPlan } from "./plans.mjs";
 import { pickFreeModel, freeConnection, FREE_PRIVACY_NOTE } from "./free-models.mjs";
 import { t as i18nT } from "./i18n.mjs";
@@ -1643,6 +1644,9 @@ async function runWorkerStage({ node, wprompt, codeWs, index, maxTokens = 1500, 
       const files = (oc.changedFiles || []).map((f) => { try { return { name: f, content: readFileSync(join(codeWs, f), "utf8").slice(0, 4000) }; } catch { return { name: f, content: "" }; } });
       return { node: `worker-${index}`, executor: "opencode", model: oc.model, provider: oc.provider, costSource: oc.costSource, funder: oc.funder,
         tokens: oc.tokens, tokenScope: oc.tokenScope, changedFiles: oc.changedFiles, files,
+        // Carried so the review path can block DETERMINISTICALLY on a run that exited 0 having
+        // done nothing — never spending a reviewer call to rubber-stamp an empty workspace.
+        noWork: oc.noWork, noWorkReason: oc.noWorkReason,
         artifact: oc.changedFiles?.length ? `opencode:${oc.changedFiles.join(",")}` : null,
         output: oc.changedFiles?.length ? `wrote ${oc.changedFiles.join(", ")}` : "(no files produced for this task)" };
     } catch (e) {
@@ -1724,7 +1728,7 @@ function reviewerModelFor(agentId) {
 /** Report one finished spine task's worker result into its record — reviewing first when the
  *  task carries acceptance criteria. Tasks WITHOUT criteria report exactly as before
  *  (byte-compat). Persists the task and returns the persisted record. */
-async function reportOrReviewSpineTask({ task, out, missionId, agentId }) {
+async function reportOrReviewSpineTask({ task, out, missionId, agentId, codeWs = null }) {
   const cur = (store.runtime.tasks || []).find((t) => t.id === task.id) || task;
   const criteria = Array.isArray(cur.acceptanceCriteria) ? cur.acceptanceCriteria : [];
   if (out.error || !criteria.length) {
@@ -1740,6 +1744,18 @@ async function reportOrReviewSpineTask({ task, out, missionId, agentId }) {
     store.addTask(t);
     return t;
   };
+  // DETERMINISTIC EVIDENCE, zero tokens. A coding run carries file evidence; a chat-delivered task
+  // legitimately has none, so the guard only judges runs that were supposed to write code.
+  const evidence = out.executor === "opencode" && codeWs
+    ? collectWorkEvidence({ workspace: codeWs, exitCode: out.exitCode ?? 0,
+        changedFiles: out.changedFiles || [], log: out.log || "" })
+    : null;
+  // A run that exited 0 having done nothing NEVER reaches the reviewer: there is nothing to judge,
+  // and the worker's success claim would otherwise be the only thing the reviewer could see.
+  const noWorkReason = out.noWork ? out.noWorkReason : (evidence?.guard?.noWork ? evidence.guard.reason : null);
+  if (noWorkReason) {
+    return reviewed({ ok: false, note: `no verifiable work: ${noWorkReason}`, criteria: [], by: "deterministic" });
+  }
   if (!rm) {
     return reviewed({ ok: true,
       note: "deterministic checks only — no reviewer model configured", criteria: [], by: "deterministic" });
@@ -1749,7 +1765,9 @@ async function reportOrReviewSpineTask({ task, out, missionId, agentId }) {
     const rr = await runStageNode({ node: "reviewer", slot: rm.slot || "reviewer" }, rm,
       { prompt: reviewTaskPrompt({ objective: cur.objective || cur.title, acceptanceCriteria: criteria,
           resultSummary: String(out.output || "").slice(0, 2000), artifacts: out.artifact ? [out.artifact] : [],
-          testEvidence: null }) },
+          // The real change and the real test exit code — the reviewer judges these, not the prose.
+          diff: evidence?.diff?.available ? evidence.diff.text : null,
+          testEvidence: testEvidenceText(evidence?.tests) }) },
       { maxTokens: 600, timeoutMs: 60000, localCall: localNodeModelCall });
     parsed = parseTaskReview(rr?.output, { acceptanceCriteria: criteria });
   } catch (e) { reviewerError = e; }               // a failed call → no review → blocked, honestly
@@ -1803,7 +1821,8 @@ async function resumeTaskWorker(exec, taskId) {
     if (res.blocked) { queueSyncSafe(task.projectId); return; }   // asked again — the card waits on the owner once more
     const out = res.out;
     // The resumed worker's report goes through the same per-task review as the launch loop.
-    await reportOrReviewSpineTask({ task, out, missionId: exec.missionId, agentId: task.assignee });
+    await reportOrReviewSpineTask({ task, out, missionId: exec.missionId, agentId: task.assignee,
+      codeWs: join(store.dir, "workspaces", exec.id) });
     queueSyncSafe(task.projectId);   // a queue paused on this question continues on the completion
     exec.results.push(out);
     exec.logs.push(execLogLine(out));
@@ -2410,7 +2429,7 @@ async function chatLaunch(res, b) {  const m = (store.runtime.missions || []).fi
           updateExec({});
           // PER-TASK REVIEW (task-pm-06): a task with acceptance criteria is judged against
           // them before it may flip done; a review-blocked task never stops the others.
-          const fin = await reportOrReviewSpineTask({ task: st, out, missionId: m.id, agentId: r.agent });
+          const fin = await reportOrReviewSpineTask({ task: st, out, missionId: m.id, agentId: r.agent, codeWs });
           if (fin.status === "blocked" && fin.review) {
             exec.logs.push(`worker-${i + 1}: review blocked the task — ${String(fin.review.note || "").slice(0, 120)}`);
             updateExec({});

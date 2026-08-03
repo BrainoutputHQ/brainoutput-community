@@ -9,6 +9,7 @@ import { execFileSync } from "node:child_process";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { approvedWorkspaceRoots, resolveApprovedWorkspace } from "./workspace-registry.mjs";
+import { detectNoWork } from "./work-evidence.mjs";
 
 const HOME = process.env.HOME || homedir();
 
@@ -83,9 +84,10 @@ export function connectionToConfig(connection) {
   };
 }
 
-// Run a real OpenCode task. Returns structured result with logs, changed files, model, provider,
-// cost source, tokens. NEVER touches BrainOutput's own hosted paid models (isolated env + disabled providers).
-export function runOpenCode({ connection, prompt, workspace, effort, isoBase, timeoutMs = 240000, approvedRoots }) {
+// Prepare the isolated HOME/XDG + confined workspace an OpenCode process needs. Shared by the
+// one-shot runner and the persistent server so both get IDENTICAL isolation guarantees.
+// Returns the canonicalized workspace path and the isolated-home path.
+export function prepareOpenCodeWorkspace({ connection, workspace, isoBase, approvedRoots }) {
   const { modelRef, config } = connectionToConfig(connection);
   // Approved-workspace registry (prod-readiness gap: repo registry): confine ALL file ops to an
   // approved root and refuse fail-closed if the requested path escapes it (traversal / absolute host
@@ -114,14 +116,79 @@ export function runOpenCode({ connection, prompt, workspace, effort, isoBase, ti
   if (!existsSync(join(ws, ".git"))) { try { execFileSync("git", ["-C", ws, "init", "-q"]); } catch {} }
   try { execFileSync("git", ["-C", ws, "add", "-A"]); execFileSync("git", ["-C", ws, "-c", "user.email=ce@local", "-c", "user.name=ce", "commit", "-qm", "pre", "--allow-empty"]); } catch {}
 
+  // Host-owned credentials (prod-readiness gap): minimal whitelisted env; only the user's own model
+  // key is granted, guarded fail-closed against any hosted/founder credential leaking in.
+  return { ws, iso, modelRef, env: buildExecutorEnv(connection, iso) };
+}
+
+// Start a PERSISTENT OpenCode server for a workspace. One server serves many task runs, so each run
+// skips process boot + provider init + repo re-discovery (the cold-start tax). Same isolation as the
+// one-shot path: identical iso HOME, identical confined workspace, identical credential guard.
+// Returns { url, close() }. Callers MUST close() it.
+export function startOpenCodeServer({ connection, workspace, isoBase, approvedRoots, bootTimeoutMs = 60000 }) {
+  const { ws, iso, env } = prepareOpenCodeWorkspace({ connection, workspace, isoBase, approvedRoots });
+  const args = ["serve", "--pure", "--port", "0", "--hostname", "127.0.0.1", "--print-logs", "--log-level", "INFO"];
+  return new Promise((resolve, reject) => {
+    // stdin closed for the same reason as `run` — an open stdin pipe makes opencode wait at init.
+    const p = spawn(OPENCODE_BIN, args, { cwd: ws, env, stdio: ["ignore", "pipe", "pipe"] });
+    let boot = "", settled = false;
+    const close = () => { try { p.kill("SIGTERM"); } catch {} };
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true; close();
+      reject(new Error(`opencode serve did not report a listening URL in ${bootTimeoutMs}ms: ${boot.slice(-500)}`));
+    }, bootTimeoutMs);
+    const scan = (chunk) => {
+      if (settled) return;
+      boot += chunk;
+      // opencode prints the bound address on startup; accept either a full URL or host:port.
+      const m = boot.match(/https?:\/\/127\.0\.0\.1:(\d+)/) || boot.match(/127\.0\.0\.1:(\d+)/);
+      if (!m) return;
+      settled = true; clearTimeout(timer);
+      resolve({ url: `http://127.0.0.1:${m[1]}`, port: Number(m[1]), ws, iso, env, close, proc: p });
+    };
+    p.stdout.setEncoding("utf8"); p.stdout.on("data", scan);
+    p.stderr.setEncoding("utf8"); p.stderr.on("data", scan);
+    p.on("error", (e) => { if (!settled) { settled = true; clearTimeout(timer); reject(e); } });
+    p.on("close", () => {
+      if (!settled) { settled = true; clearTimeout(timer); reject(new Error(`opencode serve exited during boot: ${boot.slice(-500)}`)); }
+    });
+  });
+}
+
+// Read REAL per-session token accounting out of opencode's own store (`opencode export <id>`).
+// The log line only carries tokens.output; the cold-start cost lives in input + cache.read, so
+// measuring from the export is the only honest way to compare warm vs cold.
+export function readSessionTokens({ sessionId, env }) {
+  if (!sessionId) return null;
+  try {
+    const raw = execFileSync(OPENCODE_BIN, ["export", sessionId], { env, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+    const t = JSON.parse(raw)?.info?.tokens;
+    if (!t) return null;
+    const input = Number(t.input || 0), output = Number(t.output || 0);
+    const cacheRead = Number(t.cache?.read || 0), cacheWrite = Number(t.cache?.write || 0);
+    return { input, output, reasoning: Number(t.reasoning || 0), cacheRead, cacheWrite,
+             contextTotal: input + cacheRead + cacheWrite };
+  } catch { return null; }
+}
+
+// Run a real OpenCode task. Returns structured result with logs, changed files, model, provider,
+// cost source, tokens. NEVER touches BrainOutput's own hosted paid models (isolated env + disabled providers).
+// Warm-session options (the cold-start fix): pass `attach` (a startOpenCodeServer url) to reuse a
+// running server, and `session` + `fork` to inherit an already-warm context instead of rebuilding it.
+export function runOpenCode({ connection, prompt, workspace, effort, isoBase, timeoutMs = 240000, approvedRoots,
+                             attach = null, session = null, fork = false }) {
+  const { ws, iso, modelRef, env } = prepareOpenCodeWorkspace({ connection, workspace, isoBase, approvedRoots });
+
   // --pure skips external plugins, which avoids opencode's slow background `bun install` at startup
   // (that ~60s step is what looked like an "init hang"). Provider config still loads.
   const args = ["run", "--pure", "--model", modelRef, "--print-logs", "--log-level", "INFO"];
   if (effort) args.push("--variant", effort);
+  // Attach to a persistent server instead of booting a private one. --dir is the path ON that server.
+  if (attach) args.push("--attach", attach, "--dir", ws);
+  // Continue a specific session; --fork branches it so the parent stays clean and reusable.
+  if (session) { args.push("--session", session); if (fork) args.push("--fork"); }
   args.push(prompt);
-  // Host-owned credentials (prod-readiness gap): minimal whitelisted env; only the user's own model
-  // key is granted, guarded fail-closed against any hosted/founder credential leaking in.
-  const env = buildExecutorEnv(connection, iso);
 
   return new Promise((resolve) => {
     let out = "", err = "";
@@ -141,10 +208,18 @@ export function runOpenCode({ connection, prompt, workspace, effort, isoBase, ti
       const providersUsed = [...new Set((log.match(/llm\.provider=([a-z0-9-]+)/gi) || []).map((s) => s.split("=")[1]))];
       const tokens = (log.match(/tokens\.output=(\d+)/g) || []).reduce((s, m) => s + Number(m.split("=")[1]), 0);
       const founderLeak = /api\.anthropic\.com|api\.kimi\.com|kimi-for-coding/i.test(log);
+      // The session this run used (or forked into) — the handle a follow-up task forks from.
+      const sessionId = (log.match(/ses_[A-Za-z0-9]+/) || [null])[0];
+      // Exit 0 is NOT evidence of work. A headless run auto-REJECTS any permission that resolves
+      // to "ask" and still exits 0; a stale $PWD points the agent at the wrong project entirely.
+      // Both produce a confident "done" with an empty workspace — caught here, never reported ok.
+      const { noWork, reason } = detectNoWork({ exitCode: code, changedFiles, log });
       resolve({
-        ok: code === 0 && !founderLeak, exitCode: code, model: connection.model, provider: connection.provider,
+        ok: code === 0 && !founderLeak && !noWork, exitCode: code, model: connection.model, provider: connection.provider,
         costSource: connection.costSource, funder: connection.funder, tokens, providersUsed, changedFiles,
         founderCredentialUsed: founderLeak, log: log.slice(-4000),
+        sessionId, tokensDetail: readSessionTokens({ sessionId, env }),
+        noWork, noWorkReason: reason,
       });
     });
   });
