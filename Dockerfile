@@ -2,6 +2,21 @@
 # Runs as a non-root user; the store lives on a volume so an instance is disposable and its data is not.
 FROM node:22-alpine
 RUN addgroup -S bo && adduser -S -G bo bo
+# The OpenCode coding runtime, bundled (founder decision: "bundle runtime in image") so coding
+# tasks get iterative workers out of the box. PINNED to an exact version via ARG — never
+# "latest": a rebuild reproduces the same runtime. node:22-alpine is musl; opencode-ai's
+# postinstall selects the musl build (opencode-linux-{x64,arm64}-musl) and verifies it executes,
+# and the explicit `--version` checks below make the BUILD FAIL LOUDLY if the runtime cannot run
+# on this base — as root AND as the bo user it will run as.
+ARG OPENCODE_VERSION=1.18.11
+# git is part of the runtime contract, not an extra daemon: the adapter's work evidence
+# (changed-files / no-work guard) is computed from git, and opencode snapshots through git.
+RUN apk add --no-cache git \
+ && npm install -g "opencode-ai@${OPENCODE_VERSION}" \
+ && opencode --version \
+ && su -s /bin/sh - bo -c "opencode --version"
+# The adapter's first search path (BO_OPENCODE_BIN, then ~/.opencode/bin/opencode).
+ENV BO_OPENCODE_BIN=/usr/local/bin/opencode
 WORKDIR /app
 COPY --chown=bo:bo . /app
 RUN rm -rf /app/.git /app/node_modules /app/*.test.mjs

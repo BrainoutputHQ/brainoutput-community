@@ -1053,6 +1053,17 @@ function projectView(proj){
   return d;
 }
 
+// ── coding runtime status (task-pm-18) ───────────────────────────────────────
+/** Read-only settings line for the OpenCode coding runtime: present → name + version; absent →
+ *  an honest note + how to get one. 'rt' is /api/state's codingRuntime (probed once per server
+ *  process). Everything is esc()'d — a hostile binary's version string can never inject markup. */
+function runtimeStatusLine(rt){
+ const r=rt||{};
+ return r.available
+  ?'<span class=ok>✓ '+esc(t('models.runtime.present').replace('{version}',r.version||''))+'</span>'
+  :'<span class=mut>'+esc(t('models.runtime.absent'))+' '+esc(t('models.runtime.installHint'))+'</span>';
+}
+
 // ── settings: company, models, connections — everything standard needs in one place ──────
 function settingsView(){
  const s=S.state||{};
@@ -1127,6 +1138,7 @@ function settingsView(){
  wrap.appendChild(LG.el);
  const MF=fold(t('models.assignments'),conns.length+' '+t('models.connections').toLowerCase());
  const MB=MF.body;
+ MB.appendChild(el('<div style="margin-top:10px;font-size:12.5px">'+runtimeStatusLine(s.codingRuntime)+'</div>'));
  const a=el('<div style="margin-top:10px"><div class=mut style="font-size:12.5px;margin-bottom:8px">'+esc(t('models.hint'))+'</div></div>');
  slots.forEach(sl=>{
   const cur=(s.assignments||{})[sl];

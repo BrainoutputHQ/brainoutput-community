@@ -9,8 +9,10 @@
 import http from "node:http";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { request as httpReq } from "node:http";
+import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { Store } from "./store.mjs";
 import { routeTask, makeCatalog, costReport, executionSummary, validateCompanyConfig, PRIVACY_POSTURES, planGraph } from "./ce-core.mjs";
@@ -2688,6 +2690,23 @@ function startScheduler() {
   routineTimer.unref();
 }
 
+// ── Coding runtime status (task-pm-18) ───────────────────────────────────────
+// The Docker image bundles a pinned OpenCode; a non-container install may or may not have one.
+// Probed ONCE per process (module load, BEFORE the server listens) so /api/state never blocks on
+// a subprocess. Honest both ways: a binary that exists but cannot answer `opencode --version`
+// reports ABSENT — it would not run a real task either. The path search order mirrors the
+// adapter exactly (BO_OPENCODE_BIN, then ~/.opencode/bin/opencode).
+const CODING_RUNTIME_BIN = process.env.BO_OPENCODE_BIN || join(process.env.HOME || homedir(), ".opencode", "bin", "opencode");
+function probeCodingRuntime() {
+  if (!opencodeAvailable()) return { available: false, version: null };
+  try {
+    const out = execFileSync(CODING_RUNTIME_BIN, ["--version"], { encoding: "utf8", timeout: 8000, stdio: ["ignore", "pipe", "ignore"] });
+    const m = String(out).match(/\d+\.\d+\.\d+/);
+    return { available: true, version: m ? m[0] : (String(out).trim().split("\n")[0].slice(0, 40) || null) };
+  } catch { return { available: false, version: null }; }
+}
+const CODING_RUNTIME = probeCodingRuntime();
+
 function publicState() {
   const funded = store.runtime.executions.reduce((s, e) => s + (e.brainoutputFundedTokens || 0), 0);
   return { recovered: store.recovered || null, company: store.def.company, settings: store.def.settings || { mode: "regular" }, departments: store.def.departments, agents: store.def.agents,
@@ -2710,6 +2729,8 @@ function publicState() {
     localNodes: localNodes.listPublic(),
     google: googleStatus(),
     lodgify: lodgifyStatus(),
+    // Coding runtime status for the settings/models card — cached at boot, never probed per request.
+    codingRuntime: CODING_RUNTIME,
     brainoutputFundedTokens: funded };
 }
 
