@@ -181,7 +181,10 @@ test("unparseable review → blocked with the parse-failure note — never a sil
   });
   assert.equal(t1.review.ok, false);
   assert.equal(t1.review.by, "reviewer");
-  assert.equal(t1.review.note, "review could not be parsed");
+  // task-pm-20: the parse-failure note now carries a bounded, labeled slice of the raw
+  // reviewer output so the block is diagnosable (was the bare "review could not be parsed").
+  assert.match(t1.review.note, /^review could not be parsed — raw: /);
+  assert.ok(t1.review.note.includes("Looks good to me, ship it"), "the raw reviewer output is on the record");
   assert.deepEqual(t1.review.criteria, []);
   assert.equal(t1.status, "blocked", "an unparseable review can never flip a task done");
 });

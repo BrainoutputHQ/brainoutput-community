@@ -687,9 +687,9 @@ function runCard(ex){
 }
 
 // ── task detail (task-pm-09): the issue page — objective, AC checklist, directives, activity ──
-/** Whitespace-tolerant, content-strict criterion identity — the SAME match-back semantics as
+/** Form-normalized, content-strict criterion identity — the SAME match-back semantics as
  *  parseTaskReview (review-tasks.mjs): the page is standalone, so the norm is mirrored here. */
-const critNorm=(s)=>String(s==null?'':s).replace(/\\s+/g,' ').trim();
+const critNorm=(s)=>String(s==null?'':s).toLowerCase().replace(/\\s+/g,' ').trim().replace(/^\\d{1,2}[.)]\\s+/,'').replace(/^[\\s"'“”‘’\`«»]+/,'').replace(/[\\s"'“”‘’\`«».,;:!?…]+$/,'');
 /** The objective — shown only when it adds information over the title. */
 const objectiveBlock=(tk)=>tk.objective&&tk.objective!==tk.title
  ?'<div style="margin-top:8px"><b style="font-size:13px">'+esc(t('task.objective'))+'</b><div style="font-size:13.5px;white-space:pre-wrap;margin-top:2px">'+esc(tk.objective)+'</div></div>':'';

@@ -52,7 +52,7 @@ import { newProject, listProjects, promoteConversation, projectBrief, projectUpd
   archiveProject, unarchiveProject, planProjectDeletion } from "./projects.mjs";
 import { approvedWorkspaceRoots, removeConfined } from "./workspace-registry.mjs";
 import { newTask, newSubtask, setTaskStatus, reportMissionToTask, assertTaskDeps, askTaskQuestion, answerTaskQuestion, reviewTask, blockersOf, projectTasks } from "./tasks.mjs";
-import { reviewTaskPrompt, parseTaskReview } from "./review-tasks.mjs";
+import { reviewTaskPrompt, parseTaskReview, REVIEW_STRICT_REMINDER, reviewRawSlice } from "./review-tasks.mjs";
 import { collectWorkEvidence, testEvidenceText } from "./work-evidence.mjs";
 import { newPlan, updateDraft, validatePlan, rejectPlan, markMaterialized, planById, latestProjectPlan } from "./plans.mjs";
 import { pickFreeModel, freeConnection, FREE_PRIVACY_NOTE } from "./free-models.mjs";
@@ -1865,16 +1865,28 @@ async function reportOrReviewSpineTask({ task, out, missionId, agentId, codeWs =
     return reviewed({ ok: true,
       note: "deterministic checks only — no reviewer model configured", criteria: [], by: "deterministic" });
   }
-  let parsed = null, reviewerError = null;
+  let parsed = null, reviewerError = null, rawOut = "";
+  const diag = {};
+  const reviewPrompt = reviewTaskPrompt({ objective: cur.objective || cur.title, acceptanceCriteria: criteria,
+    resultSummary: String(out.output || "").slice(0, 2000), artifacts: out.artifact ? [out.artifact] : [],
+    // The real change and the real test exit code — the reviewer judges these, not the prose.
+    diff: evidence?.diff?.available ? evidence.diff.text : null,
+    testEvidence: testEvidenceText(evidence?.tests) });
+  // maxTokens 900: reasoning-model headroom — a truncated review is an unparseable review.
+  const callReviewer = (strict) => runStageNode({ node: "reviewer", slot: rm.slot || "reviewer" }, rm,
+    { prompt: strict ? `${reviewPrompt}\n\n${REVIEW_STRICT_REMINDER}` : reviewPrompt },
+    { maxTokens: 900, timeoutMs: 60000, localCall: localNodeModelCall });
   try {
-    const rr = await runStageNode({ node: "reviewer", slot: rm.slot || "reviewer" }, rm,
-      { prompt: reviewTaskPrompt({ objective: cur.objective || cur.title, acceptanceCriteria: criteria,
-          resultSummary: String(out.output || "").slice(0, 2000), artifacts: out.artifact ? [out.artifact] : [],
-          // The real change and the real test exit code — the reviewer judges these, not the prose.
-          diff: evidence?.diff?.available ? evidence.diff.text : null,
-          testEvidence: testEvidenceText(evidence?.tests) }) },
-      { maxTokens: 600, timeoutMs: 60000, localCall: localNodeModelCall });
-    parsed = parseTaskReview(rr?.output, { acceptanceCriteria: criteria });
+    const rr = await callReviewer(false);
+    rawOut = String(rr?.output ?? "");
+    parsed = parseTaskReview(rawOut, { acceptanceCriteria: criteria, diag });
+    if (!parsed) {
+      // ONE bounded retry with a stricter form contract (task-pm-20) — ONLY on parse failure:
+      // a judged FAIL stands, a reviewer-stage failure takes the unavailable path instead.
+      const rr2 = await callReviewer(true);
+      rawOut = String(rr2?.output ?? "");
+      parsed = parseTaskReview(rawOut, { acceptanceCriteria: criteria, diag });
+    }
   } catch (e) { reviewerError = e; }               // a failed call → no review → blocked, honestly
   if (reviewerError) {
     // The reviewer stage itself went down (transient retries exhausted, or a permanent 4xx):
@@ -1885,7 +1897,11 @@ async function reportOrReviewSpineTask({ task, out, missionId, agentId, codeWs =
       criteria: [], by: "reviewer-unavailable" });
   }
   if (!parsed) {
-    return reviewed({ ok: false, note: "review could not be parsed", criteria: [], by: "reviewer" });
+    // Observability (task-pm-20): the note names the failure kind AND carries a bounded slice
+    // of the raw reviewer output — localizable label, the slice verbatim (never translated),
+    // rendered esc()'d in the task detail.
+    const key = diag.reason === "contradiction" ? "review.note.contradictory" : "review.note.parseFailed";
+    return reviewed({ ok: false, note: tChat(key).replace("{raw}", reviewRawSlice(rawOut)), criteria: [], by: "reviewer" });
   }
   const failed = parsed.criteria.filter((c) => c.verdict === "fail").map((c) => c.criterion);
   return reviewed({ ok: parsed.overall === "pass",
