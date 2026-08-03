@@ -9,6 +9,7 @@
 import http from "node:http";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { request as httpReq } from "node:http";
+import { Readable, pipeline } from "node:stream";
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
@@ -80,6 +81,21 @@ if (!HOST_IS_LOOPBACK && !ACCESS_TOKEN) {
   process.exit(2);
 }
 const store = new Store();
+// ── Loopback model gateway (task-pm-19) ──────────────────────────────────────────────────────────
+// Anonymous free providers (OpenCode Zen) REJECT a bogus apiKey, but opencode always sends one when
+// the config has a literal — so a sandboxed opencode run against an anonymous free connection must
+// go through THIS loopback gateway, which applies the connection's real auth rules (free-anonymous
+// → NO Authorization header; BYOK → the user's key resolved at execution time; local → none).
+// The per-process token authenticates the spawned opencode to the gateway. It is NEVER logged,
+// NEVER persisted, NEVER in /api/state — the adapter passes it to the child as an env var and the
+// written opencode.json references it only as {env:BO_OC_GATEWAY_TOKEN}.
+const OC_GATEWAY_TOKEN = process.env.BO_OC_GATEWAY_TOKEN || randomBytes(24).toString("hex");
+process.env.BO_OC_GATEWAY_TOKEN = OC_GATEWAY_TOKEN;
+process.env.BO_OC_GATEWAY_PORT = String(PORT);
+const OC_GATEWAY_MAX_BODY = 1024 * 1024;             // bounded body: 1MB
+// Bounded upstream wait (≥120s) — bounds the WHOLE relay, streaming included (see pipeline below).
+const OC_GATEWAY_TIMEOUT_MS = Number(process.env.BO_OC_GATEWAY_TIMEOUT_MS) || 180000;
+const LOOPBACK_ADDR = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
 const REPO_DIR = dirname(fileURLToPath(import.meta.url));
 // The local-bridge node registry (bo connect). In-memory by design: pairings re-issue cheaply,
 // and a restart cleanly drops every held poll.
@@ -253,6 +269,93 @@ function guardRequest(req, url) {
       return { code: 403, error: "refused: missing or invalid CSRF token — reload the dashboard" };
   }
   return null;
+}
+
+// ── Loopback model gateway endpoints (/internal/oc/v1/<connectionId>/…) ─────────────────────────
+// Their OWN guard set, independent of the dashboard session guard (a spawned opencode has no
+// cookie/CSRF token): loopback peer, no foreign Origin, and the per-process bearer token in a
+// constant-time compare. JSON-only, body bounded at 1MB.
+function ocGatewayGuard(req) {
+  if (!LOOPBACK_ADDR.has(req.socket.remoteAddress))
+    return { code: 403, error: "refused: the model gateway answers on loopback only" };
+  const origin = req.headers.origin;
+  if (origin) {
+    let hn = "";
+    try { hn = new URL(origin).hostname.toLowerCase(); } catch {}
+    if (!LOOPBACK.has(hn)) return { code: 403, error: `refused: cross-origin request from '${origin}'` };
+  }
+  const m = /^Bearer (.+)$/.exec(String(req.headers.authorization || ""));
+  const a = Buffer.from(m ? m[1] : ""), b = Buffer.from(OC_GATEWAY_TOKEN);
+  if (a.length !== b.length || !timingSafeEqual(a, b)) return { code: 403, error: "refused: missing or invalid gateway token" };
+  return null;
+}
+
+function rawBodyBounded(req, limit) {
+  return new Promise((resolve) => {
+    const chunks = []; let n = 0, over = false, done = false;
+    const fin = (v) => { if (!done) { done = true; resolve(v); } };
+    req.on("data", (c) => {
+      n += c.length;
+      // Over the bound: keep DRAINING the upload — never destroy the socket — so the 413 below
+      // actually reaches the client as a status, not a dropped connection.
+      if (n > limit) { over = true; chunks.length = 0; return; }
+      chunks.push(c);
+    });
+    req.on("end", () => fin(over ? null : Buffer.concat(chunks)));
+    req.on("error", () => fin(null));
+  });
+}
+
+async function ocGateway(req, res, url) {
+  const m = url.pathname.match(/^\/internal\/oc\/v1\/([^/]+)\/(chat\/completions|models)$/);
+  if (!m) return json(res, { error: "not found" }, 404);
+  const refusal = ocGatewayGuard(req);
+  if (refusal) return json(res, { error: refusal.error }, refusal.code);
+  const conn = (store.def.modelConnections || []).find((c) => c.id === decodeURIComponent(m[1]));
+  if (!conn) return json(res, { error: `unknown connection '${decodeURIComponent(m[1])}'` }, 404);
+  if (m[2] === "models") {
+    if (req.method !== "GET") return json(res, { error: "method not allowed" }, 405);
+    return json(res, { object: "list", data: [{ id: conn.model, object: "model" }] });
+  }
+  if (req.method !== "POST") return json(res, { error: "method not allowed" }, 405);
+  if (!/^application\/json/i.test(String(req.headers["content-type"] || "")))
+    return json(res, { error: "refused: the model gateway speaks JSON only" }, 415);
+  const raw = await rawBodyBounded(req, OC_GATEWAY_MAX_BODY);
+  if (!raw) return json(res, { error: "request body too large (1MB max)" }, 413);
+  // The connection's OWN auth rules — the whole point of the gateway:
+  //   free-anonymous (no key material) → NO Authorization header (Zen rejects a bogus one);
+  //   BYOK → Bearer from the user's env-held key, resolved at execution time, never logged;
+  //   local → none.
+  let key = null;
+  if (conn.apiKeyEnv) key = process.env[conn.apiKeyEnv] || null;
+  else if (conn.apiKey) key = conn.apiKey;          // in-memory only — the store never persists a key value
+  const headers = { "Content-Type": "application/json", "Content-Length": raw.length };
+  if (req.headers.accept) headers.Accept = String(req.headers.accept);
+  if (key) headers.Authorization = `Bearer ${key}`;
+  const endpoint = conn.endpoint || "http://127.0.0.1:11434/v1/chat/completions";
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(new Error("provider timeout")), OC_GATEWAY_TIMEOUT_MS);
+  res.on("close", () => { if (!res.writableFinished) ctrl.abort(new Error("client disconnected")); });
+  const done = () => clearTimeout(timer);   // the timeout bounds the WHOLE relay, streaming included
+  try {
+    // The request body is forwarded VERBATIM (messages/tools/stream/max_tokens/temperature
+    // untouched); the response is a byte pipe — status + body, SSE passthrough included.
+    const upstream = await fetch(endpoint, { method: "POST", headers, body: raw, signal: ctrl.signal, redirect: "error" });
+    res.writeHead(upstream.status, { "Content-Type": upstream.headers.get("content-type") || "application/json" });
+    if (!upstream.body) { done(); res.end(); return; }
+    // pipeline, never bare .pipe: a client disconnect or the timeout errors the web stream
+    // mid-relay, and an unconsumed 'error' event would crash the WHOLE server process. The
+    // callback consumes it — the response just ends.
+    pipeline(Readable.fromWeb(upstream.body), res, done);
+  } catch (e) {
+    done();
+    const msg = String(e.message || e);
+    if (/client disconnected/.test(msg)) { try { res.destroy(); } catch {} return; }
+    // Never a silent 200: a provider failure is relayed as a failure the caller can act on.
+    if (!res.headersSent && !res.destroyed)
+      json(res, { error: `model gateway: provider call failed (${/provider timeout/.test(msg) ? "timeout" : msg.slice(0, 120)})` }, /provider timeout/.test(msg) ? 504 : 502);
+    else { try { res.destroy(); } catch {} }
+  }
 }
 
 async function api(req, res, url) {
@@ -2794,6 +2897,13 @@ for (const pid of new Set((store.runtime.queues || []).filter((q) => q.status ==
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
+  // The loopback model gateway answers before the dashboard guard — the spawned opencode carries
+  // a bearer token, not a browser session.
+  if (url.pathname.startsWith("/internal/oc/")) {
+    try { await ocGateway(req, res, url); }
+    catch (e) { if (!res.headersSent && !res.destroyed) json(res, { error: String(e.message || e) }, 500); }
+    return;
+  }
   if (url.pathname.startsWith("/api/")) { try { await api(req, res, url); } catch (e) { recordError(store, { source: "api", message: e.message, stack: e.stack }); json(res, { error: String(e.message || e) }, 500); } return; }
   // Sign-in (hosted mode only). Constant-time compare; the token lands in an HttpOnly cookie.
   if (ACCESS_TOKEN && url.pathname === "/login" && req.method === "POST") {

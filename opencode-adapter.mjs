@@ -19,11 +19,38 @@ const HOME = process.env.HOME || homedir();
 // the host process env. The executor never holds any credential the host didn't explicitly grant it.
 const CREDENTIAL_ENV = /ANTHROPIC|CLAUDE|KIMI|MOONSHOT|OPENAI|OPENROUTER|GROQ|GEMINI|MISTRAL|_API_KEY|_TOKEN|SECRET|PASSWORD|CREDENTIAL/i;
 
+// ── Loopback model gateway (task-pm-19) ─────────────────────────────────────────────────────────
+// Anonymous free providers (OpenCode Zen) REJECT a bogus apiKey — and opencode always sends one
+// when the config carries a literal like "local". CE's own calls send NO Authorization header and
+// work. The fix: point those connections at a loopback gateway in web-server.mjs that holds the
+// per-connection auth rules; the executor only gets a bearer for the gateway itself.
+export const GATEWAY_TOKEN_ENV = "BO_OC_GATEWAY_TOKEN";
+export const GATEWAY_PORT_ENV = "BO_OC_GATEWAY_PORT";
+// Host-generated loopback gateway credentials — not user/provider keys, so the fail-closed guard
+// below names them explicitly rather than widening the credential regex's exceptions.
+const GATEWAY_ENV = new Set([GATEWAY_TOKEN_ENV, GATEWAY_PORT_ENV]);
+
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+function isLoopbackEndpoint(endpoint) {
+  try { return LOOPBACK_HOSTS.has(new URL(endpoint).hostname.toLowerCase()); } catch { return false; }
+}
+
+/** The gateway baseURL for a connection that must be gatewayed: funder "free" with NO key of any
+ *  kind (anonymous) and a NON-loopback endpoint (a local endpoint never needs the gateway). Null
+ *  when the connection stays direct (byte-compat) or no gateway port is in the run environment. */
+export function gatewayBaseURL(connection, env = process.env) {
+  if (!connection || connection.funder !== "free" || connection.apiKey || connection.apiKeyEnv) return null;
+  if (isLoopbackEndpoint(connection.endpoint || "http://127.0.0.1:11434/v1")) return null;
+  const port = env[GATEWAY_PORT_ENV];
+  if (!port || !connection.id) return null;
+  return `http://127.0.0.1:${port}/internal/oc/v1/${connection.id}`;
+}
+
 // Fail-closed guard: throw if `env` carries any credential var other than the connection's own user key.
 export function assertHostOwnedCredentials(env, connection) {
   const allowed = connection && connection.funder === "user" ? connection.apiKeyEnv : null;
   for (const k of Object.keys(env)) {
-    if (k === allowed) continue;
+    if (k === allowed || GATEWAY_ENV.has(k)) continue;
     if (CREDENTIAL_ENV.test(k))
       throw new Error(`executor env would leak a host credential (${k}); the host owns credentials — the executor gets only the user's own model key`);
   }
@@ -39,6 +66,13 @@ export function buildExecutorEnv(connection, iso) {
   };
   if (connection && connection.funder === "user" && connection.apiKeyEnv && process.env[connection.apiKeyEnv])
     env[connection.apiKeyEnv] = process.env[connection.apiKeyEnv];
+  // A gatewayed anonymous-free connection: the spawned opencode authenticates to the loopback
+  // gateway with the host-generated token (resolved via {env:…} from the config — never written
+  // to disk). The gateway then calls the provider with the connection's REAL auth rules.
+  if (gatewayBaseURL(connection) && process.env[GATEWAY_TOKEN_ENV]) {
+    env[GATEWAY_TOKEN_ENV] = process.env[GATEWAY_TOKEN_ENV];
+    env[GATEWAY_PORT_ENV] = process.env[GATEWAY_PORT_ENV];
+  }
   assertHostOwnedCredentials(env, connection);
   return env;
 }
@@ -56,8 +90,12 @@ export function connectionToConfig(connection) {
     throw new Error(`opencode adapter refuses non-user/free/local connection (funder=${connection?.funder})`);
   const providerId = (connection.provider || "user-model").replace(/[^a-zA-Z0-9_-]/g, "-");
   // opencode wants the OpenAI-compatible BASE url (it appends /chat/completions).
-  const baseURL = (connection.endpoint || "http://127.0.0.1:11434/v1").replace(/\/chat\/completions\/?$/, "");
-  const apiKey = connection.apiKeyEnv ? `{env:${connection.apiKeyEnv}}` : (connection.apiKey || "local");
+  // An anonymous free connection goes through the loopback gateway (a bogus apiKey makes Zen
+  // reject the call — the gateway strips it). BYOK/local keep their direct baseURL byte-exact.
+  const gw = gatewayBaseURL(connection);
+  const baseURL = gw || (connection.endpoint || "http://127.0.0.1:11434/v1").replace(/\/chat\/completions\/?$/, "");
+  // The gateway token is referenced by NAME only — the written opencode.json carries no token value.
+  const apiKey = gw ? `{env:${GATEWAY_TOKEN_ENV}}` : connection.apiKeyEnv ? `{env:${connection.apiKeyEnv}}` : (connection.apiKey || "local");
   const model = connection.model;
   return {
     modelRef: `${providerId}/${model}`,
