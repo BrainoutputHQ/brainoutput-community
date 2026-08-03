@@ -47,8 +47,13 @@ aside select{background:var(--inp);border:1px solid var(--line);color:var(--fg);
 .tchip{font-size:10px;padding:0 6px;margin-left:4px;flex:none}
 #taskfilters{display:flex;gap:4px;padding:0 4px 6px;flex-wrap:wrap}
 #taskfilters select{background:var(--inp);border:1px solid var(--line);color:var(--fg);border-radius:7px;font-size:11px;padding:2px 3px;max-width:118px}
-.board{display:flex;gap:12px;align-items:flex-start;overflow-x:auto;padding:2px 2px 8px}
-.bcol{flex:1;min-width:210px;background:var(--card2);border:1px solid var(--line);border-radius:12px;padding:10px}
+.board{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;align-items:start;padding:2px 2px 8px}
+.bcol{min-width:0;background:var(--card2);border:1px solid var(--line);border-radius:12px;padding:10px}
+.bcol>.bcard:last-child{margin-bottom:0}
+@media(max-width:1120px){
+ .board{display:flex;overflow-x:auto}
+ .bcol{flex:0 0 236px;width:236px}
+}
 .bcol.over{border-color:var(--acc)}
 .bcolh{font-size:11.5px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--mut);margin-bottom:8px;display:flex;align-items:center;gap:6px}
 .bcolh .bcnt{background:var(--card);border:1px solid var(--line);border-radius:9px;padding:0 7px;font-size:11px;font-weight:600}
@@ -68,6 +73,7 @@ main{flex:1;display:flex;flex-direction:column;min-width:0}
 #thead select{background:var(--inp);border:1px solid var(--line);color:var(--fg);border-radius:8px;padding:6px 9px;font-size:13px}
 #thread{flex:1;overflow:auto;padding:26px 22px 12px}
 .wrap{max-width:780px;margin:0 auto}
+.wrap.wide{max-width:1180px}
 .msg{margin-bottom:22px}
 .msg .who{font-size:12px;color:var(--mut);margin-bottom:5px;font-weight:600}
 .msg.user{text-align:right}
@@ -160,7 +166,7 @@ pre{background:var(--pre)!important}
 <main>
  <div id=mobilebar><button id=navtoggle>☰</button><span id=mconame style="font-weight:650"></span></div>
  <div id=thead></div>
- <div id=thread><div class=wrap id=msgs></div></div>
+ <div id=thread><div class="wrap wide" id=pview style="display:none"></div><div class=wrap id=msgs></div></div>
  <div id=composer><div class=wrap>
   <div id=cbox>
    <textarea id=msg rows=2></textarea>
@@ -926,13 +932,15 @@ function projectView(proj){
   // The real header (task-pm-10) sits right under the name; the honest rollup math is untouched.
   d.appendChild(projectHeader(s,proj));
   const body=el('<div>'
-   +'<div style="background:#0b0d11;border-radius:8px;height:7px;overflow:hidden;margin-bottom:10px"><div style="background:var(--ok);height:100%;width:'+pct+'%"></div></div>'
+   +'<div style="background:var(--pre);border-radius:8px;height:7px;overflow:hidden;margin-bottom:10px"><div style="background:var(--ok);height:100%;width:'+pct+'%"></div></div>'
    +'<div style="display:flex;align-items:center;gap:8px;margin:8px 0 2px"><span class=mut style="font-size:13px">'+esc(t('project.tasks'))+'</span>'
    +'<div class="seg" id=tview style="margin-left:auto">'
    +'<button data-v="list"'+(taskView==='list'?' class=on':'')+'>'+esc(t('project.view.list'))+'</button>'
    +'<button data-v="board"'+(taskView==='board'?' class=on':'')+'>'+esc(t('project.view.board'))+'</button></div></div>'
    +'<div id=ptasks></div>'
-  +'<div style="display:flex;gap:8px;margin-top:10px"><input class=inp id=nt placeholder="'+esc(t('project.addTask'))+'" style="margin-top:0"><button class=ghost id=ntb>+</button></div>'
+   +'<div id=planrow style="margin-top:12px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
+   +'<button class=act id=planbrain>'+esc(t('project.planWithBrain'))+'</button>'
+   +'<span class=mut style="font-size:12.5px;flex:1;min-width:220px">'+esc(t('project.planHint'))+'</span></div>'
   +(threads.length?'<div class=mut style="font-size:13px;margin:14px 0 4px">'+esc(t('project.threads'))+'</div>':'')
   +'</div>');
   d.appendChild(body);
@@ -949,10 +957,14 @@ function projectView(proj){
    const r=await api('/api/settings',{taskViewByProject:{[proj.id]:b.dataset.v}});
    if(r.error){alert(r.error);return}
    S.state=r;render()});
- const add=async()=>{const v=body.querySelector('#nt').value.trim();if(!v)return;
-  const r=await api('/api/task/new',{title:v,projectId:proj.id});if(r.error){alert(r.error);return}await refresh()};
- body.querySelector('#ntb').onclick=add;
- body.querySelector('#nt').onkeydown=(e)=>{if(e.key==='Enter')add()};
+  // Plan-first project start (task-pm-14): NO quick-add — an unevaluated task may need subtasks,
+  // so work comes from a validated plan. The button opens a NEW planning thread in the project,
+  // seeded with the project context; the owner describes the work and the Brain drafts a plan
+  // (the owner gate on the plan card is unchanged). /api/task/new stays for subtasks + API users.
+  body.querySelector('#planbrain').onclick=async()=>{
+   const r=await api('/api/chat/plan-thread',{projectId:proj.id});
+   if(r.error){alert(r.error);return}
+   S.state=r;S.convId=r.conversation.id;S.projectId=proj.id;S.mode='plan';S.view='chat';render()};
  threads.slice().reverse().slice(0,20).forEach(c=>{
   const label=c.title||(c.messages[0]?String(c.messages[0].text).slice(0,50):c.id);
   const b=el('<button class="pitem'+(S.convId===c.id?' on':'')+'">'+esc(label)+'</button>');
@@ -1399,16 +1411,19 @@ function bubble(m){
 }
 function thread(){
  const s=S.state||{};const box=document.getElementById('msgs');box.innerHTML='';
+ // The project surface (which hosts the BOARD) gets its own wider wrap — the chat/thread
+ // content below keeps the 780px readability cap (task-pm-14 board fit).
+ const pv=document.getElementById('pview');pv.innerHTML='';pv.style.display='none';
  if(S.view==='settings'){box.appendChild(settingsView());return}
  if(S.view==='work'){box.appendChild(workView());return}
  if(!tourSeen())box.appendChild(tourCard());
  const conv=(s.conversations||[]).find(c=>c.id===S.convId);
  if(!conv){
   const proj=S.projectId?(s.projects||[]).find(p=>p.id===S.projectId):null;
-  if(proj){box.appendChild(projectView(proj));return}
+  if(proj){pv.style.display='';pv.appendChild(projectView(proj));return}
   box.appendChild(el('<div class=mut style="text-align:center;margin-top:80px;font-size:15px">'+esc(t('shell.emptyThread'))+'</div>'));return}
  const proj=conv.projectId?(s.projects||[]).find(p=>p.id===conv.projectId):null;
- if(proj)box.appendChild(projectView(proj));
+ if(proj){pv.style.display='';pv.appendChild(projectView(proj))}
  conv.messages.forEach(m=>box.appendChild(bubble(m)));
  (s.plans||[]).filter(p=>p.conversationId===conv.id).forEach(p=>box.appendChild(planCard(p)));
  const mission=(s.missions||[]).find(m=>m.id===conv.missionId);

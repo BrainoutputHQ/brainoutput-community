@@ -463,6 +463,21 @@ async function api(req, res, url) {
       return json(res, { ...publicState(), project: r.project, conversation: r.conversation });
     } catch (e) { return json(res, { error: e.message }, 400); }
   }
+  if (url.pathname === "/api/chat/plan-thread") {
+    // Plan-first project start (task-pm-14): a NEW planning thread in the project, seeded with the
+    // project context (name + objective when set) so the owner describes the work and the Brain
+    // drafts the plan. No model call here — the seed is a plain assistant message; drafting only
+    // happens when the owner sends their description in plan mode (the chatSend plan path).
+    const p = (store.runtime.projects || []).find((x) => x.id === b.projectId && x.kind === "project");
+    if (!p) return json(res, { error: `no project '${b.projectId}'` }, 404);
+    const seed = tChat("project.planSeed").replace("{name}", p.name)
+      + (p.objective ? "\n" + tChat("project.planSeedObjective").replace("{objective}", p.objective) : "");
+    let conv = newConversation({ id: uid("conv"), scope: "company", projectId: p.id,
+      title: tChat("project.planThread").replace("{name}", p.name) });
+    conv = addMessage(conv, { role: "assistant", text: seed, mode: "plan", at: Date.now() });
+    saveConversation(conv);
+    return json(res, { ...publicState(), conversation: conv });
+  }
   if (url.pathname === "/api/connect-free") {
     // Health-check the free candidates for REAL (never one hardcoded model), connect the first
     // that answers, and fill only the capability slots the user has not already assigned.
