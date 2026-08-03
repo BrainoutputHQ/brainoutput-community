@@ -10,14 +10,20 @@ const MAX_REVIEW_CRITERIA = 20, MAX_EVIDENCE_CHARS = 500;
 /**
  * The bounded reviewer prompt. Carries the task objective and EVERY acceptance criterion
  * verbatim (the parser matches the returned criteria back against them — they must
- * round-trip), the worker's result summary, artifact names, and test evidence when present.
- * The reviewer is instructed to judge each criterion independently and to demand evidence:
- * absence of evidence is a fail, never a pass.
+ * round-trip), the worker's result summary, artifact names, the REAL code diff, and test
+ * evidence when present. The reviewer is instructed to judge each criterion independently
+ * and to demand evidence: absence of evidence is a fail, never a pass.
+ *
+ * The summary is presented as an unverified CLAIM: a worker can report success having written
+ * nothing (a headless coding run whose write permission resolves to "ask" auto-rejects it and
+ * still exits 0). The diff and the test exit code are the evidence; the prose is not.
  */
-export function reviewTaskPrompt({ objective, acceptanceCriteria = [], resultSummary = null, artifacts = [], testEvidence = null } = {}) {
+export function reviewTaskPrompt({ objective, acceptanceCriteria = [], resultSummary = null, artifacts = [], testEvidence = null, diff = null } = {}) {
   const criteria = (Array.isArray(acceptanceCriteria) ? acceptanceCriteria : []).map((c) => String(c));
   const arts = (Array.isArray(artifacts) ? artifacts : []).map((a) => String(a)).filter(Boolean);
-  return `You are a rigorous reviewer for THIS task — and only this task. A worker reports it done. Judge EVERY acceptance criterion independently and DEMAND EVIDENCE for it in the worker's result summary, the artifacts and the test evidence below: a criterion passes ONLY when that material shows it holds. Never rubber-stamp — absence of evidence is a fail.
+  return `You are a rigorous reviewer for THIS task — and only this task. A worker reports it done. Judge EVERY acceptance criterion independently and DEMAND EVIDENCE for it in the code diff, the test evidence and the artifacts below: a criterion passes ONLY when that material shows it holds. Never rubber-stamp — absence of evidence is a fail.
+
+The worker's result summary is the worker's own CLAIM about its work — it is NOT evidence. Verify every claim against the code diff and the test results below. Where the diff does not show what the summary claims, that criterion FAILS. An empty diff means no work was done — fail every criterion. Where evidence is marked TRUNCATED or INCOMPLETE you cannot confirm what it would have shown: fail the criteria that depend on it rather than assuming.
 
 TASK OBJECTIVE:
 ${String(objective || "")}
@@ -25,17 +31,20 @@ ${String(objective || "")}
 ACCEPTANCE CRITERIA (judge each one; copy its text EXACTLY into your reply):
 ${criteria.map((c, i) => `${i + 1}. ${c}`).join("\n")}
 
-WORKER'S RESULT SUMMARY:
+WORKER'S RESULT SUMMARY (an unverified claim):
 ${String(resultSummary || "(none)")}
 
-ARTIFACTS PRODUCED: ${arts.length ? arts.join(", ") : "(none)"}${testEvidence ? `
+ARTIFACTS PRODUCED: ${arts.length ? arts.join(", ") : "(none)"}${diff ? `
+
+CODE DIFF (the actual change — primary evidence):
+${String(diff)}` : ""}${testEvidence ? `
 
 TEST EVIDENCE:
 ${String(testEvidence)}` : ""}
 
 Reply in exactly this form — ONE fenced block, valid JSON inside, nothing else:
 \`\`\`review
-{"criteria":[{"criterion":"<criterion text, copied verbatim>","verdict":"pass"|"fail","evidence":"<what in the result/artifacts/tests proves it — or what is missing>"}],"overall":"pass"|"fail","note":"<one or two sentences of justification>"}
+{"criteria":[{"criterion":"<criterion text, copied verbatim>","verdict":"pass"|"fail","evidence":"<what in the diff/tests/artifacts proves it — or what is missing>"}],"overall":"pass"|"fail","note":"<one or two sentences of justification>"}
 \`\`\`
 Rules: exactly one entry per acceptance criterion, in the order above, criterion text copied verbatim; a verdict is only ever "pass" or "fail"; "overall" is "pass" only when EVERY criterion passes.`;
 }
