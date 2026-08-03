@@ -3,7 +3,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { LOCALES, CATALOG, t, missingKeys } from "./i18n.mjs";
 import { newProject, listProjects, findProject, projectThreads, adHocThreads,
-  promoteConversation, projectDigest, projectBrief, projectUpdate, PROJECT_KIND, PROJECT_STATES } from "./projects.mjs";
+  promoteConversation, projectDigest, projectBrief, projectUpdate, PROJECT_KIND, PROJECT_STATES,
+  isArchived, archiveProject, unarchiveProject, planProjectDeletion } from "./projects.mjs";
 
 // ── i18n ──────────────────────────────────────────────────────────────────────
 
@@ -172,4 +173,56 @@ test("projectUpdate: set, validate, clear — pure (the store record is never mu
   const onlyObj = projectUpdate(r3, "p9", { objective: "new objective" });
   assert.equal(onlyObj.objective, "new objective");
   assert.ok(!("state" in onlyObj), "the state stays absent, never fabricated");
+});
+
+// ── archive (task-pm-15): visibility only — the record itself is untouched ─────
+
+test("archive adds ONLY archivedAt; unarchive removes the key — the cycle is byte-identical", () => {
+  const bare = newProject({ name: "legacy", at: 1 });
+  assert.ok(!("archivedAt" in bare), "a fresh/old record carries no archivedAt key");
+  assert.equal(isArchived(bare), false);
+
+  const r = rt();
+  const original = r.projects.find((p) => p.id === "p1");
+  const snapshot = JSON.stringify(original);
+
+  const arch = archiveProject(r, "p1", { at: 42 });
+  assert.equal(arch.archivedAt, 42);
+  assert.equal(isArchived(arch), true);
+  assert.equal(arch.updatedAt, original.updatedAt, "archiving never bumps updatedAt — records untouched otherwise");
+  assert.equal(JSON.stringify({ ...arch, archivedAt: undefined }), JSON.stringify({ ...original, archivedAt: undefined }),
+    "nothing but archivedAt changed");
+  assert.ok(!("archivedAt" in original), "pure — the store record is not mutated");
+
+  const back = unarchiveProject({ ...r, projects: r.projects.map((p) => (p.id === "p1" ? arch : p)) }, "p1", { at: 99 });
+  assert.ok(!("archivedAt" in back), "unarchive DROPS the key — never a lingering null");
+  assert.equal(isArchived(back), false);
+  assert.equal(JSON.stringify(back), snapshot, "archive → unarchive leaves the record byte-identical");
+
+  assert.throws(() => archiveProject(r, "ghost", { at: 1 }), /no project/);
+  assert.throws(() => unarchiveProject(r, "ghost", { at: 1 }), /no project/);
+  assert.throws(() => archiveProject(r, "wf-1", { at: 1 }), /no project/, "a workflow is never archived by these");
+});
+
+test("planProjectDeletion links exactly what projectDigest links (+ plans, queues, artifacts)", () => {
+  const r = rt();
+  r.tasks = [
+    { id: "t1", projectId: "p1", title: "top" },
+    { id: "t2", projectId: "p1", parentId: "t1", title: "sub" },
+    { id: "t9", projectId: "p2", title: "other" },
+  ];
+  r.plans = [{ id: "pl1", projectId: "p1" }, { id: "pl2", projectId: "p2" }];
+  r.queues = [{ id: "q1", projectId: "p1" }, { id: "q2", projectId: "p2" }];
+  r.artifacts = [{ id: "a1", projectId: "p1", path: "uploads/x" }, { id: "a2", projectId: "p2", path: "uploads/y" }];
+  const del = planProjectDeletion(r, "p1");
+  assert.equal(del.project.id, "p1");
+  assert.deepEqual(del.conversations.map((c) => c.id).sort(), ["c1", "c2"]);
+  assert.deepEqual(del.missions.map((m) => m.id), ["m1"], "m2 (ad-hoc thread) is NOT linked");
+  assert.deepEqual(del.executions.map((e) => e.id), ["e1"]);
+  assert.deepEqual(del.tasks.map((t) => t.id).sort(), ["t1", "t2"], "subtasks come along via projectId");
+  assert.deepEqual(del.plans.map((p) => p.id), ["pl1"]);
+  assert.deepEqual(del.approvals.map((a) => a.id), ["ap1"]);
+  assert.deepEqual(del.queues.map((q) => q.id), ["q1"]);
+  assert.deepEqual(del.artifacts.map((a) => a.id), ["a1"]);
+  assert.throws(() => planProjectDeletion(r, "ghost"), /no project/);
 });

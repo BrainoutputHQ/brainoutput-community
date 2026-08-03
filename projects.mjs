@@ -58,6 +58,50 @@ export const listProjects = (runtime) =>
   (runtime.projects || []).filter((p) => p && p.kind === PROJECT_KIND)
     .sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0));
 
+// ── archive (task-pm-15) ──────────────────────────────────────────────────────
+// Archive is pure VISIBILITY + a launch-block: the record gains `archivedAt` and nothing else
+// changes (updatedAt untouched, no other field). Migration-safe by construction — an old record
+// simply has no `archivedAt` key, and unarchiving REMOVES the key (never a lingering null), so an
+// archive → unarchive cycle leaves the record byte-identical.
+export const isArchived = (p) => !!p?.archivedAt;
+
+export function archiveProject(runtime, id, { at = null } = {}) {
+  const p = findProject(runtime, id);
+  if (!p) throw new Error(`no project '${id}'`);
+  return { ...p, archivedAt: at };
+}
+
+export function unarchiveProject(runtime, id, { at = null } = {}) {
+  const p = findProject(runtime, id);
+  if (!p) throw new Error(`no project '${id}'`);
+  const { archivedAt, ...rest } = p;   // drop the key entirely — never a lingering null
+  return rest;
+}
+
+/**
+ * Project deletion (task-pm-15): compute EVERY record linked to the project, mirroring the
+ * projectDigest linkage (a mission belongs via its projectId OR its conversation). Pure — returns
+ * the linked records and the id sets; the caller applies the removals and reports honest counts.
+ */
+export function planProjectDeletion(runtime, id) {
+  const project = findProject(runtime, id);
+  if (!project) throw new Error(`no project '${id}'`);
+  const conversations = (runtime.conversations || []).filter((c) => c.projectId === project.id);
+  const convIds = new Set(conversations.map((c) => c.id));
+  const missions = (runtime.missions || []).filter((m) => m.projectId === project.id || convIds.has(m.conversationId));
+  const missionIds = new Set(missions.map((m) => m.id));
+  const executions = (runtime.executions || []).filter((e) => missionIds.has(e.missionId) || e.projectId === project.id);
+  const execIds = new Set(executions.map((e) => e.id));
+  const tasks = (runtime.tasks || []).filter((t) => t.projectId === project.id);   // subtasks carry projectId too
+  const taskIds = new Set(tasks.map((t) => t.id));
+  const plans = (runtime.plans || []).filter((p) => p.projectId === project.id);
+  const approvals = (runtime.approvals || []).filter((a) => missionIds.has(a.missionId) || execIds.has(a.executionId));
+  const queues = (runtime.queues || []).filter((q) => q.projectId === project.id);
+  const artifacts = (runtime.artifacts || []).filter((a) => a.projectId === project.id || execIds.has(a.executionId));
+  return { project, conversations, missions, executions, tasks, plans, approvals, queues, artifacts,
+    convIds, missionIds, execIds, taskIds };
+}
+
 /** Find by id, or by name (case-insensitive) so a user can say "move this to pdf-saas". */
 export function findProject(runtime, idOrName) {
   const want = String(idOrName || "").trim().toLowerCase();

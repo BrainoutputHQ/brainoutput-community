@@ -149,6 +149,7 @@ pre{background:var(--pre)!important}
   <input id=qsearch class=inp style="margin:4px 0 8px;width:100%" placeholder="">
   <div class=shead><span id=lprojects></span></div>
   <div id=projects></div>
+  <div id=archived></div>
   <div class=shead><span id=ltasks></span></div>
   <div id=taskfilters></div>
   <div id=tasks></div>
@@ -204,7 +205,8 @@ const ICONS={
  drive:'<path d="M22 12H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><path d="M6 16h.01"/><path d="M10 16h.01"/>',
  apps:'<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/>',
  plus:'<circle cx="12" cy="12" r="10"/><path d="M12 8v8"/><path d="M8 12h8"/>',
- folderplus:'<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><path d="M12 11v6"/><path d="M9 14h6"/>',
+  folderplus:'<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><path d="M12 11v6"/><path d="M9 14h6"/>',
+  restore:'<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>',
 };
 const I=(n,sz=15)=>'<svg width="'+sz+'" height="'+sz+'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'+(ICONS[n]||'')+'</svg>';
 const FAMILY_ICON={mail:'mail',files:'drive',apps:'apps'};
@@ -241,6 +243,22 @@ function projectRow(s,p,n,on){
  b.onclick=()=>{S.projectId=p.id;S.convId=null;S.view='chat';render()};
  return b;
 }
+// ── archived projects (task-pm-15): hidden from the Projects list and the task filter ──
+// An old record has no archivedAt key — it is simply a normal, visible project.
+const liveProjects=(s)=>(s.projects||[]).filter(p=>!p.archivedAt);
+const archivedProjects=(s)=>(s.projects||[]).filter(p=>!!p.archivedAt);
+/** An archived-project row: name (opens the read-only view) + a restore button (unarchive). */
+function archivedRow(s,p){
+ const b=el('<button class="pitem">'+I('folder')+'<span class=lab>'+esc(p.name)+'</span></button>');
+ b.onclick=()=>{S.projectId=p.id;S.convId=null;S.view='chat';render()};
+ const r=el('<button class="delchat" title="'+esc(t('project.unarchive'))+'" aria-label="'+esc(t('project.unarchive'))+'" style="margin-left:auto;flex:none;background:none;border:none;color:var(--mut);cursor:pointer;padding:2px 4px;display:inline-flex">'+I('restore',13)+'</button>');
+ r.onclick=async(e)=>{e.stopPropagation();
+  const res=await api('/api/project/unarchive',{id:p.id});
+  if(res.error){alert(res.error);return}
+  S.state=res;render()};
+ b.appendChild(r);
+ return b;
+}
 /** Blocked-by badge: shown exactly when the task has open blockers; the tooltip names them. */
 const blockedBadge=(s,tk)=>{
  const bl=openBlockers(s,tk);
@@ -268,9 +286,12 @@ function taskFilterBar(s){
   +['todo','in-progress','blocked','done'].map(x=>'<option value="'+x+'">'+esc(t('task.status.'+x))+'</option>').join(''),
   f.status,(v)=>{f.status=v});
  const pids=[...new Set((s.tasks||[]).map(tk=>tk.projectId).filter(Boolean))];
+ // Archived projects never appear as a filter choice (task-pm-15) — their tasks stay readable
+ // under 'all projects', but the archived project itself is not offered as a lens.
+ const archIds=new Set(archivedProjects(s).map(p=>p.id));
  mk('tf-project',t('tasks.filter.project'),
   '<option value="all">'+esc(t('tasks.filter.allProjects'))+'</option>'
-  +pids.map(pid=>{const p=(s.projects||[]).find(x=>x.id===pid);return '<option value="'+esc(pid)+'">'+esc(p?p.name:pid)+'</option>'}).join(''),
+  +pids.filter(pid=>!archIds.has(pid)).map(pid=>{const p=(s.projects||[]).find(x=>x.id===pid);return '<option value="'+esc(pid)+'">'+esc(p?p.name:pid)+'</option>'}).join(''),
   f.projectId,(v)=>{f.projectId=v});
  const asgs=[...new Set((s.tasks||[]).map(tk=>tk.assignee).filter(Boolean))].sort();
  mk('tf-assignee',t('tasks.filter.assignee'),
@@ -446,11 +467,22 @@ function sidebar(){
  qs.onchange=()=>{S.q=qs.value;render()};
  qs.oninput=()=>{S.q=qs.value;clearTimeout(S._q);S._q=setTimeout(render,250)};
  const proj=document.getElementById('projects');proj.innerHTML='';
- (s.projects||[]).forEach(p=>{
+ // Archived projects leave this list entirely (task-pm-15) — they live in the collapsed
+ // Archived section below, with a restore. Old records (no archivedAt) are unaffected.
+ liveProjects(s).forEach(p=>{
   const n=convs.filter(c=>c.projectId===p.id).length;
   // The live dot: a running execution of the project OR of any of its tasks (task-pm-13).
   proj.appendChild(projectRow(s,p,n,S.projectId===p.id))});
- if(!(s.projects||[]).length)proj.appendChild(el('<div class=mut style="font-size:13px;padding:4px 6px">'+esc(t('shell.emptyProjects'))+'</div>'));
+ if(!liveProjects(s).length)proj.appendChild(el('<div class=mut style="font-size:13px;padding:4px 6px">'+esc(t('shell.emptyProjects'))+'</div>'));
+ // The collapsed Archived section — visible only when something is archived; hidden in search.
+ const archBox=document.getElementById('archived');archBox.innerHTML='';
+ const archList=archivedProjects(s);
+ archBox.style.display=searching||!archList.length?'none':'';
+ if(archList.length&&!searching){
+  const det=el('<details><summary class=shead style="margin:14px 6px 7px;cursor:pointer;list-style:none">'+I('folder',12)+' '+esc(t('shell.archived'))+' <span class=cnt>'+archList.length+'</span></summary></details>');
+  archList.forEach(p=>det.appendChild(archivedRow(s,p)));
+  archBox.appendChild(det);
+ }
  const ad=document.getElementById('adhoc');ad.innerHTML='';
  convs.filter(c=>!c.projectId).slice().reverse().slice(0,20).forEach(c=>{
   const label=c.title||(c.messages[0]?String(c.messages[0].text).slice(0,34):c.id);
@@ -905,11 +937,56 @@ function queueCard(s,proj){
  }
  return d;
 }
+/** The compact project menu (task-pm-15): Archive (or Restore when archived) and Delete.
+ *  Archive posts immediately; Delete opens the typed-name confirm — never a bare click. */
+function projectDeleteConfirm(proj,{oncancel}={}){
+ const d=el('<div id=pdel style="margin-top:8px;padding:10px 12px;border:1px solid var(--warn);border-radius:10px">'
+  +'<div class=warn style="font-size:12.5px">'+esc(t('project.deleteWarning').replace('{name}',proj.name))+'</div>'
+  +'<label style="font-size:12px;margin-top:8px">'+esc(t('project.deleteConfirmLabel'))+'</label></div>');
+ const inp=el('<input class=inp id=pdn style="margin-top:4px" autocomplete="off">');
+ inp.placeholder=proj.name;
+ const bar=el('<div style="margin-top:8px;display:flex;gap:6px;align-items:center"></div>');
+ const go=el('<button class=act id=pdb style="font-size:12.5px;padding:6px 14px">'+esc(t('project.deleteButton'))+'</button>');
+ go.disabled=true;   // enabled only by an EXACT name match — mirrors the server check
+ const cancel=el('<button class=ghost style="font-size:12.5px;padding:6px 14px">'+esc(t('mission.cancel'))+'</button>');
+ const msg=el('<span class=mut id=pdm style="font-size:12px"></span>');
+ inp.oninput=()=>{go.disabled=inp.value!==proj.name};
+ cancel.onclick=()=>{if(oncancel)oncancel()};
+ go.onclick=async()=>{
+  go.disabled=true;
+  const r=await api('/api/project/delete',{id:proj.id,confirmName:inp.value});
+  if(r.error){msg.textContent=r.error;go.disabled=inp.value!==proj.name;return}
+  // The project is gone — navigate honestly: nothing selected, land on the chat/ad-hoc surface.
+  S.projectId=null;S.convId=null;S.view='chat';S.state=r;render()};
+ bar.appendChild(go);bar.appendChild(cancel);bar.appendChild(msg);
+ d.appendChild(inp);d.appendChild(bar);
+ return d;
+}
+function projectMenu(s,proj){
+ const wrap=el('<span id=pmenu style="margin-left:auto;position:relative"></span>');
+ const showMenu=()=>{
+  wrap.innerHTML='';
+  const det=el('<details style="position:relative"><summary style="list-style:none;cursor:pointer;padding:2px 10px;border:1px solid var(--line);border-radius:8px;color:var(--mut);font-size:13px" title="'+esc(t('project.menu'))+'">⋯</summary></details>');
+  const dd=el('<div style="position:absolute;right:0;top:26px;z-index:6;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:6px;display:flex;flex-direction:column;gap:4px;min-width:180px;box-shadow:var(--shadow)"></div>');
+  const arch=el('<button class=ghost style="font-size:12.5px;padding:5px 10px;text-align:left">'+esc(proj.archivedAt?t('project.unarchive'):t('project.archive'))+'</button>');
+  arch.onclick=async()=>{
+   const r=await api(proj.archivedAt?'/api/project/unarchive':'/api/project/archive',{id:proj.id});
+   if(r.error){alert(r.error);return}
+   S.state=r;render()};
+  const del=el('<button class=ghost style="font-size:12.5px;padding:5px 10px;text-align:left;color:var(--warn)">'+esc(t('project.delete'))+'</button>');
+  del.onclick=()=>{wrap.innerHTML='';wrap.appendChild(projectDeleteConfirm(proj,{oncancel:showMenu}))};
+  dd.appendChild(arch);dd.appendChild(del);det.appendChild(dd);wrap.appendChild(det);
+ };
+ showMenu();
+ return wrap;
+}
 /** The header itself: state row + objective + (when present) the binding decisions + the queue card. */
 function projectHeader(s,proj){
  const h=el('<div id=phead style="margin:2px 0 10px"></div>');
  const stateRow=el('<div style="display:flex;align-items:center;gap:8px;font-size:12.5px"><span class=mut>'+esc(t('project.state'))+'</span></div>');
  stateRow.appendChild(projectStateSel(proj));
+ if(proj.archivedAt)stateRow.appendChild(el('<span class="pill dormant">'+esc(t('shell.archived'))+'</span>'));
+ stateRow.appendChild(projectMenu(s,proj));
  h.appendChild(stateRow);
  h.appendChild(projectObjective(proj));
  const dec=projectDecisions(s,proj);

@@ -3,7 +3,7 @@
 // A coding executor (real OpenCode) may only touch paths INSIDE an approved root. Anything that
 // resolves outside every root — path traversal, an absolute host path, or a symlink escape — is
 // refused fail-closed BEFORE the executor is spawned. Pure logic + fs realpath; ESM, zero-dep.
-import { realpathSync, mkdirSync, existsSync } from "node:fs";
+import { realpathSync, mkdirSync, existsSync, rmSync } from "node:fs";
 import { resolve, sep, join } from "node:path";
 import { homedir } from "node:os";
 
@@ -53,4 +53,22 @@ export function resolveApprovedWorkspace(requested, { roots, create = false } = 
     throw new Error(`workspace "${requested}" is outside every approved root — refused (fail-closed)`);
   if (create) mkdirSync(target, { recursive: true });
   return target;
+}
+
+/**
+ * Delete a path (file or directory tree) ONLY when it sits inside one of the approved roots
+ * (task-pm-15 project delete). Fail-closed like the resolver above: a path that escapes every
+ * root — traversal, an absolute host path, or a symlink pointing out — is NEVER followed; it is
+ * reported, not touched. Honest outcome: { removed: true } only when something was actually
+ * deleted, { removed: false } when the path was confined but absent, { skipped: reason } otherwise.
+ */
+export function removeConfined(requested, { roots } = {}) {
+  if (!requested) return { skipped: "no path given" };
+  if (!roots || !roots.length) return { skipped: "no approved roots configured — refused (fail-closed)" };
+  const target = canonical(requested);
+  if (!roots.some((root) => within(target, root)))
+    return { skipped: `"${requested}" is outside every approved root — skipped (fail-closed)` };
+  if (!existsSync(target)) return { removed: false };
+  rmSync(target, { recursive: true, force: true });
+  return { removed: true };
 }

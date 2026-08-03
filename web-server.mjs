@@ -10,7 +10,7 @@ import http from "node:http";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { request as httpReq } from "node:http";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Store } from "./store.mjs";
 import { routeTask, makeCatalog, costReport, executionSummary, validateCompanyConfig, PRIVACY_POSTURES, planGraph } from "./ce-core.mjs";
@@ -45,7 +45,9 @@ import { efficiencyReport } from "./efficiency.mjs";
 import { selectModel } from "./ce-core.mjs";
 import { CATALOG, LOCALES, SLOT_LABELS } from "./i18n.mjs";
 import { SHELL_PAGE } from "./shell.mjs";
-import { newProject, listProjects, promoteConversation, projectBrief, projectUpdate } from "./projects.mjs";
+import { newProject, listProjects, promoteConversation, projectBrief, projectUpdate,
+  archiveProject, unarchiveProject, planProjectDeletion } from "./projects.mjs";
+import { approvedWorkspaceRoots, removeConfined } from "./workspace-registry.mjs";
 import { newTask, newSubtask, setTaskStatus, reportMissionToTask, assertTaskDeps, askTaskQuestion, answerTaskQuestion, reviewTask, blockersOf, projectTasks } from "./tasks.mjs";
 import { reviewTaskPrompt, parseTaskReview } from "./review-tasks.mjs";
 import { newPlan, updateDraft, validatePlan, rejectPlan, markMaterialized, planById, latestProjectPlan } from "./plans.mjs";
@@ -434,6 +436,97 @@ async function api(req, res, url) {
       store.addProject(next); store.saveRuntime();
       return json(res, { ...publicState(), project: next });
     } catch (e) { return json(res, { error: e.message }, 400); }
+  }
+  // ── Archive / unarchive / delete (task-pm-15) ──
+  // Archive is pure visibility + a launch-block: the record gains archivedAt, nothing else moves
+  // (unarchive drops the key — an archive cycle leaves the record byte-identical).
+  if (url.pathname === "/api/project/archive" || url.pathname === "/api/project/unarchive") {
+    const p = (store.runtime.projects || []).find((x) => x.id === b.id && x.kind === "project");
+    if (!p) return json(res, { error: `no project '${b.id}'` }, 404);
+    const next = url.pathname.endsWith("/unarchive")
+      ? unarchiveProject(store.runtime, p.id, { at: Date.now() })
+      : archiveProject(store.runtime, p.id, { at: Date.now() });
+    // Replace, never merge: addProject's upsert MERGES keys, which would keep a stale
+    // archivedAt forever — unarchive must drop the key so the record ends byte-identical.
+    store.runtime.projects = (store.runtime.projects || []).map((x) => (x.id === p.id ? next : x));
+    store.saveRuntime();
+    return json(res, { ...publicState(), project: next });
+  }
+  if (url.pathname === "/api/project/delete") {
+    // Fail-closed at every step: unknown project → 404; a confirmation that is not EXACTLY the
+    // project name → 400 and nothing is touched; a running queue/execution/mission → 409.
+    const p = (store.runtime.projects || []).find((x) => x.id === b.id && x.kind === "project");
+    if (!p) return json(res, { error: `no project '${b.id}'` }, 404);
+    if (String(b.confirmName ?? "") !== p.name)
+      return json(res, { error: tChat("project.deleteConfirm") }, 400);
+    const q = activeQueue(p.id);
+    if (q && q.status === "running")
+      return json(res, { error: tChat("project.deleteRunning").replace("{name}", p.name) }, 409);
+    const del = planProjectDeletion(store.runtime, p.id);
+    if (del.executions.some((e) => e.status === "running") || del.missions.some((m) => m.status === "running"))
+      return json(res, { error: tChat("project.deleteRunning").replace("{name}", p.name) }, 409);
+
+    // The knowledge-base entry keyed to the project (its brief) is computed live from the
+    // record — count it BEFORE removal; deleting the project is what removes it.
+    const knowledgeBefore = companyKnowledgeDocs(store.def, store.runtime)
+      .filter((d) => d.id === `project/${p.id}`).length;
+
+    // The disk footprint, confined and safe. An escaping path is SKIPPED and reported —
+    // never followed; the linked RECORD is removed regardless (it is store data, not disk).
+    const skipped = [];
+    let files = 0, workspaces = 0;
+    for (const art of del.artifacts) {
+      if (!art.path) continue;
+      const r = removeConfined(resolve(store.dir, art.path), { roots: [store.dir] });
+      if (r.removed) files++;
+      else if (r.skipped) skipped.push(`file ${art.name || art.id}: ${r.skipped}`);
+    }
+    const wsRoots = approvedWorkspaceRoots();
+    for (const exec of del.executions) {
+      const r = removeConfined(join(store.dir, "workspaces", exec.id), { roots: wsRoots });
+      if (r.removed) workspaces++;
+      else if (r.skipped) skipped.push(`workspace of execution ${exec.id}: ${r.skipped}`);
+    }
+
+    // Remove the records — counts are the REAL before/after deltas, never the plan's lengths.
+    const before = {
+      tasks: (store.runtime.tasks || []).length, plans: (store.runtime.plans || []).length,
+      conversations: (store.runtime.conversations || []).length, missions: (store.runtime.missions || []).length,
+      executions: (store.runtime.executions || []).length, approvals: (store.runtime.approvals || []).length,
+      artifacts: (store.runtime.artifacts || []).length,
+    };
+    store.runtime.projects = (store.runtime.projects || []).filter((x) => x.id !== p.id);
+    store.runtime.tasks = (store.runtime.tasks || []).filter((t) => !del.taskIds.has(t.id));
+    store.runtime.plans = (store.runtime.plans || []).filter((x) => !del.plans.some((y) => y.id === x.id));
+    store.runtime.conversations = (store.runtime.conversations || []).filter((c) => !del.convIds.has(c.id));
+    store.runtime.missions = (store.runtime.missions || []).filter((m) => !del.missionIds.has(m.id));
+    store.runtime.executions = (store.runtime.executions || []).filter((e) => !del.execIds.has(e.id));
+    store.runtime.approvals = (store.runtime.approvals || []).filter((a) => !del.approvals.some((y) => y.id === a.id));
+    store.runtime.artifacts = (store.runtime.artifacts || []).filter((a) => !del.artifacts.some((y) => y.id === a.id));
+    store.runtime.queues = (store.runtime.queues || []).filter((x) => x.projectId !== p.id);
+    store.saveRuntime();
+    // The per-project list/board choice is stale the moment the project is gone — drop it too.
+    const tvb = store.def.settings?.taskViewByProject;
+    if (tvb && p.id in tvb) {
+      const next = { ...tvb }; delete next[p.id];
+      store.setSettings({ ...(store.def.settings || {}), taskViewByProject: next }).saveDefinition();
+    }
+    const after = {
+      tasks: (store.runtime.tasks || []).length, plans: (store.runtime.plans || []).length,
+      conversations: (store.runtime.conversations || []).length, missions: (store.runtime.missions || []).length,
+      executions: (store.runtime.executions || []).length, approvals: (store.runtime.approvals || []).length,
+      artifacts: (store.runtime.artifacts || []).length,
+    };
+    const knowledgeAfter = companyKnowledgeDocs(store.def, store.runtime)
+      .filter((d) => d.id === `project/${p.id}`).length;
+    return json(res, { ...publicState(),
+      removed: {
+        tasks: before.tasks - after.tasks, plans: before.plans - after.plans,
+        conversations: before.conversations - after.conversations, missions: before.missions - after.missions,
+        executions: before.executions - after.executions, approvals: before.approvals - after.approvals,
+        files, workspaces, knowledgeEntries: knowledgeBefore - knowledgeAfter,
+      },
+      skipped });
   }
   if (url.pathname === "/api/company") {
     const next = { ...(store.def.company || {}) };
@@ -1017,7 +1110,7 @@ async function twinAction(res, b) {
 // ── Command Center ──────────────────────────────────────────────────────────────────────────────
 // Company knowledge as a READ-ONLY RAG source, built from the user's own company definition.
 // Shared with the CLI (`bo ask`) via knowledge.mjs — one source, same citations.
-import { buildKnowledgeSource } from "./knowledge.mjs";
+import { buildKnowledgeSource, companyKnowledgeDocs } from "./knowledge.mjs";
 function knowledgeSource() { return buildKnowledgeSource(store.def, store.runtime); }
 
 /**
@@ -1765,6 +1858,8 @@ const queueSyncSafe = (projectId) => {
 async function queueStart(projectId) {
   const p = (store.runtime.projects || []).find((x) => x.id === projectId && x.kind === "project");
   if (!p) return { code: 404, error: `no project '${projectId}'` };
+  if (p.archivedAt)   // archived (task-pm-15): read-only — no queue starts into it
+    return { code: 409, error: tChat("project.archivedLaunch").replace("{name}", p.name) };
   const active = activeQueue(p.id);
   if (active?.status === "running")
     return { code: 409, error: `project '${p.name}' already has a running queue`, queue: active };
@@ -1822,6 +1917,11 @@ function taskStatusAnswer(projectId) {
 async function taskLaunch(res, b) {
   const task = (store.runtime.tasks || []).find((t) => t.id === b.id);
   if (!task) return json(res, { error: `no task '${b.id}'` }, 404);
+  // Archived project (task-pm-15): read-only for new work — a launch into it is refused loud.
+  const tproj = task.projectId
+    ? (store.runtime.projects || []).find((x) => x.id === task.projectId && x.kind === "project") : null;
+  if (tproj?.archivedAt)
+    return json(res, { error: tChat("project.archivedLaunch").replace("{name}", tproj.name) }, 409);
   if (task.status === "done")
     return json(res, { error: `task '${task.title}' is already done` }, 409);
   const running = task.missionId
@@ -1890,6 +1990,11 @@ async function chatLaunch(res, b) {  const m = (store.runtime.missions || []).fi
   if (!m) return json(res, { error: "mission not found" }, 404);
   const gate = modeAllows("execute", "execute", { mission: m });
   if (!gate.allowed) return json(res, { error: gate.reason }, 400);
+  // Archived project (task-pm-15): read-only for new work — a mission launch into it is refused.
+  const mproj = m.projectId
+    ? (store.runtime.projects || []).find((x) => x.id === m.projectId && x.kind === "project") : null;
+  if (mproj?.archivedAt)
+    return json(res, { error: tChat("project.archivedLaunch").replace("{name}", mproj.name) }, 409);
 
   // A mission-backed spine task's directives BIND the route (task-pm-04): its skills/agentSlot
   // flow into routing, which is fail-closed on them. Ordinary tasks carry none → unchanged route.
