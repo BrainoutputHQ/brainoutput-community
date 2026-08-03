@@ -1574,6 +1574,55 @@ function launchFailed(res, m, spineTask, e) {
   return json(res, { error: `execution failed: ${msg}`, mission: failed }, 500);
 }
 
+// ── Transient-failure policy for stage model calls (task-pm-17) ─────────────────────────────
+// A free-tier 502 (ResourceExhausted) must not kill real work without a reason. Every STAGE
+// model call (worker / planner / reviewer) runs under ONE bounded retry: TRANSIENT failures —
+// provider 5xx, 429, network errors, timeouts, empty/garbled responses — get up to 2 retries
+// (3 attempts total) with deterministic backoff; the sleep is injectable so tests run on an
+// instant clock (BO_CE_STAGE_RETRY_BACKOFF_MS="0,0"). PERMANENT failures (4xx — 401/403/400…)
+// block IMMEDIATELY: exactly 1 call, never a retry. The finish_reason=length / reasoning-budget
+// no-content family is NEITHER — the dedicated double-budget retry owns it (unchanged), so it
+// is rethrown verbatim (the callers match its wording). A final failure throws the REAL error —
+// provider + status + message, never disguised as "no model configured" (the pinned lesson).
+const STAGE_RETRY_ATTEMPTS = 3;   // 1 initial attempt + 2 retries
+const STAGE_RETRY_BACKOFF_MS = String(process.env.BO_CE_STAGE_RETRY_BACKOFF_MS || "400,1200")
+  .split(",").map((s) => Math.max(0, Number(s) || 0));
+const defaultStageSleep = (ms) => (ms > 0 ? new Promise((r) => setTimeout(r, ms)) : Promise.resolve());
+
+/** Classify one stage model-call error (from the honest adapters.mjs wording): "transient" →
+ *  retry; "permanent" → block now; "budget" → the double-budget retry's own, never touched here. */
+function classifyStageError(e) {
+  const msg = String(e?.message || e);
+  const status = msg.match(/failed \((\d{3})\)/)?.[1];
+  if (status) {
+    const code = Number(status);
+    return code === 429 || (code >= 500 && code < 600) ? "transient" : "permanent";
+  }
+  if (/finish_reason=length|budget on reasoning/i.test(msg)) return "budget";
+  if (/returned no content|bad completion response|timeout|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EPIPE|socket hang up|fetch failed/i.test(msg))
+    return "transient";
+  return "permanent";   // an unknown failure is never blindly retried
+}
+
+/** One stage model call under the transient-failure policy. opts.sleep injects the clock
+ *  (tests: instant); production sleeps STAGE_RETRY_BACKOFF_MS between attempts. Throws the
+ *  last REAL error, annotated with the stage + provider — never reworded into "no model". */
+async function runStageNode(node, model, input = {}, opts = {}) {
+  const { sleep, ...nodeOpts } = opts;
+  for (let attempt = 1; ; attempt++) {
+    try { return await runNode(node, model, input, nodeOpts); }
+    catch (e) {
+      const kind = classifyStageError(e);
+      if (kind === "budget") throw e;   // the double-budget retry matches this exact wording
+      if (kind !== "transient" || attempt >= STAGE_RETRY_ATTEMPTS) {
+        const provider = model?.connection?.provider;
+        throw provider ? new Error(`${String(e?.message || e)} [stage: ${node.slot || node.node || "?"}, provider: ${provider}]`) : e;
+      }
+      await (typeof sleep === "function" ? sleep : defaultStageSleep)(STAGE_RETRY_BACKOFF_MS[attempt - 1] ?? 0);
+    }
+  }
+}
+
 // ── Worker escalation (task-pm-05) ──────────────────────────────────────────────────────────────
 // A per-task worker may pause its task with ONE fenced ```question block instead of guessing.
 // The task flips to blocked with the question pending; the PLANNER auto-answers ONLY what the
@@ -1597,11 +1646,11 @@ async function runWorkerStage({ node, wprompt, codeWs, index, maxTokens = 1500, 
         artifact: oc.changedFiles?.length ? `opencode:${oc.changedFiles.join(",")}` : null,
         output: oc.changedFiles?.length ? `wrote ${oc.changedFiles.join(", ")}` : "(no files produced for this task)" };
     } catch (e) {
-      const fb = await runNode(node, node.model, { prompt: wprompt }, { maxTokens, timeoutMs, localCall: localNodeModelCall });
+      const fb = await runStageNode(node, node.model, { prompt: wprompt }, { maxTokens, timeoutMs, localCall: localNodeModelCall });
       return { ...fb, node: `worker-${index}`, codingFallback: `coding runtime failed (${String(e.message || e).slice(0, 60)}) — delivered as text` };
     }
   }
-  const out = await runNode(node, node.model, { prompt: wprompt }, { maxTokens, timeoutMs, localCall: localNodeModelCall });
+  const out = await runStageNode(node, node.model, { prompt: wprompt }, { maxTokens, timeoutMs, localCall: localNodeModelCall });
   return { ...out, node: `worker-${index}` };
 }
 
@@ -1618,7 +1667,7 @@ async function maybeAutoAnswer(task, model) {
   if (!plan || !String(plan.decisions || "").trim()) return null;
   let out;
   try {
-    const r = await runNode({ node: "planner", slot: model.slot || "planner" }, model,
+    const r = await runStageNode({ node: "planner", slot: model.slot || "planner" }, model,
       { prompt: autoAnswerPrompt({ decisions: plan.decisions, question: task.pendingQuestion.question }) },
       { maxTokens: 400, timeoutMs: 60000, localCall: localNodeModelCall });
     out = String(r?.output || "").trim();
@@ -1695,15 +1744,23 @@ async function reportOrReviewSpineTask({ task, out, missionId, agentId }) {
     return reviewed({ ok: true,
       note: "deterministic checks only — no reviewer model configured", criteria: [], by: "deterministic" });
   }
-  let parsed = null;
+  let parsed = null, reviewerError = null;
   try {
-    const rr = await runNode({ node: "reviewer", slot: rm.slot || "reviewer" }, rm,
+    const rr = await runStageNode({ node: "reviewer", slot: rm.slot || "reviewer" }, rm,
       { prompt: reviewTaskPrompt({ objective: cur.objective || cur.title, acceptanceCriteria: criteria,
           resultSummary: String(out.output || "").slice(0, 2000), artifacts: out.artifact ? [out.artifact] : [],
           testEvidence: null }) },
       { maxTokens: 600, timeoutMs: 60000, localCall: localNodeModelCall });
     parsed = parseTaskReview(rr?.output, { acceptanceCriteria: criteria });
-  } catch { parsed = null; }                       // a failed call → no review → blocked, honestly
+  } catch (e) { reviewerError = e; }               // a failed call → no review → blocked, honestly
+  if (reviewerError) {
+    // The reviewer stage itself went down (transient retries exhausted, or a permanent 4xx):
+    // this is NOT a judged review — by:"reviewer-unavailable", never "deterministic", and the
+    // note carries the REAL provider error so the block reason says what actually happened.
+    return reviewed({ ok: false,
+      note: `reviewer unavailable — ${String(reviewerError?.message || reviewerError).slice(0, 160)}`,
+      criteria: [], by: "reviewer-unavailable" });
+  }
   if (!parsed) {
     return reviewed({ ok: false, note: "review could not be parsed", criteria: [], by: "reviewer" });
   }
@@ -2090,7 +2147,8 @@ async function taskLaunch(res, b) {
   store.addTask({ ...task, missionId: mission.id, status: "in-progress", updatedAt: Date.now() });
   store.saveRuntime();
   queueOnTaskLaunch(task);   // a paused queue on THIS task counts the relaunch as the owner's decision
-  return chatLaunch(res, { missionId: mission.id });
+  return chatLaunch(res, { missionId: mission.id,
+    ...(b.timeoutMs ? { timeoutMs: b.timeoutMs } : {}), ...(b.maxTokens ? { maxTokens: b.maxTokens } : {}) });
 }
 
 /** Execute an APPROVED mission through the existing direct executor — no management relay. */
@@ -2194,12 +2252,12 @@ async function chatLaunch(res, b) {  const m = (store.runtime.missions || []).fi
       const workerNode = r.plan.find((n) => String(n.node).replace(/\d+$/, "") === "worker");
       if (plannerNode && workerNode && m.projectId && spineTask) {
         try {
-          pr = await runNode(plannerNode, plannerNode.model, { prompt: prompt + PLAN_TASKS_INSTRUCTION },
+          pr = await runStageNode(plannerNode, plannerNode.model, { prompt: prompt + PLAN_TASKS_INSTRUCTION },
             { maxTokens: b.maxTokens || 1500, timeoutMs: b.timeoutMs || 240000, localCall: localNodeModelCall });
         } catch (e) {
           if (!/no content|budget/i.test(String(e.message || e))) throw e;
           retried = true;
-          pr = await runNode(plannerNode, plannerNode.model, { prompt: prompt + PLAN_TASKS_INSTRUCTION },
+          pr = await runStageNode(plannerNode, plannerNode.model, { prompt: prompt + PLAN_TASKS_INSTRUCTION },
             { maxTokens: (b.maxTokens || 1500) * 2, timeoutMs: b.timeoutMs || 240000, localCall: localNodeModelCall });
         }
         results.push(pr);
@@ -2324,11 +2382,22 @@ async function chatLaunch(res, b) {  const m = (store.runtime.missions || []).fi
           updateExec({});
           // The task record's directives (acceptanceCriteria/restrictions/skills) are passed in —
           // the worker is BOUND by them; a directive-less task gets the same prompt as always.
-          const res = await runSpineTaskWorker({
-            task: (store.runtime.tasks || []).find((t) => t.id === st.id) || st,
-            ctx: { prompt, planOutput: safeSlice(pr.output, 1200), index: i + 1, total: decomposed.subtasks.length,
-              workerNode, autoModel, codeWs },
-            maxTokens: b.maxTokens || 1500, timeoutMs: b.timeoutMs || 240000 });
+          let res;
+          try {
+            res = await runSpineTaskWorker({
+              task: (store.runtime.tasks || []).find((t) => t.id === st.id) || st,
+              ctx: { prompt, planOutput: safeSlice(pr.output, 1200), index: i + 1, total: decomposed.subtasks.length,
+                workerNode, autoModel, codeWs },
+              maxTokens: b.maxTokens || 1500, timeoutMs: b.timeoutMs || 240000 });
+          } catch (e) {
+            // FINAL worker-stage failure (task-pm-17): the task blocks with the REAL error —
+            // never left hanging "in-progress". The double-budget no-content family is NOT a
+            // final failure: the outer catch owns it (todo subtasks block there instead).
+            if (!/no content|budget/i.test(String(e?.message || e)))
+              store.addTask(reportMissionToTask(store.runtime, st.id, { missionId: m.id, ok: false,
+                summary: String(e?.message || e).slice(0, 200), at: Date.now() }));
+            throw e;
+          }
           if (res.blocked) {
             exec.logs.push(`worker-${i + 1}: escalated a question — task blocked, waiting on the owner`);
             updateExec({});
@@ -2373,11 +2442,11 @@ async function chatLaunch(res, b) {  const m = (store.runtime.missions || []).fi
                 artifact: oc.changedFiles?.length ? `opencode:${oc.changedFiles.join(",")}` : null,
                 output: oc.changedFiles?.length ? `wrote ${oc.changedFiles.join(", ")}` : "(no files produced — try a stronger local/BYOK coding model)" };
             } catch (e) {
-              const fb = await runNode(node, node.model, { prompt }, { maxTokens: b.maxTokens || 1500, timeoutMs: b.timeoutMs || 240000, localCall: localNodeModelCall });
+              const fb = await runStageNode(node, node.model, { prompt }, { maxTokens: b.maxTokens || 1500, timeoutMs: b.timeoutMs || 240000, localCall: localNodeModelCall });
               out = { ...fb, codingFallback: `coding runtime failed (${String(e.message || e).slice(0, 80)}) — delivered as text` };
             }
           } else {
-            out = await runNode(node, node.model, { prompt }, { maxTokens: b.maxTokens || 1500, timeoutMs: b.timeoutMs || 240000, localCall: localNodeModelCall });
+            out = await runStageNode(node, node.model, { prompt }, { maxTokens: b.maxTokens || 1500, timeoutMs: b.timeoutMs || 240000, localCall: localNodeModelCall });
             if (isCoding) out = { ...out, codingFallback: "no coding runtime here (install opencode to write files) — delivered as text" };
           }
           results.push(out);
