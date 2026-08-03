@@ -8,7 +8,9 @@
 // zero token cost, then handed to the reviewer as its primary material.
 //
 // Everything is bounded and truncation is always DECLARED — a reviewer that cannot see the whole
-// change must know that, so it fails closed instead of passing on a partial read.
+// change must know that, so it fails closed instead of passing on a partial read. Over-cap diffs
+// are bounded HEAD+TAIL (task-pm-21): a plain head-cut amputated the end of the evidence and a
+// reviewer failed real, present work it could not see; head+tail keeps both ends visible.
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -26,6 +28,49 @@ function clamp(text, max, label) {
   return { text: `${s.slice(0, max)}\n… [TRUNCATED — ${label} exceeded ${max} chars; evidence is INCOMPLETE]`, truncated: true };
 }
 
+// Headroom reserved for the elision marker + the metadata line, so head+tail stays within max.
+const HT_RESERVE = 160;
+
+/**
+ * Truncation-AWARE bounding (task-pm-21): a head-cut diff used to amputate the TAIL of the
+ * evidence — a reviewer then failed a real criterion ("the diff is TRUNCATED mid-way through
+ * the second room card… I cannot confirm the page contains 3 rooms") although the file on disk
+ * was complete. When `text` exceeds `max`, keep the FIRST lines AND the LAST lines (each ~half
+ * the budget, aligned to line boundaries — no half-lines) joined by an explicit elision marker
+ * carrying the REAL counts, so head (file start) and tail (file end) both reach the reviewer.
+ * The last line of the original text is NEVER silently dropped. Every non-empty result carries
+ * an unconditional metadata line with the true total size (chars + lines); under-cap text gets
+ * NO elision marker and its content stays byte-identical.
+ */
+export function headTailEvidence(text, max, label = "diff") {
+  const s = String(text || "");
+  if (!s) return { text: "", truncated: false };
+  const meta = `[${label} size: ${s.length} chars, ${s.split("\n").length} lines]`;
+  if (s.length <= max) return { text: `${meta}\n${s}`, truncated: false };
+  const budget = Math.max(2, max - HT_RESERVE);
+  const headBudget = Math.ceil(budget / 2), tailBudget = Math.floor(budget / 2);
+  const lines = s.split("\n");
+  let head = "", hi = 0;
+  for (const l of lines) {
+    const next = head ? head.length + 1 + l.length : l.length;
+    if (next > headBudget) break;
+    head = head ? `${head}\n${l}` : l; hi++;
+  }
+  // A single over-long line (a no-newline blob) cannot align to a line boundary — bound it by chars.
+  if (hi === 0 && lines.length) { head = lines[0].slice(0, headBudget); hi = 1; }
+  let tail = "";
+  for (let i = lines.length - 1; i >= hi; i--) {
+    const l = lines[i];
+    const next = tail ? tail.length + 1 + l.length : l.length;
+    if (next > tailBudget) { if (!tail) tail = l.slice(-tailBudget); break; }
+    tail = tail ? `${l}\n${tail}` : l;
+  }
+  if (!tail && s.length > head.length) tail = s.slice(-tailBudget);   // single-line blob: keep its end too
+  const elided = Math.max(0, s.length - head.length - tail.length);
+  const marker = `\n… [TRUNCATED head+tail — elided ${elided} of ${s.length} total chars; the middle is omitted, evidence is INCOMPLETE; the file is complete on disk] …\n`;
+  return { text: `${meta}\n${head}${marker}${tail}`, truncated: true };
+}
+
 /**
  * The real change the worker made, read from the workspace git repo (the adapter git-inits it and
  * makes a "pre" commit before the run, so `diff HEAD` is exactly this task's work).
@@ -41,10 +86,13 @@ export function collectDiff({ workspace, maxBytes = DIFF_MAX_BYTES } = {}) {
       .filter(Boolean).filter((f) => f !== "opencode.json" && !f.startsWith(".oc-iso"));
   } catch { untrackedNames = []; }
   // Untracked files have no diff — show their content so "new file" work is reviewable too.
+  // Head+tail per file (task-pm-21): a silent head-cut at the per-file cap is exactly how a
+  // 6KB room-page lost its 3rd room + footer before the reviewer ever saw it.
   const newFiles = [];
   for (const f of untrackedNames) {
     let content = "";
-    try { content = readFileSync(join(ws, f), "utf8").slice(0, UNTRACKED_FILE_MAX); } catch { content = "(unreadable)"; }
+    try { content = headTailEvidence(readFileSync(join(ws, f), "utf8"), UNTRACKED_FILE_MAX, "file").text; }
+    catch { content = "(unreadable)"; }
     newFiles.push(`--- NEW FILE: ${f} ---\n${content}`);
   }
   const body = [tracked.trim(), newFiles.join("\n\n").trim()].filter(Boolean).join("\n\n");
@@ -52,7 +100,7 @@ export function collectDiff({ workspace, maxBytes = DIFF_MAX_BYTES } = {}) {
     ...tracked.split("\n").filter((l) => l.startsWith("+++ b/")).map((l) => l.slice(6)),
     ...untrackedNames,
   ])].filter(Boolean);
-  const { text, truncated } = clamp(body, maxBytes, "diff");
+  const { text, truncated } = headTailEvidence(body, maxBytes, "diff");
   return { text, files: changed, truncated, empty: !body, available: true };
 }
 
