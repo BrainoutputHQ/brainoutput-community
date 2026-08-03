@@ -1727,29 +1727,33 @@ function escalationWorkerNode(esc) {
 
 /** RESUME on an owner answer: the paused worker stage re-runs with the Q&A in its prompt, then
  *  reports into the task and the execution exactly as the launch loop would have. */
+const resumingTasks = new Set();   // in-flight worker resumes (in-memory) — crash recovery must never relaunch one mid-resume
 async function resumeTaskWorker(exec, taskId) {
   const esc = exec.escalations?.[taskId];
   const task = (store.runtime.tasks || []).find((t) => t.id === taskId);
   if (!esc || !task || task.pendingQuestion) return;
   const workerNode = escalationWorkerNode(esc);
   if (!workerNode) return;
-  const cm = chatModelFor({});
-  const res = await runSpineTaskWorker({ task,
-    ctx: { prompt: exec.escalationCtx?.prompt || task.objective || task.title,
-      planOutput: exec.escalationCtx?.planOutput || "(plan output no longer available)",
-      index: esc.index, total: esc.total, workerNode,
-      autoModel: cm.connection && !cm.needsConfiguration ? cm : null,
-      codeWs: join(store.dir, "workspaces", exec.id) } });
-  if (res.blocked) { queueSyncSafe(task.projectId); return; }   // asked again — the card waits on the owner once more
-  const out = res.out;
-  // The resumed worker's report goes through the same per-task review as the launch loop.
-  await reportOrReviewSpineTask({ task, out, missionId: exec.missionId, agentId: task.assignee });
-  queueSyncSafe(task.projectId);   // a queue paused on this question continues on the completion
-  exec.results.push(out);
-  exec.logs.push(execLogLine(out));
-  const gi = (exec.graph || []).findIndex((g) => g.node === `worker-${esc.index}`);
-  if (gi >= 0) exec.graph[gi] = { ...exec.graph[gi], status: "done" };
-  store.addExecution(exec); store.saveRuntime();
+  resumingTasks.add(taskId);
+  try {
+    const cm = chatModelFor({});
+    const res = await runSpineTaskWorker({ task,
+      ctx: { prompt: exec.escalationCtx?.prompt || task.objective || task.title,
+        planOutput: exec.escalationCtx?.planOutput || "(plan output no longer available)",
+        index: esc.index, total: esc.total, workerNode,
+        autoModel: cm.connection && !cm.needsConfiguration ? cm : null,
+        codeWs: join(store.dir, "workspaces", exec.id) } });
+    if (res.blocked) { queueSyncSafe(task.projectId); return; }   // asked again — the card waits on the owner once more
+    const out = res.out;
+    // The resumed worker's report goes through the same per-task review as the launch loop.
+    await reportOrReviewSpineTask({ task, out, missionId: exec.missionId, agentId: task.assignee });
+    queueSyncSafe(task.projectId);   // a queue paused on this question continues on the completion
+    exec.results.push(out);
+    exec.logs.push(execLogLine(out));
+    const gi = (exec.graph || []).findIndex((g) => g.node === `worker-${esc.index}`);
+    if (gi >= 0) exec.graph[gi] = { ...exec.graph[gi], status: "done" };
+    store.addExecution(exec); store.saveRuntime();
+  } finally { resumingTasks.delete(taskId); }
 }
 
 // ── Run queue (task-pm-13) ──────────────────────────────────────────────────────────────────────
@@ -1761,6 +1765,14 @@ const queues = () => store.runtime.queues || [];
 const activeQueue = (projectId) =>
   queues().find((q) => q.projectId === projectId && (q.status === "running" || q.status === "paused")) || null;
 function saveQueue(q) { store.addQueue(q); store.saveRuntime(); return q; }
+
+// Crash recovery (task-pm-16): a queue whose current task died with the process relaunches it
+// ONCE per boot through the same launch path — bounded by recoveryAttempts (persisted per task):
+// after 2 attempts the queue pauses { kind: "recovery" } instead of crash-looping.
+const MAX_QUEUE_RECOVERY_ATTEMPTS = 2;
+const queueLaunching = new Set();   // taskIds with an in-flight queue launch (in-memory) — a
+                                    // concurrent queueSync must never mistake the launch window
+                                    // for a dead task and relaunch it a second time
 
 const taskRunningMission = (t) => !!(t?.missionId
   && (store.runtime.missions || []).some((m) => m.id === t.missionId && m.status === "running"));
@@ -1820,6 +1832,37 @@ async function queueSync(projectId) {
     const kind = cur.review ? "review-blocked" : "failed";
     return saveQueue({ ...q, status: "paused", kind, reason: `${kind}: ${cur.title}`, updatedAt: Date.now() });
   }
+  // CRASH RECOVERY (task-pm-16): the queue believes `cur` is running, but no live mission backs
+  // it — the process died mid-run (boot reconciliation already reset the task and its mission).
+  // Relaunch the SAME task through the existing taskLaunch machinery, bounded: 2 attempts per
+  // task, then the queue pauses { kind: "recovery" } — never a crash-loop. A finished run waiting
+  // on human gates (awaiting-approval) and an in-flight launch/resume are ALIVE, never recovered.
+  const curMission = cur?.missionId
+    ? (store.runtime.missions || []).find((x) => x.id === cur.missionId) : null;
+  const curAlive = taskRunningMission(cur) || curMission?.status === "awaiting-approval"
+    || queueLaunching.has(cur?.id) || resumingTasks.has(cur?.id);
+  if (q.status === "running" && cur && q.currentTaskId === cur.id && cur.status !== "done" && !curAlive) {
+    const attempts = q.recoveryAttempts?.[cur.id] || 0;
+    if (attempts >= MAX_QUEUE_RECOVERY_ATTEMPTS)
+      return saveQueue({ ...q, status: "paused", kind: "recovery",
+        reason: tChat("recovery.queuePause").replace("{title}", cur.title).replace("{n}", String(attempts)),
+        updatedAt: Date.now() });
+    q = saveQueue({ ...q, recoveryAttempts: { ...(q.recoveryAttempts || {}), [cur.id]: attempts + 1 }, updatedAt: Date.now() });
+    queueLaunching.add(cur.id);
+    let r;
+    try { r = await launchTaskInternal(cur.id); } finally { queueLaunching.delete(cur.id); }
+    if (!r || r.code !== 200 || !r.body?.started) {
+      // A refused recovery launch pauses the queue LOUD (fail-closed), naming task + attempts.
+      const msg = String(r?.body?.error || "launch refused").slice(0, 200);
+      const q2 = activeQueue(projectId);
+      if (q2 && q2.status === "running" && q2.currentTaskId === cur.id)
+        return saveQueue({ ...q2, status: "paused", kind: "recovery",
+          reason: `${tChat("recovery.queuePause").replace("{title}", cur.title).replace("{n}", String(attempts + 1))} — ${msg}`,
+          updatedAt: Date.now() });
+      return q2 || q;
+    }
+    return activeQueue(projectId) || q;
+  }
   if (q.status !== "running") return saveQueue({ ...q, updatedAt: Date.now() });
 
   if (!q.currentTaskId) {
@@ -1827,7 +1870,9 @@ async function queueSync(projectId) {
       t && t.status !== "done" && !q.completedTaskIds.includes(t.id) && !q.skippedTaskIds.includes(t.id) && queueTaskReady(t));
     if (next) {
       q = saveQueue({ ...q, currentTaskId: next.id, updatedAt: Date.now() });
-      const r = await launchTaskInternal(next.id);
+      queueLaunching.add(next.id);   // the launch window: a concurrent queueSync sees an alive task
+      let r;
+      try { r = await launchTaskInternal(next.id); } finally { queueLaunching.delete(next.id); }
       if (!r || r.code !== 200 || !r.body?.started) {
         // A refused launch pauses the queue LOUD (never a silent stall, never a skip).
         const msg = String(r?.body?.error || "launch refused").slice(0, 200);
@@ -1864,7 +1909,15 @@ async function queueStart(projectId) {
   if (active?.status === "running")
     return { code: 409, error: `project '${p.name}' already has a running queue`, queue: active };
   if (active?.status === "paused") {
-    saveQueue({ ...active, status: "running", kind: null, reason: null, updatedAt: Date.now() });
+    const patch = { status: "running", kind: null, reason: null, updatedAt: Date.now() };
+    // The owner resuming a recovery-paused queue is an explicit decision: the current task's
+    // recovery budget starts over (bounded again — 2 fresh attempts, never a crash-loop).
+    if (active.kind === "recovery" && active.currentTaskId && active.recoveryAttempts?.[active.currentTaskId]) {
+      const ra = { ...active.recoveryAttempts };
+      delete ra[active.currentTaskId];
+      patch.recoveryAttempts = ra;
+    }
+    saveQueue({ ...active, ...patch });
     return { code: 200, queue: await queueSync(p.id), resumed: true };
   }
   const q = { id: uid("queue"), projectId: p.id, taskIds: queueSeedOrder(p.id), status: "running",
@@ -1880,9 +1933,64 @@ function queueOnTaskLaunch(task) {
   const q = activeQueue(task.projectId);
   if (!q) return;
   const patch = { skippedTaskIds: (q.skippedTaskIds || []).filter((id) => id !== task.id), updatedAt: Date.now() };
-  if (q.status === "paused" && q.currentTaskId === task.id)
+  if (q.status === "paused" && q.currentTaskId === task.id) {
     Object.assign(patch, { status: "running", kind: null, reason: null });
+    // An explicit owner relaunch resets that task's recovery budget (task-pm-16).
+    if (q.kind === "recovery" && q.recoveryAttempts?.[task.id]) {
+      const ra = { ...q.recoveryAttempts };
+      delete ra[task.id];
+      patch.recoveryAttempts = ra;
+    }
+  }
   saveQueue({ ...q, ...patch });
+}
+
+/**
+ * BOOT RECONCILIATION (task-pm-16): a process death mid-run must never strand honest state.
+ * Deterministic, store-only, runs BEFORE the server listens:
+ *   - executions stuck "running"      → "failed", error "process restarted", finishedAt stamped
+ *   - missions stuck "running"        → "approved" again + a recovery note (relaunchable)
+ *   - tasks in-progress on a dead run → "todo" + a recovery note appended (result/review/qna and
+ *     any pendingQuestion are preserved — a task blocked on its question STAYS blocked)
+ *   - pending approvals stay pending (the owner's decision outlives any process)
+ * A clean boot (nothing running) changes nothing and writes nothing — runtime.json stays
+ * byte-identical. Bounded: a task keeps only its newest 20 recovery notes.
+ */
+function reconcileBoot() {
+  const rt = store.runtime;
+  const now = Date.now();
+  const out = { changed: false, executions: 0, missions: 0, tasks: 0 };
+  const diedMissionIds = new Set();
+  for (const e of rt.executions || []) {
+    if (e.status !== "running") continue;
+    store.addExecution({ ...e, status: "failed", error: tChat("recovery.processRestarted"), finishedAt: now });
+    if (e.missionId) diedMissionIds.add(e.missionId);
+    out.executions += 1; out.changed = true;
+  }
+  for (const m of rt.missions || []) {
+    if (m.status !== "running") continue;
+    store.addMission({ ...m, status: "approved", lastError: tChat("recovery.missionNote"), recoveredAt: now });
+    diedMissionIds.add(m.id);
+    out.missions += 1; out.changed = true;
+  }
+  if (diedMissionIds.size) {
+    // A task's run died when its own mission died — or, for a planner-made subtask (which carries
+    // no missionId), when its spine parent's mission died. Depth is bounded to one parent hop.
+    const diedFor = (t) => {
+      if (t.missionId && diedMissionIds.has(t.missionId)) return true;
+      const p = t.parentId ? (rt.tasks || []).find((x) => x.id === t.parentId) : null;
+      return !!(p && p.missionId && diedMissionIds.has(p.missionId));
+    };
+    for (const t of rt.tasks || []) {
+      if (t.status !== "in-progress" || t.pendingQuestion || !diedFor(t)) continue;
+      const recoveryNotes = [...(Array.isArray(t.recoveryNotes) ? t.recoveryNotes : []),
+        { note: tChat("recovery.taskNote"), at: now }].slice(-20);
+      store.addTask({ ...t, status: "todo", recoveryNotes, updatedAt: now });
+      out.tasks += 1; out.changed = true;
+    }
+  }
+  if (out.changed) store.saveRuntime();   // clean boot → no write at all (byte-identical)
+  return out;
 }
 
 /** The deterministic "where are we" answer: counts per status, the running task, blocked tasks
@@ -2105,16 +2213,36 @@ async function chatLaunch(res, b) {  const m = (store.runtime.missions || []).fi
           // questions from — link it onto every subtask (task-pm-05).
           const mPlan = (store.runtime.plans || []).filter((p) => p.conversationId === m.conversationId).at(-1)
             || (m.projectId ? latestProjectPlan(store.runtime, m.projectId) : null);
+          const usedChildIds = new Set();
           for (const t of planned) {
-            // Explicit unique id: newTask's default is millisecond-grained — several subtasks
-            // created in one ms would COLLIDE and only the last would survive. The planner's
-            // optional per-step directives (sanitized by parsePlannedTasks) land on the record —
-            // they BIND this task's worker (prompt + routing are fail-closed on them).
-            const st = newSubtask(store.runtime, spineTask.id, { id: uid("task"), title: t.title,
-              acceptanceCriteria: t.acceptanceCriteria || [], skills: t.skills || [], restrictions: t.restrictions || {},
-              planId: mPlan?.id || null,
-              assignee: r.agent, status: "todo", reporter: "you", at: Date.now() });
-            store.addTask(st);
+            // RELAUNCH reconciliation (task-pm-16): each planned step matches the spine parent's
+            // EXISTING children by stable identity (title within the same parent) — a relaunched
+            // mission REUSES records instead of minting duplicates whose done-skip could never
+            // match. A done child keeps its record + result (the runner skips it); a todo/blocked
+            // child re-runs under its ORIGINAL record; a genuinely new step gets a fresh record
+            // (explicit unique id: newTask's default is millisecond-grained — several created in
+            // one ms would COLLIDE). A child no longer in the new plan stays on the spine
+            // untouched — it is real history, just not part of this run.
+            const existing = (store.runtime.tasks || []).find((x) => x.parentId === spineTask.id
+              && x.title === t.title && !usedChildIds.has(x.id));
+            let st;
+            if (existing) {
+              st = existing.status === "done" ? existing
+                : store.addTask({ ...existing,
+                    acceptanceCriteria: t.acceptanceCriteria || existing.acceptanceCriteria,
+                    skills: t.skills || existing.skills,
+                    restrictions: t.restrictions || existing.restrictions,
+                    planId: existing.planId || mPlan?.id || null, updatedAt: Date.now() });
+            } else {
+              // The planner's optional per-step directives (sanitized by parsePlannedTasks) land
+              // on the record — they BIND this task's worker (prompt + routing, fail-closed).
+              st = newSubtask(store.runtime, spineTask.id, { id: uid("task"), title: t.title,
+                acceptanceCriteria: t.acceptanceCriteria || [], skills: t.skills || [], restrictions: t.restrictions || {},
+                planId: mPlan?.id || null,
+                assignee: r.agent, status: "todo", reporter: "you", at: Date.now() });
+              store.addTask(st);
+            }
+            usedChildIds.add(st.id);
             decomposed.subtasks.push(st);
           }
           const wi = r.plan.findIndex((n) => n === workerNode);
@@ -2174,6 +2302,22 @@ async function chatLaunch(res, b) {  const m = (store.runtime.missions || []).fi
         exec.escalationCtx = { prompt: safeSlice(prompt, 6000), planOutput: safeSlice(pr.output, 1200) };
         exec.escalations = {};
         for (const [i, st] of decomposed.subtasks.entries()) {
+          // RESUME (task-pm-16): a subtask already done keeps its result and is NEVER executed
+          // again — relaunched work picks up where the interrupted run stopped. A subtask still
+          // blocked on its pending question waits on the OWNER, not on a re-run.
+          const liveSt = (store.runtime.tasks || []).find((t) => t.id === st.id) || st;
+          if (liveSt.status === "done") {
+            results.push({ node: `worker-${i + 1}`, output: "(already done — the previous result was kept)", tokens: 0, resumed: true });
+            exec.logs.push(`worker-${i + 1}: already done — result kept, stage not re-run`);
+            if (exec.graph[wi + i]) exec.graph[wi + i] = { ...exec.graph[wi + i], status: "done" };
+            updateExec({});
+            continue;
+          }
+          if (liveSt.pendingQuestion) {
+            exec.logs.push(`worker-${i + 1}: waiting on the owner's answer — not re-run`);
+            updateExec({});
+            continue;
+          }
           store.addTask(setTaskStatus(store.runtime, st.id, "in-progress", { at: Date.now() }));
           exec.escalations[st.id] = { index: i + 1, total: decomposed.subtasks.length,
             worker: { slot: workerNode.slot, connectionId: workerNode.model?.connection?.id || null } };
@@ -2521,6 +2665,23 @@ async function runTask(res, b) {
   task.status = "done"; store.save();
   return json(res, { execution: exec, brainoutputFundedTokens: rep.brainoutputFundedTokens });
 }
+
+// ── Crash recovery (task-pm-16) — BEFORE serving: nothing may ever again show as "running"
+// when no process is running it. Reconciliation is deterministic and store-only; a clean boot
+// writes nothing (runtime.json byte-identical). A recovery failure is loud but never blocks the
+// dashboard (the pre-recovery behavior is a stranded record, not an outage).
+try {
+  const rec = reconcileBoot();
+  if (rec.changed)
+    console.log(`  crash recovery: ${rec.executions} execution(s) failed (process restarted), ${rec.missions} mission(s) relaunchable, ${rec.tasks} task(s) back to todo`);
+} catch (e) {
+  try { recordError(store, { source: "recovery", message: e.message, stack: e.stack }); } catch {}
+  console.error(`  crash recovery failed: ${e.message}`);
+}
+// Queues that were running when the process died resume now (bounded per task — never a
+// crash-loop); queues paused by the owner or by a problem stay paused exactly as they were.
+for (const pid of new Set((store.runtime.queues || []).filter((q) => q.status === "running").map((q) => q.projectId)))
+  queueSyncSafe(pid);
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
