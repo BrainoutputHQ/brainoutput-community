@@ -86,7 +86,10 @@ export function opencodeAvailable() { return existsSync(OPENCODE_BIN); }
 
 // Pure: turn a Community model connection into an isolated opencode config (no founder creds).
 // Rejects any connection that isn't user/free/local (defense in depth with ce-core.validateConnection).
-export function connectionToConfig(connection) {
+// `permissionGrant` defaults to the coding-worker grant (byte-identical to every existing caller);
+// opencode-chat.mjs passes CHAT_PERMISSION_GRANT so the ISOLATED-HOME config and the workspace-level
+// one (written below by prepareOpenCodeWorkspace) agree — neither is left open by omission.
+export function connectionToConfig(connection, { permissionGrant = WORKSPACE_PERMISSION_GRANT } = {}) {
   if (!connection || !["local", "user", "free"].includes(connection.funder))
     throw new Error(`opencode adapter refuses non-user/free/local connection (funder=${connection?.funder})`);
   const providerId = (connection.provider || "user-model").replace(/[^a-zA-Z0-9_-]/g, "-");
@@ -110,7 +113,7 @@ export function connectionToConfig(connection) {
       // Explicit belt on top of the auth-less isolation: BrainOutput's dev/paid providers are
       // disabled. NEVER include "opencode" here — disabling opencode's own provider hangs init.
       disabled_providers: ["kimi-for-coding", "moonshotai", "moonshotai-cn"],
-      permission: { edit: "allow", write: "allow", bash: "allow", webfetch: "deny", external_directory: "deny" },
+      permission: permissionGrant,
       provider: {
         [providerId]: {
           npm: "@ai-sdk/openai-compatible",
@@ -137,11 +140,20 @@ export function connectionToConfig(connection) {
 // this workspace never reaches the network or outside its own confined root.
 export const WORKSPACE_PERMISSION_GRANT = { edit: "allow", write: "allow", bash: "allow", webfetch: "deny", external_directory: "deny" };
 
+// A CHAT answer needs NONE of the above: no file edit, no shell, no network fetch. Denying every
+// tool up front means the model never attempts one (never waits on a permission "ask" that a
+// headless run auto-rejects anyway) — it just answers in text, which is the whole point of the
+// lightest-possible OpenCode-routed path (opencode-chat.mjs). Exported so that module (and its
+// test) never hand-roll a second, possibly-diverging grant.
+export const CHAT_PERMISSION_GRANT = { edit: "deny", write: "deny", bash: "deny", webfetch: "deny", external_directory: "deny" };
+
 // Prepare the isolated HOME/XDG + confined workspace an OpenCode process needs. Shared by the
 // one-shot runner and the persistent server so both get IDENTICAL isolation guarantees.
-// Returns the canonicalized workspace path and the isolated-home path.
-export function prepareOpenCodeWorkspace({ connection, workspace, isoBase, approvedRoots }) {
-  const { modelRef, config } = connectionToConfig(connection);
+// Returns the canonicalized workspace path and the isolated-home path. `permissionGrant` defaults
+// to the coding-worker grant above (byte-identical to every existing caller); opencode-chat.mjs is
+// the only caller that overrides it, with CHAT_PERMISSION_GRANT.
+export function prepareOpenCodeWorkspace({ connection, workspace, isoBase, approvedRoots, permissionGrant = WORKSPACE_PERMISSION_GRANT }) {
+  const { modelRef, config } = connectionToConfig(connection, { permissionGrant });
   // Approved-workspace registry (prod-readiness gap: repo registry): confine ALL file ops to an
   // approved root and refuse fail-closed if the requested path escapes it (traversal / absolute host
   // path / symlink escape). The canonicalized path `ws` is used everywhere below.
@@ -164,7 +176,7 @@ export function prepareOpenCodeWorkspace({ connection, workspace, isoBase, appro
   // workspace permissions: allow work IN the workspace, deny reaching outside it or the network.
   writeFileSync(join(ws, "opencode.json"), JSON.stringify({
     $schema: "https://opencode.ai/config.json",
-    permission: WORKSPACE_PERMISSION_GRANT,
+    permission: permissionGrant,
   }));
   if (!existsSync(join(ws, ".git"))) { try { execFileSync("git", ["-C", ws, "init", "-q"]); } catch {} }
   try { execFileSync("git", ["-C", ws, "add", "-A"]); execFileSync("git", ["-C", ws, "-c", "user.email=ce@local", "-c", "user.name=ce", "commit", "-qm", "pre", "--allow-empty"]); } catch {}
