@@ -416,6 +416,13 @@ export const CATALOG = {
     "opencode.directive.unknownAgent": "Agent '{name}' is not present in the live OpenCode agent registry (available: {available}) — refusing to route this task rather than silently falling back.",
     "opencode.context.compacted": "Context usage reached {pct}% of the model's context window mid-run — the session was compacted. A task large enough to need compaction means the plan decomposed it too coarsely; recorded as a planner defect.",
     "opencode.context.compactUnavailable": "Context usage reached {pct}% of the model's context window and compaction was attempted, but the server reported it is not available yet (HTTP {status}). Still recorded as a planner defect — the task was too large for one step regardless.",
+    // Context-relief rotation (2026-08-04): compaction genuinely does not exist in this OpenCode
+    // build (POST /compact reproducibly 503s), so the runtime clears context by starting a fresh
+    // session with a compact brief instead. Both outcomes are planner-defect signals, same as
+    // compaction above — a task large enough to need either means the plan decomposed it too
+    // coarsely. {n} is the rotation number just used; {max} is the configured rotation cap.
+    "opencode.context.rotated": "Context usage reached {pct}% of the model's context window and compaction is unavailable — starting a fresh session (rotation {n}) seeded with a compact brief instead of compacting in place. A task large enough to need this means the plan decomposed it too coarsely; recorded as a planner defect.",
+    "opencode.context.rotationCapReached": "Context usage reached {pct}% of the model's context window again after {max} session rotation(s) already used — stopping the run honestly instead of rotating forever. The task needs to be re-planned into smaller steps.",
   },
   fr: {
     "app.tagline": "Vos modèles · vos clés",
@@ -824,6 +831,8 @@ export const CATALOG = {
     "opencode.directive.unknownAgent": "L'agent « {name} » n'existe pas dans le registre OpenCode en direct (disponibles : {available}) — la tâche est refusée plutôt que basculée silencieusement.",
     "opencode.context.compacted": "L'utilisation du contexte a atteint {pct}% de la fenêtre du modèle en cours d'exécution — la session a été compactée. Une tâche assez grande pour nécessiter un compactage signale un plan mal découpé ; enregistré comme défaut de planification.",
     "opencode.context.compactUnavailable": "L'utilisation du contexte a atteint {pct}% de la fenêtre du modèle et un compactage a été tenté, mais le serveur l'a signalé indisponible pour l'instant (HTTP {status}). Enregistré quand même comme défaut de planification — la tâche était de toute façon trop grande pour une seule étape.",
+    "opencode.context.rotated": "L'utilisation du contexte a atteint {pct}% de la fenêtre du modèle et le compactage est indisponible — une nouvelle session (rotation {n}) démarre avec un résumé compact au lieu d'un compactage sur place. Une tâche assez grande pour nécessiter cela signale un plan mal découpé ; enregistré comme défaut de planification.",
+    "opencode.context.rotationCapReached": "L'utilisation du contexte a de nouveau atteint {pct}% de la fenêtre du modèle après {max} rotation(s) de session déjà utilisée(s) — arrêt honnête de l'exécution plutôt qu'une rotation infinie. La tâche doit être replanifiée en étapes plus petites.",
   },
   de: {
     "app.tagline": "Ihre Modelle · Ihre Schlüssel",
@@ -1232,6 +1241,8 @@ export const CATALOG = {
     "opencode.directive.unknownAgent": "Agent '{name}' ist nicht im aktuellen OpenCode-Agent-Register vorhanden (verfügbar: {available}) — die Aufgabe wird abgelehnt, statt still auf einen Standard umzuschalten.",
     "opencode.context.compacted": "Die Kontextnutzung erreichte {pct}% des Modell-Kontextfensters während des Laufs — die Sitzung wurde komprimiert. Eine Aufgabe, die groß genug für eine Komprimierung ist, zeigt einen zu grob zerlegten Plan; als Planungsfehler erfasst.",
     "opencode.context.compactUnavailable": "Die Kontextnutzung erreichte {pct}% des Modell-Kontextfensters, und eine Komprimierung wurde versucht, aber der Server meldete, sie sei noch nicht verfügbar (HTTP {status}). Trotzdem als Planungsfehler erfasst — die Aufgabe war ohnehin zu groß für einen Schritt.",
+    "opencode.context.rotated": "Die Kontextnutzung erreichte {pct}% des Modell-Kontextfensters, und eine Komprimierung ist nicht verfügbar — es wird eine neue Sitzung (Rotation {n}) mit einer kompakten Kurzfassung gestartet, statt vor Ort zu komprimieren. Eine Aufgabe, die dafür groß genug ist, zeigt einen zu grob zerlegten Plan; als Planungsfehler erfasst.",
+    "opencode.context.rotationCapReached": "Die Kontextnutzung erreichte erneut {pct}% des Modell-Kontextfensters, nachdem bereits {max} Sitzungsrotation(en) verwendet wurden — der Lauf wird ehrlich gestoppt, statt endlos zu rotieren. Die Aufgabe muss in kleinere Schritte neu geplant werden.",
   },
 };
 

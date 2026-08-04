@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { prepareOpenCodeWorkspace } from "./opencode-adapter.mjs";
 import { detectNoWork } from "./work-evidence.mjs";
 import { t } from "./i18n.mjs";
+import { safeSlice } from "./ce-core.mjs";
 // Live activity registry (oc-live-view, 2026-08-04): lets a browser watch THIS session while the
 // run below is still in flight, and lets a stop button reach the real interrupt endpoint — without
 // this module or the registry ever handing the OpenCode server's baseURL/port to anything outside
@@ -48,6 +49,13 @@ export const REGISTRY_POLL_MS = 300;
 // mid-run compaction. 0.8 leaves real headroom for the step that pushed usage over the line to
 // actually finish before the window is exhausted.
 export const DEFAULT_CONTEXT_COMPACT_THRESHOLD = 0.8;
+// CONTEXT RELIEF (2026-08-04) — POST /compact reproducibly 503s "not available yet" in this
+// OpenCode build (verified live, docs §12): there is no in-place compaction to fall back on. The
+// runtime OWNS session lifecycle though, so the "clear context" half is still achievable: rotate
+// to a brand-new session carrying a compact brief instead. Bounded — a task that keeps re-crossing
+// the threshold after this many rotations is a planning failure no amount of rotating fixes;
+// past the cap the run stops honestly rather than rotating forever (mission hard requirement 4).
+export const DEFAULT_MAX_CONTEXT_ROTATIONS = 2;
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -456,6 +464,53 @@ export function stopServer(proc, { graceMs = 4000 } = {}) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Context relief support — session rotation. Two small, pure helpers shared by every attempt the
+// watch loop below drives (the original session AND every rotated replacement).
+// ---------------------------------------------------------------------------------------------
+
+/** The SAME git-diff technique used at real completion (below), factored out so a rotation can
+ *  read "what has been changed so far" mid-run for the brief, and the final result computes it
+ *  identically regardless of how many sessions this call actually drove. Never touches git state
+ *  (no init/commit) — the workspace is shared across every session in this call and must stay
+ *  exactly as prepareOpenCodeWorkspace left it (pre-committed once, up front). */
+export function gitChangedFilesNow(workspace) {
+  let changedFiles = [];
+  try {
+    changedFiles = execFileSync("git", ["-C", workspace, "diff", "--name-only", "HEAD"], { encoding: "utf8" })
+      .split("\n").filter(Boolean).filter((f) => f !== "opencode.json");
+  } catch { /* not a git workspace, or nothing changed — changedFiles stays empty, honestly */ }
+  try {
+    changedFiles.push(...execFileSync("git", ["-C", workspace, "ls-files", "--others", "--exclude-standard"], { encoding: "utf8" })
+      .split("\n").filter(Boolean).filter((f) => f !== "opencode.json" && !f.startsWith(".oc-iso")));
+  } catch { /* same */ }
+  return [...new Set(changedFiles)];
+}
+
+/**
+ * The compact brief a rotated session opens with — the whole cross-session memory contract for
+ * context relief, mirroring projectBrief's "a worker should never start cold" idea (projects.mjs).
+ * Plain, un-localized prompt text: it is MODEL input, not UI copy, exactly like workerPartPrompt's
+ * (plan-tasks.mjs) task prompts — this repo never localizes text sent TO the model, only text
+ * shown/logged FOR a human (the rotation's own planner-defect reason, which IS localized via
+ * i18n.mjs, is a separate string — see the "opencode.context.rotated" key). Pure and bounded.
+ */
+export function buildRotationBrief({ prompt, changedFiles = [], rotationNumber = 1, maxLen = 4000 } = {}) {
+  const filesLine = changedFiles.length
+    ? `Files already changed this run so far (do not redo this work — read their current contents before touching them again): ${changedFiles.join(", ")}`
+    : "No files have been changed yet this run.";
+  const brief = `You are CONTINUING an in-progress task in a brand-new session (rotation ${rotationNumber}). The previous session's context window filled up and this runtime has no working in-place compaction, so a fresh session was started instead. Nothing about the task itself changed: same workspace, same objective, same constraints — only the session is new.
+
+ORIGINAL OBJECTIVE (verbatim, unchanged):
+${prompt}
+
+WORK DONE SO FAR THIS RUN:
+${filesLine}
+
+Continue the work from exactly where it left off. Do not start over and do not repeat work already reflected in the files above.`;
+  return safeSlice(brief, maxLen);
+}
+
+// ---------------------------------------------------------------------------------------------
 // The core session-driving flow, factored out from server process management so it is testable
 // against ANY already-running server (a stub HTTP server in tests, a real `opencode serve` in the
 // live end-to-end run) without needing to spawn a real opencode binary. Returns a result shape
@@ -470,202 +525,312 @@ export async function runSessionAgainstServer({ baseURL, workspace, providerID, 
   // to a no-directive/English no-op so every existing caller (and every prior test) is unaffected.
   task = {}, locale = "en", registryTimeoutMs = DEFAULT_REGISTRY_TIMEOUT_MS, registryPollMs = REGISTRY_POLL_MS,
   contextCompactThreshold = DEFAULT_CONTEXT_COMPACT_THRESHOLD,
-  // oc-live-view: fired ONCE, the moment the session exists — the caller's one chance to record
-  // the session id somewhere a browser can look it up WHILE this function is still running (e.g.
-  // onto an execution record). A throwing hook must never take the run down with it.
+  // CONTEXT RELIEF (requirement 4): a hard, bounded cap on how many times ONE call to this function
+  // will rotate to a fresh session. Past the cap the run stops honestly rather than rotating forever.
+  maxContextRotations = DEFAULT_MAX_CONTEXT_ROTATIONS,
+  // oc-live-view: fired ONCE PER SESSION (the original, and again for every rotation) — the caller's
+  // chance to record the CURRENT live session id somewhere a browser can look it up WHILE this
+  // function is still running (e.g. onto an execution record). A throwing hook must never take the
+  // run down with it. Requirement 5: a rotation must call this again with the NEW id, or a browser
+  // watching the old id sits on a stream this function has already ended.
   onSessionStart = () => {} }) {
-  const session = await createSession(baseURL, { directory: workspace, requestTimeoutMs });
-  const sessionID = session.id;
+  // Accumulated across EVERY session this call ends up driving (the original, plus any rotations) —
+  // the final result reports the union, and the run log carries every session's events in order, so
+  // a rotation is always visible in the evidence trail rather than silently swapping identities.
+  const allEventTypes = [];
+  const allContextChecks = [];
+  // Tokens spent by sessions this call ABANDONED (rotated away from). Harvested at the moment of
+  // rotation, because once the loop moves on nothing else ever reads that session again. Without
+  // this a rotated run under-reports its spend exactly when spend is highest — the run rotated
+  // BECAUSE it had filled a context window, so the abandoned session is the expensive one.
+  const carriedTokens = { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 };
+  let rotationsUsed = 0;
+  let attemptPrompt = prompt; // replaced with buildRotationBrief() output after each rotation
 
-  // Register with the live registry as early as physically possible — before the directive gate,
-  // before the model gate, before selecting, before prompting — so a browser watching this task
-  // sees a gate refusal or a setup failure as it happens instead of only the eventual (possibly
-  // much later) final result.
-  liveSessions.start(sessionID, { interrupt: () => interruptSession(baseURL, sessionID, { requestTimeoutMs }) });
-  try { onSessionStart(sessionID); } catch { /* the caller's bookkeeping must never break the run */ }
+  for (;;) {
+    const session = await createSession(baseURL, { directory: workspace, requestTimeoutMs });
+    const sessionID = session.id;
 
-  // HARD REQUIREMENT 1a — routing directives are fail-closed BEFORE selecting or prompting, exactly
-  // like the model gate below: an unknown skill/agentSlot must never silently degrade to a default
-  // route (task-pm-04, mirrored here for OpenCode's own registry — see resolveRoutingDirectives).
-  const directives = await resolveRoutingDirectives(baseURL, task, { locale, timeoutMs: registryTimeoutMs, pollMs: registryPollMs, requestTimeoutMs });
-  if (!directives.ok) {
-    // This early return is the ONLY one the live-view branch never saw (the directive gate did not
-    // exist there), so it must end the live session explicitly — otherwise a browser watching this
-    // task would sit on a stream that never closes.
-    liveSessions.end(sessionID, { status: "failed", reason: directives.reason });
-    return {
-      ok: false, sessionId: sessionID, changedFiles: [], tokens: 0, tokensDetail: null, providersUsed: [],
-      log: directives.reason, noWork: true, noWorkReason: directives.reason, events: [], compactions: [],
+    // Register with the live registry as early as physically possible — before the directive gate,
+    // before the model gate, before selecting, before prompting — so a browser watching this task
+    // sees a gate refusal or a setup failure as it happens instead of only the eventual (possibly
+    // much later) final result. Runs again, with the NEW id, on every rotation (requirement 5).
+    liveSessions.start(sessionID, { interrupt: () => interruptSession(baseURL, sessionID, { requestTimeoutMs }) });
+    try { onSessionStart(sessionID); } catch { /* the caller's bookkeeping must never break the run */ }
+
+    // HARD REQUIREMENT 1a — routing directives are fail-closed BEFORE selecting or prompting, exactly
+    // like the model gate below: an unknown skill/agentSlot must never silently degrade to a default
+    // route (task-pm-04, mirrored here for OpenCode's own registry — see resolveRoutingDirectives).
+    // Re-checked on every rotated session too — never skipped just because the ORIGINAL session
+    // already passed it once.
+    const directives = await resolveRoutingDirectives(baseURL, task, { locale, timeoutMs: registryTimeoutMs, pollMs: registryPollMs, requestTimeoutMs });
+    if (!directives.ok) {
+      // This early return is the ONLY one the live-view branch never saw (the directive gate did not
+      // exist there), so it must end the live session explicitly — otherwise a browser watching this
+      // task would sit on a stream that never closes.
+      liveSessions.end(sessionID, { status: "failed", reason: directives.reason });
+      return {
+        ok: false, sessionId: sessionID, changedFiles: gitChangedFilesNow(workspace), tokens: 0, tokensDetail: null, providersUsed: [],
+        log: directives.reason, noWork: true, noWorkReason: directives.reason,
+        events: allEventTypes, compactions: allContextChecks.filter((c) => c.triggered), rotations: rotationsUsed,
+      };
+    }
+
+    // HARD REQUIREMENT 1b — fail-closed BEFORE selecting or prompting. See createTerminalWatcher's
+    // doc comment and docs §9 for exactly what happens if this gate is skipped: silent forever-hang.
+    // SAME gate, re-run for a rotated session too — mission hard requirement: never skip the
+    // fail-closed model-registry gate on the rotated session.
+    const gate = await verifyModelPresent(baseURL, { providerID, modelID, timeoutMs: modelCatalogTimeoutMs, requestTimeoutMs });
+    if (!gate.present) {
+      const available = gate.catalog.map((m) => `${m.providerID}/${m.id}`).join(", ") || "(none)";
+      const reason = `model ${providerID}/${modelID} is not present in GET /api/model — refusing to select/prompt it ` +
+        `(an absent-from-registry model can still be selected+admitted and then never executes, silently, forever — see docs/OPENCODE_SERVER_API.md §9)`;
+      liveSessions.end(sessionID, { status: "failed", reason });
+      return {
+        ok: false, sessionId: sessionID, changedFiles: gitChangedFilesNow(workspace), tokens: 0, tokensDetail: null, providersUsed: [],
+        log: `model ${providerID}/${modelID} is absent from GET /api/model — refused BEFORE selecting/prompting it. available: ${available}`,
+        noWork: true,
+        noWorkReason: reason,
+        events: allEventTypes, compactions: allContextChecks.filter((c) => c.triggered), rotations: rotationsUsed,
+      };
+    }
+    // The model's own context window — the denominator context-compaction/rotation monitoring
+    // compares usage against. Absent (no `limit.context` on this catalog entry) → the check is a no-op.
+    const contextLimit = gate.model?.limit?.context || null;
+
+    // HARD REQUIREMENT 2 — subscribe BEFORE prompting. The subscription's onEvent is wrapped so that
+    // EVERY step boundary (intermediate or terminal) also schedules a context-usage check — "while
+    // running" compaction/rotation monitoring, not just a single before/after snapshot. Checks are
+    // chained sequentially (never run concurrently against the same session) via checkChain.
+    const watcher = createTerminalWatcher();
+    const contextChecksThisAttempt = [];
+    let checkChain = Promise.resolve();
+    // CONTEXT RELIEF: resolved (once) the moment a mid-run check crosses the threshold AND the
+    // server's own /compact did NOT genuinely succeed — the signal the watch-loop race below acts
+    // on to abandon this session and rotate, or to stop the whole run at the cap. `rotationDecided`
+    // guards against deciding twice from two checks chained back to back.
+    let rotationDecided = false;
+    let resolveRotationSignal;
+    // The signal carries the DECIDING record inline ({action, record}) rather than making the
+    // watch-loop re-derive "the deciding record" from array position afterwards — the pre-run
+    // check (below) and this event-driven chain are two INDEPENDENT concurrent HTTP round trips
+    // once the event stream is live, so "whatever is last in contextChecksThisAttempt" is not a
+    // safe way to identify which record actually triggered the decision.
+    const rotationSignal = new Promise((r) => { resolveRotationSignal = r; });
+    const scheduleContextCheck = () => {
+      checkChain = checkChain
+        .then(() => checkContextAndCompact(baseURL, sessionID, { contextLimit, threshold: contextCompactThreshold, locale, requestTimeoutMs }))
+        .then((rec) => {
+          if (!rec) return;
+          contextChecksThisAttempt.push(rec);
+          // Requirement 1: try /compact first — a genuine 204 keeps the existing behaviour (no
+          // rotation). Only an unavailable/failed attempt (triggered but NOT compacted) is grounds
+          // for rotation at all.
+          if (rotationDecided || !rec.triggered || rec.compacted) return;
+          rotationDecided = true;
+          const pct = String(Math.round(rec.usage.ratio * 100));
+          if (rotationsUsed >= maxContextRotations) {
+            // Requirement 4 — the bounded cap: stop rotating, and stop the run, honestly.
+            const reason = t(locale, "opencode.context.rotationCapReached").replace("{pct}", pct).replace("{max}", String(maxContextRotations));
+            const record = { usage: rec.usage, triggered: true, compacted: false, status: rec.status, rotationCapReached: true, defect: { reason } };
+            contextChecksThisAttempt.push(record);
+            resolveRotationSignal({ action: "cap", record });
+          } else {
+            // Requirement 3 — recorded as a planner-defect signal exactly like a compaction: a task
+            // large enough to need this was decomposed badly.
+            const reason = t(locale, "opencode.context.rotated").replace("{pct}", pct).replace("{n}", String(rotationsUsed + 1));
+            const record = { usage: rec.usage, triggered: true, compacted: false, status: rec.status, rotated: true, defect: { reason } };
+            contextChecksThisAttempt.push(record);
+            resolveRotationSignal({ action: "rotate", record });
+          }
+        })
+        .catch(() => { /* a failed context check/compaction attempt never breaks the run itself */ });
     };
-  }
-
-  // HARD REQUIREMENT 1b — fail-closed BEFORE selecting or prompting. See createTerminalWatcher's
-  // doc comment and docs §9 for exactly what happens if this gate is skipped: silent forever-hang.
-  const gate = await verifyModelPresent(baseURL, { providerID, modelID, timeoutMs: modelCatalogTimeoutMs, requestTimeoutMs });
-  if (!gate.present) {
-    const available = gate.catalog.map((m) => `${m.providerID}/${m.id}`).join(", ") || "(none)";
-    const reason = `model ${providerID}/${modelID} is not present in GET /api/model — refusing to select/prompt it ` +
-      `(an absent-from-registry model can still be selected+admitted and then never executes, silently, forever — see docs/OPENCODE_SERVER_API.md §9)`;
-    liveSessions.end(sessionID, { status: "failed", reason });
-    return {
-      ok: false, sessionId: sessionID, changedFiles: [], tokens: 0, tokensDetail: null, providersUsed: [],
-      log: `model ${providerID}/${modelID} is absent from GET /api/model — refused BEFORE selecting/prompting it. available: ${available}`,
-      noWork: true,
-      noWorkReason: reason,
-      events: [], compactions: [],
+    // Every event ALSO feeds the live registry (projected + capped there — see live-session.mjs) so
+    // a browser watching this session sees the exact same activity the completion-detection watcher
+    // is reading, in real time.
+    // Set SYNCHRONOUSLY the moment the terminal step is seen. The stream legitimately closes right
+    // after a successful run, so "stream closed" alone must never be read as failure — without this
+    // flag a normal completion whose close lands in the same tick is misreported as a dead server.
+    // It ALSO takes precedence over a rotation signal that arrives in the same tick: a run that
+    // already finished has nothing left to rotate.
+    let terminalSeen = false;
+    const onEvent = (evt) => {
+      watcher.onEvent(evt);
+      liveSessions.push(sessionID, evt);
+      allEventTypes.push(evt?.type);
+      if (evt && evt.type === "session.next.step.ended" && evt.data && evt.data.finish === "stop") terminalSeen = true;
+      if (contextLimit && evt && evt.type === "session.next.step.ended") scheduleContextCheck();
     };
-  }
-  // The model's own context window — the denominator context-compaction monitoring compares usage
-  // against. Absent (no `limit.context` on this catalog entry) → checkContextAndCompact is a no-op.
-  const contextLimit = gate.model?.limit?.context || null;
+    const sub = subscribeEvents(baseURL, sessionID, onEvent);
+    const readyTimer = timeoutAfter(1500);
+    await Promise.race([sub.ready, readyTimer.promise]);
+    readyTimer.cancel();
 
-  // HARD REQUIREMENT 2 — subscribe BEFORE prompting. The subscription's onEvent is wrapped so that
-  // EVERY step boundary (intermediate or terminal) also schedules a context-usage check — "while
-  // running" compaction monitoring, not just a single before/after snapshot. Checks are chained
-  // sequentially (never run concurrently against the same session) via checkChain.
-  const watcher = createTerminalWatcher();
-  const contextChecks = [];
-  let checkChain = Promise.resolve();
-  const scheduleContextCheck = () => {
-    checkChain = checkChain
-      .then(() => checkContextAndCompact(baseURL, sessionID, { contextLimit, threshold: contextCompactThreshold, locale, requestTimeoutMs }))
-      .then((rec) => { if (rec) contextChecks.push(rec); })
-      .catch(() => { /* a failed context check/compaction attempt never breaks the run itself */ });
-  };
-  // Every event ALSO feeds the live registry (projected + capped there — see live-session.mjs) so
-  // a browser watching this session sees the exact same activity the completion-detection watcher
-  // is reading, in real time.
-  // Set SYNCHRONOUSLY the moment the terminal step is seen. The stream legitimately closes right
-  // after a successful run, so "stream closed" alone must never be read as failure — without this
-  // flag a normal completion whose close lands in the same tick is misreported as a dead server.
-  let terminalSeen = false;
-  const onEvent = (evt) => {
-    watcher.onEvent(evt);
-    liveSessions.push(sessionID, evt);
-    if (evt && evt.type === "session.next.step.ended" && evt.data && evt.data.finish === "stop") terminalSeen = true;
-    if (contextLimit && evt && evt.type === "session.next.step.ended") scheduleContextCheck();
-  };
-  const sub = subscribeEvents(baseURL, sessionID, onEvent);
-  const readyTimer = timeoutAfter(1500);
-  await Promise.race([sub.ready, readyTimer.promise]);
-  readyTimer.cancel();
+    // "Before running" context check — covers a session that already carries context (e.g. a future
+    // resumed/forked session) crossing the threshold before the first prompt of THIS call even lands.
+    // Deliberately NOT wired to rotation: a session at this point has not been prompted yet in this
+    // call, so there is nothing to abandon/replace — it stays exactly the pre-existing compaction-only
+    // signal.
+    if (contextLimit) {
+      try {
+        const pre = await checkContextAndCompact(baseURL, sessionID, { contextLimit, threshold: contextCompactThreshold, locale, requestTimeoutMs });
+        if (pre) contextChecksThisAttempt.push(pre);
+      } catch { /* best-effort — never blocks the run */ }
+    }
 
-  // "Before running" context check — covers a session that already carries context (e.g. a future
-  // resumed/forked session) crossing the threshold before the first prompt of THIS call even lands.
-  if (contextLimit) {
     try {
-      const pre = await checkContextAndCompact(baseURL, sessionID, { contextLimit, threshold: contextCompactThreshold, locale, requestTimeoutMs });
-      if (pre) contextChecks.push(pre);
-    } catch { /* best-effort — never blocks the run */ }
-  }
+      // The agentSlot directive (already confirmed present in GET /api/agent by resolveRoutingDirectives
+      // above) binds which OpenCode agent runs the turn — switched before selecting the model/prompting.
+      if (directives.agentId) await switchAgent(baseURL, sessionID, directives.agentId, { requestTimeoutMs });
+      await selectModel(baseURL, sessionID, { id: modelID, providerID, requestTimeoutMs });
+      await sendPrompt(baseURL, sessionID, attemptPrompt, { requestTimeoutMs });
+    } catch (e) {
+      sub.stop();
+      liveSessions.end(sessionID, { status: "failed", reason: `failed before the run could start: ${e.message || e}` });
+      allContextChecks.push(...contextChecksThisAttempt);
+      return {
+        ok: false, sessionId: sessionID, changedFiles: gitChangedFilesNow(workspace), tokens: 0, tokensDetail: null, providersUsed: [providerID],
+        log: String(e.message || e), noWork: true, noWorkReason: `failed before the run could start: ${e.message || e}`,
+        events: allEventTypes, compactions: allContextChecks.filter((c) => c.triggered), rotations: rotationsUsed,
+      };
+    }
 
-  try {
-    // The agentSlot directive (already confirmed present in GET /api/agent by resolveRoutingDirectives
-    // above) binds which OpenCode agent runs the turn — switched before selecting the model/prompting.
-    if (directives.agentId) await switchAgent(baseURL, sessionID, directives.agentId, { requestTimeoutMs });
-    await selectModel(baseURL, sessionID, { id: modelID, providerID, requestTimeoutMs });
-    await sendPrompt(baseURL, sessionID, prompt, { requestTimeoutMs });
-  } catch (e) {
+    // Enforce the overall timeout, detect the event STREAM ITSELF closing early (e.g. the opencode
+    // serve process dying mid-run), AND race a mid-run context-relief signal. `sub.done` (the SSE
+    // read loop's own promise) settles the moment the underlying connection ends, by any means;
+    // during this race that can only be a genuine drop, because our own `sub.stop()` (the only abort
+    // we ever issue) runs strictly AFTER this race below. Both branches of `.then(f, f)` count — the
+    // stream ending because the fetch itself rejected is just as real a "connection is gone" signal
+    // as a clean EOF.
+    const termTimer = timeoutAfter(timeoutMs);
+    let timedOut = false, streamClosed = false, rotationOutcome = null;
+    const onStreamSettled = () => { streamClosed = true; };
+    await Promise.race([
+      watcher.terminal,
+      termTimer.promise.then(() => { timedOut = true; }),
+      sub.done.then(onStreamSettled, onStreamSettled),
+      rotationSignal.then((r) => { rotationOutcome = r; }),
+    ]);
+    termTimer.cancel();
     sub.stop();
-    liveSessions.end(sessionID, { status: "failed", reason: `failed before the run could start: ${e.message || e}` });
+    await checkChain; // let any context check already scheduled by the last observed step finish
+
+    allContextChecks.push(...contextChecksThisAttempt);
+
+    // CONTEXT RELIEF — rotate: this session is abandoned mid-run (best-effort interrupt, exactly
+    // like the timeout path below), its live entry ends, and the loop goes around again to open a
+    // fresh session seeded with a compact brief (requirement 2). `!terminalSeen` matches the same
+    // precedence rule the stream-closed branch already uses below: a run that finished has nothing
+    // left to rotate, regardless of what the last context check happened to see.
+    if (!terminalSeen && rotationOutcome?.action === "rotate") {
+      await interruptSession(baseURL, sessionID, { requestTimeoutMs });
+      // Harvest this session's tokens BEFORE abandoning it — last chance to read them.
+      try {
+        const spent = sumAssistantTokens(await fetchMessages(baseURL, sessionID, { requestTimeoutMs }));
+        carriedTokens.input += spent.input; carriedTokens.output += spent.output;
+        carriedTokens.reasoning += spent.reasoning;
+        carriedTokens.cacheRead += spent.cacheRead; carriedTokens.cacheWrite += spent.cacheWrite;
+      } catch { /* unreadable → the carried total simply omits it, never a fabricated number */ }
+      liveSessions.end(sessionID, { status: "rotated", reason: rotationOutcome.record?.defect?.reason || "context rotation" });
+      rotationsUsed += 1;
+      attemptPrompt = buildRotationBrief({ prompt, changedFiles: gitChangedFilesNow(workspace), rotationNumber: rotationsUsed });
+      continue; // next loop iteration creates the replacement session — onSessionStart fires again
+    }
+
+    // CONTEXT RELIEF — cap reached: requirement 4, stop rotating AND stop the run, honestly. This
+    // is NOT a silent failure: the exact same defect-signal machinery as a successful rotation
+    // recorded WHY, and noWorkReason carries it forward to whatever surfaces noWork today.
+    if (!terminalSeen && rotationOutcome?.action === "cap") {
+      await interruptSession(baseURL, sessionID, { requestTimeoutMs });
+      const reason = rotationOutcome.record?.defect?.reason || `context rotation cap (${maxContextRotations}) reached — stopping rather than rotating forever`;
+      liveSessions.end(sessionID, { status: "context-rotation-cap", reason });
+      return {
+        ok: false, sessionId: sessionID, changedFiles: gitChangedFilesNow(workspace), tokens: 0, tokensDetail: null, providersUsed: [providerID],
+        log: `${getServerLog()}\n\n=== events observed before the rotation cap stopped the run ===\n${allEventTypes.join("\n")}`.slice(-4000),
+        noWork: true, noWorkReason: reason,
+        events: allEventTypes, contextChecks: allContextChecks, compactions: allContextChecks.filter((c) => c.triggered), rotations: rotationsUsed,
+      };
+    }
+
+    const compactions = allContextChecks.filter((c) => c.triggered);
+    const contextLogLines = compactions.length
+      ? `\n\n=== context defects (planner) ===\n${compactions.map((c) => c.defect?.reason).filter(Boolean).join("\n")}` : "";
+
+    // Only a close WITHOUT the terminal step is a real failure. `terminalSeen` is required here:
+    // on a healthy run the server ends the stream immediately after finish:"stop", so streamClosed
+    // is routinely true on success.
+    if (streamClosed && !timedOut && !terminalSeen) {
+      // Best-effort only — the server that would receive this call is most likely the thing that
+      // just disappeared, so this is expected to itself fail. Never claims the run completed.
+      await interruptSession(baseURL, sessionID, { requestTimeoutMs });
+      const reason = "the event stream closed before the run finished (session.next.step.ended{finish:\"stop\"} " +
+        "was never observed) — the OpenCode server may have exited";
+      liveSessions.end(sessionID, { status: "stream-closed", reason });
+      return {
+        ok: false, sessionId: sessionID, changedFiles: gitChangedFilesNow(workspace), tokens: 0, tokensDetail: null, providersUsed: [providerID],
+        log: `${getServerLog()}\n\n=== events observed before the stream closed ===\n${allEventTypes.join("\n")}`.slice(-4000),
+        noWork: true, noWorkReason: reason, events: allEventTypes, rotations: rotationsUsed,
+      };
+    }
+
+    if (timedOut) {
+      await interruptSession(baseURL, sessionID, { requestTimeoutMs });
+      const reason = `timed out after ${timeoutMs}ms waiting for session.next.step.ended{finish:"stop"} on the event stream — interrupted`;
+      liveSessions.end(sessionID, { status: "timeout", reason });
+      return {
+        ok: false, sessionId: sessionID, changedFiles: gitChangedFilesNow(workspace), tokens: 0, tokensDetail: null, providersUsed: [providerID],
+        log: `${getServerLog()}\n\n=== events observed before timeout ===\n${allEventTypes.join("\n")}${contextLogLines}`.slice(-4000),
+        noWork: true,
+        noWorkReason: reason,
+        events: allEventTypes, contextChecks: allContextChecks, compactions, rotations: rotationsUsed,
+      };
+    }
+
+    // Real completion. changedFiles: same git-diff technique the CLI runtime uses (the workspace is
+    // git-init'd + pre-committed by prepareOpenCodeWorkspace, so `diff HEAD` is exactly this run's
+    // work — across every session this call drove, since the workspace/git state is shared and never
+    // re-initialized or re-committed between rotations).
+    const changedFiles = gitChangedFilesNow(workspace);
+
+    // HARD REQUIREMENT 4 — tokens from GET /.../message, summed. GET /api/session/{id} itself stays
+    // permanently zero (docs §10) and is never consulted here. The reported total is the FINAL
+    // session's messages PLUS whatever every rotated-away session spent (harvested at the moment of
+    // rotation, above) — so a rotated run reports what it actually cost, not just its last leg.
+    let messages = [];
+    try { messages = await fetchMessages(baseURL, sessionID, { requestTimeoutMs }); } catch { /* leaves this leg at 0, honestly */ }
+    const finalTotals = sumAssistantTokens(messages);
+    const totals = {
+      input: finalTotals.input + carriedTokens.input,
+      output: finalTotals.output + carriedTokens.output,
+      reasoning: finalTotals.reasoning + carriedTokens.reasoning,
+      cacheRead: finalTotals.cacheRead + carriedTokens.cacheRead,
+      cacheWrite: finalTotals.cacheWrite + carriedTokens.cacheWrite,
+    };
+
+    const log = `${getServerLog()}\n\n=== session events ===\n${allEventTypes.join("\n")}${contextLogLines}`.slice(-4000);
+    // HARD REQUIREMENT 9 — the SAME no-work guard the CLI runtime uses. A run that changed no files
+    // is NOT ok, regardless of how cleanly the API round-trip completed.
+    const { noWork, reason } = detectNoWork({ exitCode: 0, changedFiles, log });
+    // The live view reports the AGENT SESSION's own lifecycle, not the higher-level work-review
+    // verdict above — the session genuinely reached its terminal step, so it ends "done" regardless
+    // of whether detectNoWork later judges the resulting diff insufficient.
+    liveSessions.end(sessionID, { status: "done", reason: null });
+
     return {
-      ok: false, sessionId: sessionID, changedFiles: [], tokens: 0, tokensDetail: null, providersUsed: [providerID],
-      log: String(e.message || e), noWork: true, noWorkReason: `failed before the run could start: ${e.message || e}`,
-      events: watcher.events.map((x) => x.type), compactions: [],
+      ok: !noWork, sessionId: sessionID, changedFiles, tokens: totals.output,
+      tokensDetail: { input: totals.input, output: totals.output, reasoning: totals.reasoning,
+        cacheRead: totals.cacheRead, cacheWrite: totals.cacheWrite,
+        contextTotal: totals.input + totals.cacheRead + totals.cacheWrite },
+      providersUsed: [providerID], log, noWork, noWorkReason: reason,
+      events: allEventTypes,
+      // Context-compaction/rotation planner-defect signal (requirement 2/3): empty when usage never
+      // crossed contextCompactThreshold, or when the model's context limit was unknown.
+      contextChecks: allContextChecks, compactions,
+      // Honest count of context-relief rotations this call actually performed (0 when none).
+      rotations: rotationsUsed,
     };
   }
-
-  // Enforce the overall timeout, AND detect the event STREAM ITSELF closing early — e.g. the
-  // opencode serve process dying mid-run. `sub.done` (the SSE read loop's own promise) settles the
-  // moment the underlying connection ends, by any means; during this race that can only be a
-  // genuine drop, because our own `sub.stop()` (the only abort we ever issue) runs strictly AFTER
-  // this race below. Both branches of `.then(f, f)` count — the stream ending because the fetch
-  // itself rejected is just as real a "connection is gone" signal as a clean EOF.
-  const termTimer = timeoutAfter(timeoutMs);
-  let timedOut = false, streamClosed = false;
-  const onStreamSettled = () => { streamClosed = true; };
-  await Promise.race([
-    watcher.terminal,
-    termTimer.promise.then(() => { timedOut = true; }),
-    sub.done.then(onStreamSettled, onStreamSettled),
-  ]);
-  termTimer.cancel();
-  sub.stop();
-  await checkChain; // let any context check already scheduled by the last observed step finish
-
-  const compactions = contextChecks.filter((c) => c.triggered);
-  const contextLogLines = compactions.length
-    ? `\n\n=== context defects (planner) ===\n${compactions.map((c) => c.defect?.reason).filter(Boolean).join("\n")}` : "";
-
-  // Only a close WITHOUT the terminal step is a real failure. `terminalSeen` is required here:
-  // on a healthy run the server ends the stream immediately after finish:"stop", so streamClosed
-  // is routinely true on success.
-  if (streamClosed && !timedOut && !terminalSeen) {
-    // Best-effort only — the server that would receive this call is most likely the thing that
-    // just disappeared, so this is expected to itself fail. Never claims the run completed.
-    await interruptSession(baseURL, sessionID, { requestTimeoutMs });
-    const reason = "the event stream closed before the run finished (session.next.step.ended{finish:\"stop\"} " +
-      "was never observed) — the OpenCode server may have exited";
-    liveSessions.end(sessionID, { status: "stream-closed", reason });
-    return {
-      ok: false, sessionId: sessionID, changedFiles: [], tokens: 0, tokensDetail: null, providersUsed: [providerID],
-      log: `${getServerLog()}\n\n=== events observed before the stream closed ===\n${watcher.events.map((x) => x.type).join("\n")}`.slice(-4000),
-      noWork: true, noWorkReason: reason, events: watcher.events.map((x) => x.type),
-    };
-  }
-
-  if (timedOut) {
-    await interruptSession(baseURL, sessionID, { requestTimeoutMs });
-    const reason = `timed out after ${timeoutMs}ms waiting for session.next.step.ended{finish:"stop"} on the event stream — interrupted`;
-    liveSessions.end(sessionID, { status: "timeout", reason });
-    return {
-      ok: false, sessionId: sessionID, changedFiles: [], tokens: 0, tokensDetail: null, providersUsed: [providerID],
-      log: `${getServerLog()}\n\n=== events observed before timeout ===\n${watcher.events.map((x) => x.type).join("\n")}${contextLogLines}`.slice(-4000),
-      noWork: true,
-      noWorkReason: reason,
-      events: watcher.events.map((x) => x.type), contextChecks, compactions,
-    };
-  }
-
-  // Real completion. changedFiles: same git-diff technique the CLI runtime uses (the workspace is
-  // git-init'd + pre-committed by prepareOpenCodeWorkspace, so `diff HEAD` is exactly this run's work).
-  let changedFiles = [];
-  try {
-    changedFiles = execFileSync("git", ["-C", workspace, "diff", "--name-only", "HEAD"], { encoding: "utf8" })
-      .split("\n").filter(Boolean).filter((f) => f !== "opencode.json");
-  } catch { /* not a git workspace, or nothing changed — changedFiles stays empty, honestly */ }
-  try {
-    changedFiles.push(...execFileSync("git", ["-C", workspace, "ls-files", "--others", "--exclude-standard"], { encoding: "utf8" })
-      .split("\n").filter(Boolean).filter((f) => f !== "opencode.json" && !f.startsWith(".oc-iso")));
-  } catch { /* same */ }
-  changedFiles = [...new Set(changedFiles)];
-
-  // HARD REQUIREMENT 4 — tokens from GET /.../message, summed. GET /api/session/{id} itself stays
-  // permanently zero (docs §10) and is never consulted here.
-  let messages = [];
-  try { messages = await fetchMessages(baseURL, sessionID, { requestTimeoutMs }); } catch { /* leaves totals at 0, honestly */ }
-  const totals = sumAssistantTokens(messages);
-
-  const log = `${getServerLog()}\n\n=== session events ===\n${watcher.events.map((x) => x.type).join("\n")}${contextLogLines}`.slice(-4000);
-  // HARD REQUIREMENT 9 — the SAME no-work guard the CLI runtime uses. A run that changed no files
-  // is NOT ok, regardless of how cleanly the API round-trip completed.
-  const { noWork, reason } = detectNoWork({ exitCode: 0, changedFiles, log });
-  // The live view reports the AGENT SESSION's own lifecycle, not the higher-level work-review
-  // verdict above — the session genuinely reached its terminal step, so it ends "done" regardless
-  // of whether detectNoWork later judges the resulting diff insufficient.
-  liveSessions.end(sessionID, { status: "done", reason: null });
-
-  return {
-    ok: !noWork, sessionId: sessionID, changedFiles, tokens: totals.output,
-    tokensDetail: { input: totals.input, output: totals.output, reasoning: totals.reasoning,
-      cacheRead: totals.cacheRead, cacheWrite: totals.cacheWrite,
-      contextTotal: totals.input + totals.cacheRead + totals.cacheWrite },
-    providersUsed: [providerID], log, noWork, noWorkReason: reason,
-    events: watcher.events.map((x) => x.type),
-    // Context-compaction planner-defect signal (requirement 2): empty when usage never crossed
-    // contextCompactThreshold, or when the model's context limit was unknown.
-    contextChecks, compactions,
-  };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -680,7 +845,7 @@ export async function runOpenCodeServer({ connection, prompt, workspace, effort,
   // the locale for any localized fail-closed/defect-signal text; contextCompactThreshold/registry
   // timeouts are exposed for callers that need to tune them, defaults otherwise.
   task = {}, locale = "en", registryTimeoutMs = DEFAULT_REGISTRY_TIMEOUT_MS, registryPollMs = REGISTRY_POLL_MS,
-  contextCompactThreshold = DEFAULT_CONTEXT_COMPACT_THRESHOLD,
+  contextCompactThreshold = DEFAULT_CONTEXT_COMPACT_THRESHOLD, maxContextRotations = DEFAULT_MAX_CONTEXT_ROTATIONS,
   onSessionStart = () => {} } = {}) {
   // `effort` (--variant on the CLI path) has no REST equivalent surfaced by this build's ModelRef
   // beyond the optional `variant` field — not exercised here; left as a documented gap (see report).
@@ -728,7 +893,7 @@ export async function runOpenCodeServer({ connection, prompt, workspace, effort,
     const core = await runSessionAgainstServer({
       baseURL: server.baseURL, workspace: ws, providerID, modelID, prompt,
       timeoutMs, requestTimeoutMs, modelCatalogTimeoutMs, getServerLog: server.getLog,
-      task, locale, registryTimeoutMs, registryPollMs, contextCompactThreshold, onSessionStart,
+      task, locale, registryTimeoutMs, registryPollMs, contextCompactThreshold, maxContextRotations, onSessionStart,
     });
     return { ...core, ...meta, exitCode: 0, founderCredentialUsed: false };
   } catch (e) {
