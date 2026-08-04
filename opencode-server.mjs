@@ -17,6 +17,11 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { prepareOpenCodeWorkspace } from "./opencode-adapter.mjs";
 import { detectNoWork } from "./work-evidence.mjs";
+// Live activity registry (oc-live-view, 2026-08-04): lets a browser watch THIS session while the
+// run below is still in flight, and lets a stop button reach the real interrupt endpoint — without
+// this module or the registry ever handing the OpenCode server's baseURL/port to anything outside
+// this file. See live-session.mjs for the full rationale.
+import { liveSessions } from "./live-session.mjs";
 
 const HOME = process.env.HOME || homedir();
 // Same binary resolution as opencode-adapter.mjs (BO_OPENCODE_BIN override, then the standard install path).
@@ -306,28 +311,42 @@ export function stopServer(proc, { graceMs = 4000 } = {}) {
 // ---------------------------------------------------------------------------------------------
 export async function runSessionAgainstServer({ baseURL, workspace, providerID, modelID, prompt,
   timeoutMs = DEFAULT_RUN_TIMEOUT_MS, requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
-  modelCatalogTimeoutMs = DEFAULT_MODEL_CATALOG_TIMEOUT_MS, getServerLog = () => "" }) {
+  modelCatalogTimeoutMs = DEFAULT_MODEL_CATALOG_TIMEOUT_MS, getServerLog = () => "",
+  // oc-live-view: fired ONCE, the moment the session exists — the caller's one chance to record
+  // the session id somewhere a browser can look it up WHILE this function is still running (e.g.
+  // onto an execution record). A throwing hook must never take the run down with it.
+  onSessionStart = () => {} }) {
   const session = await createSession(baseURL, { directory: workspace, requestTimeoutMs });
   const sessionID = session.id;
+
+  // Register with the live registry as early as physically possible — before the model gate,
+  // before selecting, before prompting — so a browser watching this task sees a gate refusal or a
+  // setup failure as it happens instead of only the eventual (possibly much later) final result.
+  liveSessions.start(sessionID, { interrupt: () => interruptSession(baseURL, sessionID, { requestTimeoutMs }) });
+  try { onSessionStart(sessionID); } catch { /* the caller's bookkeeping must never break the run */ }
 
   // HARD REQUIREMENT 1 — fail-closed BEFORE selecting or prompting. See createTerminalWatcher's
   // doc comment and docs §9 for exactly what happens if this gate is skipped: silent forever-hang.
   const gate = await verifyModelPresent(baseURL, { providerID, modelID, timeoutMs: modelCatalogTimeoutMs, requestTimeoutMs });
   if (!gate.present) {
     const available = gate.catalog.map((m) => `${m.providerID}/${m.id}`).join(", ") || "(none)";
+    const reason = `model ${providerID}/${modelID} is not present in GET /api/model — refusing to select/prompt it ` +
+      `(an absent-from-registry model can still be selected+admitted and then never executes, silently, forever — see docs/OPENCODE_SERVER_API.md §9)`;
+    liveSessions.end(sessionID, { status: "failed", reason });
     return {
       ok: false, sessionId: sessionID, changedFiles: [], tokens: 0, tokensDetail: null, providersUsed: [],
       log: `model ${providerID}/${modelID} is absent from GET /api/model — refused BEFORE selecting/prompting it. available: ${available}`,
       noWork: true,
-      noWorkReason: `model ${providerID}/${modelID} is not present in GET /api/model — refusing to select/prompt it ` +
-        `(an absent-from-registry model can still be selected+admitted and then never executes, silently, forever — see docs/OPENCODE_SERVER_API.md §9)`,
+      noWorkReason: reason,
       events: [],
     };
   }
 
-  // HARD REQUIREMENT 2 — subscribe BEFORE prompting.
+  // HARD REQUIREMENT 2 — subscribe BEFORE prompting. Every event ALSO feeds the live registry
+  // (projected + capped there — see live-session.mjs) so a browser watching this session sees the
+  // exact same activity the completion-detection watcher is reading, in real time.
   const watcher = createTerminalWatcher();
-  const sub = subscribeEvents(baseURL, sessionID, watcher.onEvent);
+  const sub = subscribeEvents(baseURL, sessionID, (evt) => { watcher.onEvent(evt); liveSessions.push(sessionID, evt); });
   const readyTimer = timeoutAfter(1500);
   await Promise.race([sub.ready, readyTimer.promise]);
   readyTimer.cancel();
@@ -337,6 +356,7 @@ export async function runSessionAgainstServer({ baseURL, workspace, providerID, 
     await sendPrompt(baseURL, sessionID, prompt, { requestTimeoutMs });
   } catch (e) {
     sub.stop();
+    liveSessions.end(sessionID, { status: "failed", reason: `failed before the run could start: ${e.message || e}` });
     return {
       ok: false, sessionId: sessionID, changedFiles: [], tokens: 0, tokensDetail: null, providersUsed: [providerID],
       log: String(e.message || e), noWork: true, noWorkReason: `failed before the run could start: ${e.message || e}`,
@@ -344,21 +364,46 @@ export async function runSessionAgainstServer({ baseURL, workspace, providerID, 
     };
   }
 
-  // Enforce the overall timeout. On timeout: interrupt (best-effort) and report an honest failure
-  // — never hang, never fabricate success.
+  // Enforce the overall timeout, AND detect the event STREAM ITSELF closing early — e.g. the
+  // opencode serve process dying mid-run. `sub.done` (the SSE read loop's own promise) settles the
+  // moment the underlying connection ends, by any means; during this race that can only be a
+  // genuine drop, because our own `sub.stop()` (the only abort we ever issue) runs strictly AFTER
+  // this race below. Both branches of `.then(f, f)` count — the stream ending because the fetch
+  // itself rejected is just as real a "connection is gone" signal as a clean EOF.
   const termTimer = timeoutAfter(timeoutMs);
-  let timedOut = false;
-  await Promise.race([watcher.terminal, termTimer.promise.then(() => { timedOut = true; })]);
+  let timedOut = false, streamClosed = false;
+  const onStreamSettled = () => { streamClosed = true; };
+  await Promise.race([
+    watcher.terminal,
+    termTimer.promise.then(() => { timedOut = true; }),
+    sub.done.then(onStreamSettled, onStreamSettled),
+  ]);
   termTimer.cancel();
   sub.stop();
 
+  if (streamClosed && !timedOut) {
+    // Best-effort only — the server that would receive this call is most likely the thing that
+    // just disappeared, so this is expected to itself fail. Never claims the run completed.
+    await interruptSession(baseURL, sessionID, { requestTimeoutMs });
+    const reason = "the event stream closed before the run finished (session.next.step.ended{finish:\"stop\"} " +
+      "was never observed) — the OpenCode server may have exited";
+    liveSessions.end(sessionID, { status: "stream-closed", reason });
+    return {
+      ok: false, sessionId: sessionID, changedFiles: [], tokens: 0, tokensDetail: null, providersUsed: [providerID],
+      log: `${getServerLog()}\n\n=== events observed before the stream closed ===\n${watcher.events.map((x) => x.type).join("\n")}`.slice(-4000),
+      noWork: true, noWorkReason: reason, events: watcher.events.map((x) => x.type),
+    };
+  }
+
   if (timedOut) {
     await interruptSession(baseURL, sessionID, { requestTimeoutMs });
+    const reason = `timed out after ${timeoutMs}ms waiting for session.next.step.ended{finish:"stop"} on the event stream — interrupted`;
+    liveSessions.end(sessionID, { status: "timeout", reason });
     return {
       ok: false, sessionId: sessionID, changedFiles: [], tokens: 0, tokensDetail: null, providersUsed: [providerID],
       log: `${getServerLog()}\n\n=== events observed before timeout ===\n${watcher.events.map((x) => x.type).join("\n")}`.slice(-4000),
       noWork: true,
-      noWorkReason: `timed out after ${timeoutMs}ms waiting for session.next.step.ended{finish:"stop"} on the event stream — interrupted`,
+      noWorkReason: reason,
       events: watcher.events.map((x) => x.type),
     };
   }
@@ -386,6 +431,10 @@ export async function runSessionAgainstServer({ baseURL, workspace, providerID, 
   // HARD REQUIREMENT 9 — the SAME no-work guard the CLI runtime uses. A run that changed no files
   // is NOT ok, regardless of how cleanly the API round-trip completed.
   const { noWork, reason } = detectNoWork({ exitCode: 0, changedFiles, log });
+  // The live view reports the AGENT SESSION's own lifecycle, not the higher-level work-review
+  // verdict above — the session genuinely reached its terminal step, so it ends "done" regardless
+  // of whether detectNoWork later judges the resulting diff insufficient.
+  liveSessions.end(sessionID, { status: "done", reason: null });
 
   return {
     ok: !noWork, sessionId: sessionID, changedFiles, tokens: totals.output,
@@ -404,7 +453,7 @@ export async function runSessionAgainstServer({ baseURL, workspace, providerID, 
 export async function runOpenCodeServer({ connection, prompt, workspace, effort, isoBase, approvedRoots,
   timeoutMs = DEFAULT_RUN_TIMEOUT_MS, bin = OPENCODE_BIN, bootTimeoutMs = DEFAULT_BOOT_TIMEOUT_MS,
   healthTimeoutMs = DEFAULT_HEALTH_TIMEOUT_MS, modelCatalogTimeoutMs = DEFAULT_MODEL_CATALOG_TIMEOUT_MS,
-  requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = {}) {
+  requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, onSessionStart = () => {} } = {}) {
   // `effort` (--variant on the CLI path) has no REST equivalent surfaced by this build's ModelRef
   // beyond the optional `variant` field — not exercised here; left as a documented gap (see report).
   void effort;
@@ -450,7 +499,7 @@ export async function runOpenCodeServer({ connection, prompt, workspace, effort,
     await waitForHealth(server.baseURL, { timeoutMs: healthTimeoutMs, isAlive: () => server.proc.exitCode === null });
     const core = await runSessionAgainstServer({
       baseURL: server.baseURL, workspace: ws, providerID, modelID, prompt,
-      timeoutMs, requestTimeoutMs, modelCatalogTimeoutMs, getServerLog: server.getLog,
+      timeoutMs, requestTimeoutMs, modelCatalogTimeoutMs, getServerLog: server.getLog, onSessionStart,
     });
     return { ...core, ...meta, exitCode: 0, founderCredentialUsed: false };
   } catch (e) {

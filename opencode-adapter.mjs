@@ -216,7 +216,7 @@ export function readSessionTokens({ sessionId, env }) {
 // Warm-session options (the cold-start fix): pass `attach` (a startOpenCodeServer url) to reuse a
 // running server, and `session` + `fork` to inherit an already-warm context instead of rebuilding it.
 export function runOpenCode({ connection, prompt, workspace, effort, isoBase, timeoutMs = 240000, approvedRoots,
-                             attach = null, session = null, fork = false }) {
+                             attach = null, session = null, fork = false, onSessionStart = () => {} }) {
   // Opt-in server-backed runtime (BO_CE_OPENCODE_SERVER=1): drives `opencode serve`'s v2 REST API
   // (see opencode-server.mjs, docs/OPENCODE_SERVER_API.md) instead of spawning `opencode run` per
   // task. This branch is the ENTIRE difference — when the flag is unset, every line below it runs
@@ -224,9 +224,12 @@ export function runOpenCode({ connection, prompt, workspace, effort, isoBase, ti
   // on opencode-server.mjs (which itself imports FROM this module) so there is no import cycle.
   // NOTE: `attach`/`session`/`fork` (CLI-only warm-session reuse) are not yet supported by the
   // server-backed path and are silently ignored when the flag is on — no current caller passes them.
+  // `onSessionStart` (oc-live-view) is likewise server-backed-only: the CLI path below never has a
+  // live OpenCode session id to hand back mid-run, so it simply never calls the hook — honest, not
+  // wired up to fake anything for the non-server runtime.
   if (process.env.BO_CE_OPENCODE_SERVER === "1") {
     return import("./opencode-server.mjs").then(({ runOpenCodeServer }) =>
-      runOpenCodeServer({ connection, prompt, workspace, effort, isoBase, timeoutMs, approvedRoots }));
+      runOpenCodeServer({ connection, prompt, workspace, effort, isoBase, timeoutMs, approvedRoots, onSessionStart }));
   }
   const { ws, iso, modelRef, env } = prepareOpenCodeWorkspace({ connection, workspace, isoBase, approvedRoots });
 
