@@ -2026,9 +2026,17 @@ async function reportOrReviewSpineTask({ task, out, missionId, agentId, codeWs =
   // (live evidence: well-formed verdicts cut off mid-JSON). The strict-reminder retry gets DOUBLE
   // the base — a truncated attempt gets room to finish (the existing double-budget lesson).
   const REVIEW_MAX_TOKENS = 1600;
+  // The TIME budget must scale with the TOKEN budget, and it did not. 60s was sized for the era
+  // when the reviewer judged a one-line prose summary; it now reads a real diff plus real test
+  // output and emits up to 1600 tokens of structured JSON (3200 on the strict retry). MEASURED on
+  // the GB10 `coder` model: 137.2s to produce a valid verdict — so 60s guaranteed a timeout, and
+  // every end-to-end run ended `blocked` on "reviewer unavailable" despite a healthy result.
+  // The strict retry gets double the time as well as double the tokens.
+  const REVIEW_TIMEOUT_MS = Number(process.env.BO_CE_REVIEW_TIMEOUT_MS || 180000);
   const callReviewer = (strict) => runStageNode({ node: "reviewer", slot: rm.slot || "reviewer" }, rm,
     { prompt: strict ? `${reviewPrompt}\n\n${REVIEW_STRICT_REMINDER}` : reviewPrompt },
-    { maxTokens: strict ? REVIEW_MAX_TOKENS * 2 : REVIEW_MAX_TOKENS, timeoutMs: 60000, localCall: localNodeModelCall });
+    { maxTokens: strict ? REVIEW_MAX_TOKENS * 2 : REVIEW_MAX_TOKENS,
+      timeoutMs: strict ? REVIEW_TIMEOUT_MS * 2 : REVIEW_TIMEOUT_MS, localCall: localNodeModelCall });
   try {
     const rr = await callReviewer(false);
     rawOut = String(rr?.output ?? "");

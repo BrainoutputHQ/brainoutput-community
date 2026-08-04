@@ -197,8 +197,11 @@ export async function verifyAgentPresent(baseURL, { agentId, timeoutMs = DEFAULT
 export async function resolveRoutingDirectives(baseURL, task = {}, { locale = "en",
   timeoutMs = DEFAULT_REGISTRY_TIMEOUT_MS, pollMs = REGISTRY_POLL_MS,
   requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = {}) {
-  const skillNames = Array.isArray(task.skills) ? task.skills.filter((s) => typeof s === "string") : [];
-  const agentId = typeof task.agentSlot === "string" && task.agentSlot ? task.agentSlot : null;
+  // Optional chaining, deliberately: a caller passing an explicit `null` (not `undefined`) skips
+  // the parameter default above, and "no directives" must degrade to "nothing to resolve" rather
+  // than throw. Defence in depth for the entry-point bug fixed in opencode-adapter.mjs.
+  const skillNames = Array.isArray(task?.skills) ? task.skills.filter((s) => typeof s === "string") : [];
+  const agentId = typeof task?.agentSlot === "string" && task.agentSlot ? task.agentSlot : null;
 
   if (skillNames.length) {
     const sk = await verifySkillsPresent(baseURL, { skillNames, timeoutMs, pollMs, requestTimeoutMs });
@@ -719,10 +722,19 @@ export async function runSessionAgainstServer({ baseURL, workspace, providerID, 
   const carriedTokens = { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 };
   let rotationsUsed = 0;
   let attemptPrompt = prompt; // replaced with buildRotationBrief() output after each rotation
+  // The id of the session currently registered as live, so an UNEXPECTED throw anywhere in the loop
+  // can still close it. Every planned exit already ends its own session; this covers the ones we
+  // did not plan for. Without it an exception between liveSessions.start() and the first named exit
+  // leaves the entry pinned "running" forever, and GET /api/session/{id}/live holds that browser's
+  // response open with no terminal frame — an infinite spinner, which is the one thing the live
+  // view must never do. Observed for real: the null-task crash orphaned exactly this way.
+  let liveSessionId = null;
 
+  try {
   for (;;) {
     const session = await createSession(baseURL, { directory: workspace, requestTimeoutMs });
     const sessionID = session.id;
+    liveSessionId = sessionID;
 
     // Register with the live registry as early as physically possible — before the directive gate,
     // before the model gate, before selecting, before prompting — so a browser watching this task
@@ -1068,6 +1080,13 @@ export async function runSessionAgainstServer({ baseURL, workspace, providerID, 
       // on a run that never asked either.
       permissionEvents: allPermissionEvents, questionEvents: allQuestionEvents,
     };
+  }
+  } finally {
+    // Backstop only. Every planned exit above already ended its own session, and end() on an
+    // already-ended session is a no-op — so this fires exactly when something threw unexpectedly.
+    if (liveSessionId) {
+      liveSessions.end(liveSessionId, { status: "failed", reason: "the run ended unexpectedly" });
+    }
   }
 }
 

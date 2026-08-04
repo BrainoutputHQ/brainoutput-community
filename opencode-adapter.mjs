@@ -252,8 +252,14 @@ export function runOpenCode({ connection, prompt, workspace, effort, isoBase, ti
   //    so it simply never calls this hook.
   if (process.env.BO_CE_OPENCODE_SERVER === "1") {
     return import("./opencode-server.mjs").then(({ runOpenCodeServer }) =>
+      // `task || undefined` is load-bearing, not style: this function's own default is `null`, and
+      // a JS parameter default only fires on `undefined`. Forwarding an explicit null bypassed every
+      // `task = {}` default downstream and crashed resolveRoutingDirectives with "Cannot read
+      // properties of null (reading 'skills')" for EVERY directive-less coding task — i.e. the
+      // server runtime could not complete a single ordinary task. Found by the first real
+      // end-to-end run; no unit test caught it because they all call the inner functions directly.
       runOpenCodeServer({ connection, prompt, workspace, effort, isoBase, timeoutMs, approvedRoots,
-        task, locale, onSessionStart, onWorkerQuestion }));
+        task: task || undefined, locale, onSessionStart, onWorkerQuestion }));
   }
   const { ws, iso, modelRef, env } = prepareOpenCodeWorkspace({ connection, workspace, isoBase, approvedRoots });
 
