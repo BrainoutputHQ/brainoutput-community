@@ -77,8 +77,9 @@ export function buildExecutorEnv(connection, iso) {
   return env;
 }
 // The user's opencode binary (installed by `opencode` / `opencode upgrade`). Override with
-// BO_OPENCODE_BIN if it lives elsewhere.
-const OPENCODE_BIN = process.env.BO_OPENCODE_BIN || join(HOME, ".opencode", "bin", "opencode");
+// BO_OPENCODE_BIN if it lives elsewhere. Exported so opencode-server.mjs (the server-backed
+// runtime, opt-in via BO_CE_OPENCODE_SERVER=1) resolves the SAME binary — never a divergent path.
+export const OPENCODE_BIN = process.env.BO_OPENCODE_BIN || join(HOME, ".opencode", "bin", "opencode");
 
 /** Is a coding runtime actually available? Coding missions degrade to chat delivery without one. */
 export function opencodeAvailable() { return existsSync(OPENCODE_BIN); }
@@ -216,6 +217,17 @@ export function readSessionTokens({ sessionId, env }) {
 // running server, and `session` + `fork` to inherit an already-warm context instead of rebuilding it.
 export function runOpenCode({ connection, prompt, workspace, effort, isoBase, timeoutMs = 240000, approvedRoots,
                              attach = null, session = null, fork = false }) {
+  // Opt-in server-backed runtime (BO_CE_OPENCODE_SERVER=1): drives `opencode serve`'s v2 REST API
+  // (see opencode-server.mjs, docs/OPENCODE_SERVER_API.md) instead of spawning `opencode run` per
+  // task. This branch is the ENTIRE difference — when the flag is unset, every line below it runs
+  // exactly as before, byte-identical. Dynamic import keeps this module free of a static dependency
+  // on opencode-server.mjs (which itself imports FROM this module) so there is no import cycle.
+  // NOTE: `attach`/`session`/`fork` (CLI-only warm-session reuse) are not yet supported by the
+  // server-backed path and are silently ignored when the flag is on — no current caller passes them.
+  if (process.env.BO_CE_OPENCODE_SERVER === "1") {
+    return import("./opencode-server.mjs").then(({ runOpenCodeServer }) =>
+      runOpenCodeServer({ connection, prompt, workspace, effort, isoBase, timeoutMs, approvedRoots }));
+  }
   const { ws, iso, modelRef, env } = prepareOpenCodeWorkspace({ connection, workspace, isoBase, approvedRoots });
 
   // --pure skips external plugins, which avoids opencode's slow background `bun install` at startup
