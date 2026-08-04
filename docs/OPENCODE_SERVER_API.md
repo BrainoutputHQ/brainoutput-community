@@ -400,6 +400,70 @@ cache write tokens  : 0
 | POST | `/api/session/{id}/wait` | wait for idle | reliably 503 in this build, never depend on it (§8) |
 | GET | `/api/session/{id}` | session snapshot | `tokens` field is stale/zero, don't use for accounting (§10) |
 | GET | `/api/session/{id}/message` | message history | authoritative source of real per-step token accounting (§10) |
+| GET | `/api/skill` | list registered skills | can be empty for ~1s on a fresh workspace, same warmup gotcha as §4 (§12) |
+| GET | `/api/agent` | list registered agents | same warmup gotcha; only lists custom agents, not opencode's built-ins (§12) |
+| POST | `/api/session/{id}/agent` | switch session agent | body `{"agent":"<id>"}`; **not validated** against the registry — mirrors the §9 trap (§12) |
+| GET | `/api/session/{id}/context` | active (uncompacted) messages | **not** a usage percentage — compute usage from the tokens on the messages yourself (§12) |
+| POST | `/api/session/{id}/compact` | compact session | reproducibly 503 in this build, same as `/wait` (§8) — see §12 |
+
+---
+
+## 12. Skill/agent registry + context/compaction — live-verified addendum (2026-08-04)
+
+Added for the skill-routing + context-compaction work (opencode-server.mjs's
+`resolveRoutingDirectives`/`switchAgent`/`checkContextAndCompact`). Verified against the SAME
+running 1.18.7 build as the rest of this document, via `GET /doc`'s OpenAPI schemas plus live
+requests (not the probe script — a throwaway ad hoc script, not committed).
+
+**`GET /api/skill`** → `{"location": LocationInfo, "data": SkillV2Info[]}`, each entry
+`{name, description, slash?, location, content}` (`name`/`location`/`content` required). Empty
+`data` immediately after boot even once `/api/health` is green — populated within ~1s in our
+probes. Poll, exactly like the `GET /api/model` gotcha in §4.
+
+**`GET /api/agent`** → `{"location": LocationInfo, "data": AgentV2Info[]}`, each entry
+`{id, model?, request, system?, description?, mode, hidden, color?, steps?, permissions}`
+(`id`/`request`/`mode`/`hidden`/`permissions` required). Same warmup gotcha. **Important**: in
+every environment we tested, this v2 endpoint returned only agents from *custom* project/global
+agent config — opencode's own built-in agents (`build`, `plan`, `general`, `explore`, `summary`,
+`compaction`, …) are invisible here even though they run every session. The **legacy** `GET
+/agent` (no `/api` prefix) DOES list them (with a different shape:
+`{name, description, mode, native, hidden, permission, model?, ...}`, keyed by `name` not `id`).
+Anything routing a task's `agentSlot` onto a BUILT-IN agent by name will need to fall back to the
+legacy endpoint or accept that only custom agents are reachable through the v2 registry gate — out
+of scope for this change; flagged here so the next person doesn't re-discover it. Our fail-closed
+gate only trusts what `GET /api/agent` (v2) actually reports.
+
+**`POST /api/session/{id}/agent`** → body `{"agent":"<id>"}` (verified: NOT
+`{"agentId":...}`/`{"agentSlot":...}` — the single field is literally `agent`), 204 on success.
+**Confirmed live: this endpoint does NOT validate `agent` against the registry** — posting a
+nonexistent agent id (`totally-bogus-agent-xyz`) still returned 204, and the session's context
+subsequently showed a `type:"agent-switched"` message recording it as if it were real. This is the
+exact same silent-acceptance trap §5/§9 already documented for `POST /model` — the fix is the same:
+never call this endpoint with an id that hasn't been separately confirmed present in `GET
+/api/agent` first.
+
+**`GET /api/session/{id}/context`** → `{"data": SessionMessage[]}` — the active (since-last-
+compaction) message list, the **same message shape** `GET /.../message` uses (`type`, and for
+`type:"assistant"` a real `tokens` object). Despite the name, this is **not** a usage percentage,
+counter, or "tokens used / limit" field of any kind — a naive implementation expecting a number
+here will find only an array. Usage has to be computed client-side from the tokens on the messages
+(we use the most recent assistant message's `tokens.input + tokens.cache.read +
+tokens.cache.write`, compared against the model's own `limit.context` from `GET /api/model` — see
+opencode-server.mjs's `computeContextUsage`).
+
+**`POST /api/session/{id}/compact`** → **reproducibly 503** `{"_tag":"ServiceUnavailableError",
+"message":"Session compact is not available yet","service":"session.compact"}` in every attempt we
+made in this build/environment: on a brand-new empty session, mid-run, and immediately after a
+real multi-step run reached `finish:"stop"` (several seconds of retrying, still 503 every time).
+This is the exact same "documented as real but reproducibly unusable" pattern §8 already found for
+`POST /wait` in this same build. **We do not know whether this is environment-specific** (e.g. it
+may require a context size the local models we tested never actually reached) or a build-wide gap
+— unlike §8's finding this was not exercised against a context that had genuinely grown large
+enough to need compaction, since driving a real model past ~800K+ tokens was out of scope for this
+verification pass. What we DO know, and what the runtime is built to handle either way: never
+depend on this endpoint succeeding, and never treat a non-204 as reason to suppress the defect
+signal — the compaction *attempt* (crossing the usage threshold at all) is what gets recorded,
+independent of whether the server accepted it.
 
 ---
 
