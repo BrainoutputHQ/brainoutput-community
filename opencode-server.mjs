@@ -17,6 +17,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { prepareOpenCodeWorkspace } from "./opencode-adapter.mjs";
 import { detectNoWork } from "./work-evidence.mjs";
+import { t } from "./i18n.mjs";
 
 const HOME = process.env.HOME || homedir();
 // Same binary resolution as opencode-adapter.mjs (BO_OPENCODE_BIN override, then the standard install path).
@@ -33,6 +34,15 @@ export const DEFAULT_HEALTH_TIMEOUT_MS = 15000; // GET /api/health must go green
 export const DEFAULT_MODEL_CATALOG_TIMEOUT_MS = 10000;
 export const MODEL_CATALOG_POLL_MS = 300;
 export const DEFAULT_RUN_TIMEOUT_MS = 240000; // overall budget: prompt admitted -> terminal step
+// GET /api/skill and GET /api/agent can ALSO be transiently empty right after boot — verified live,
+// same warmup gotcha as GET /api/model (docs §4): a brand-new workspace's registry populated within
+// ~1s in our probes. Poll with a bounded retry before concluding a name is absent (requirement below).
+export const DEFAULT_REGISTRY_TIMEOUT_MS = 10000;
+export const REGISTRY_POLL_MS = 300;
+// Fraction of the model's own context window (GET /api/model .limit.context) at which we trigger a
+// mid-run compaction. 0.8 leaves real headroom for the step that pushed usage over the line to
+// actually finish before the window is exhausted.
+export const DEFAULT_CONTEXT_COMPACT_THRESHOLD = 0.8;
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -103,6 +113,149 @@ export async function verifyModelPresent(baseURL, { providerID, modelID,
     if (Date.now() > deadline) return { present: false, model: null, catalog };
     await sleep(pollMs);
   }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Skill/agent routing onto the LIVE registry. Mirrors ce-core.mjs's KNOWN_SKILLS/checkTaskDirectives
+// in spirit — a task's `skills`/`agentSlot` directives BIND the route and are FAIL CLOSED — but
+// against OpenCode's OWN skill/agent registry (GET /api/skill, GET /api/agent), which is a distinct
+// vocabulary from Community's capability slots. Verified live: POST /api/session/{id}/agent does
+// NOT validate its `agent` field against the registry server-side — an unknown id still returns
+// 204, exactly the same silent-acceptance trap as POST /model for an absent-catalog model (docs
+// §5/§9). These functions are what makes switchAgent (below) safe to call at all: it must only ever
+// run after the id was CONFIRMED present in GET /api/agent.
+// ---------------------------------------------------------------------------------------------
+
+/** Poll GET /api/skill until every name in `skillNames` is present or timeoutMs elapses (same
+ *  bounded-retry shape as verifyModelPresent). Returns the last-seen catalog either way, so a
+ *  fail-closed caller can name what IS actually available. Empty `skillNames` trivially passes. */
+export async function verifySkillsPresent(baseURL, { skillNames = [], timeoutMs = DEFAULT_REGISTRY_TIMEOUT_MS,
+  pollMs = REGISTRY_POLL_MS, requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = {}) {
+  if (!skillNames.length) return { present: true, missing: [], catalog: [] };
+  const deadline = Date.now() + timeoutMs;
+  let catalog = [];
+  for (;;) {
+    const res = await apiCall(baseURL, "GET", "/api/skill", undefined, requestTimeoutMs);
+    catalog = res.json?.data || [];
+    const missing = skillNames.filter((s) => !catalog.some((c) => c.name === s));
+    if (missing.length === 0) return { present: true, missing: [], catalog };
+    if (Date.now() > deadline) return { present: false, missing, catalog };
+    await sleep(pollMs);
+  }
+}
+
+/** Poll GET /api/agent until `agentId` is present or timeoutMs elapses (same bounded-retry shape
+ *  as verifyModelPresent). A null/absent agentId trivially passes — the agentSlot directive is
+ *  optional per task. */
+export async function verifyAgentPresent(baseURL, { agentId, timeoutMs = DEFAULT_REGISTRY_TIMEOUT_MS,
+  pollMs = REGISTRY_POLL_MS, requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = {}) {
+  if (!agentId) return { present: true, agent: null, catalog: [] };
+  const deadline = Date.now() + timeoutMs;
+  let catalog = [];
+  for (;;) {
+    const res = await apiCall(baseURL, "GET", "/api/agent", undefined, requestTimeoutMs);
+    catalog = res.json?.data || [];
+    const found = catalog.find((a) => a.id === agentId);
+    if (found) return { present: true, agent: found, catalog };
+    if (Date.now() > deadline) return { present: false, agent: null, catalog };
+    await sleep(pollMs);
+  }
+}
+
+/**
+ * Fail-closed resolution of a task's OpenCode routing directives (task.skills, task.agentSlot)
+ * against the LIVE skill/agent registry. An unknown name BLOCKS the task with a clear, localized,
+ * NAMED reason — never a silent drop, never a default route (task-pm-04's rule, applied here to
+ * OpenCode's own registry instead of Community's capability slots). Empty/absent directives always
+ * pass — a task carrying neither is unaffected, migration-safe. Never throws.
+ */
+export async function resolveRoutingDirectives(baseURL, task = {}, { locale = "en",
+  timeoutMs = DEFAULT_REGISTRY_TIMEOUT_MS, pollMs = REGISTRY_POLL_MS,
+  requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = {}) {
+  const skillNames = Array.isArray(task.skills) ? task.skills.filter((s) => typeof s === "string") : [];
+  const agentId = typeof task.agentSlot === "string" && task.agentSlot ? task.agentSlot : null;
+
+  if (skillNames.length) {
+    const sk = await verifySkillsPresent(baseURL, { skillNames, timeoutMs, pollMs, requestTimeoutMs });
+    if (!sk.present) {
+      const available = sk.catalog.map((c) => c.name).join(", ") || "(none)";
+      return { ok: false, agentId: null,
+        reason: t(locale, "opencode.directive.unknownSkill").replace("{name}", sk.missing.join(", ")).replace("{available}", available) };
+    }
+  }
+  if (agentId) {
+    const ag = await verifyAgentPresent(baseURL, { agentId, timeoutMs, pollMs, requestTimeoutMs });
+    if (!ag.present) {
+      const available = ag.catalog.map((c) => c.id).join(", ") || "(none)";
+      return { ok: false, agentId: null,
+        reason: t(locale, "opencode.directive.unknownAgent").replace("{name}", agentId).replace("{available}", available) };
+    }
+  }
+  return { ok: true, agentId };
+}
+
+/** POST /api/session/{id}/agent — switch the session's agent. Body is `{"agent":"<id>"}` (verified
+ *  live against opencode 1.18.7's actual /doc, not just the mission's endpoint list). Expects 204. */
+export async function switchAgent(baseURL, sessionID, agentId, { requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = {}) {
+  const res = await apiCall(baseURL, "POST", `/api/session/${sessionID}/agent`, { agent: agentId }, requestTimeoutMs);
+  if (res.status !== 204) throw new Error(`agent switch failed: HTTP ${res.status} ${res.text}`);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Context monitoring + compaction. GET /api/session/{id}/context returns the ACTIVE (uncompacted)
+// message list — verified live: NOT a usage percentage/counter despite the endpoint's name. Usage
+// is computed from the tokens on the LAST assistant message in that list (each carries the real
+// per-step tokens.input/tokens.cache — same authoritative shape as GET /.../message, docs §10)
+// against the model's own limit.context (from GET /api/model). Compaction is NEVER silent: any
+// attempt — successful or not — is recorded as a planner defect signal, localized. A task large
+// enough to need compaction means the plan decomposed it badly; that is the point being recorded,
+// independent of whether the server's own /compact accepted it this build (see report: verified
+// live to reproducibly 503 "not available yet", the same unusable-endpoint pattern docs §8 already
+// found for /wait — handled the same way: never depended on, never silently swallowed either).
+// ---------------------------------------------------------------------------------------------
+
+/** GET /api/session/{id}/context. */
+export async function getSessionContext(baseURL, sessionID, { requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = {}) {
+  const res = await apiCall(baseURL, "GET", `/api/session/${sessionID}/context`, undefined, requestTimeoutMs);
+  return res.json?.data || [];
+}
+
+/** Current context occupancy: the most recent assistant message's tokens.input + cache.read +
+ *  cache.write. NOT a sum across the turn (sumAssistantTokens' sum is for COST accounting across
+ *  every step); this is what is CURRENTLY loaded into the window, which each step's own `input`
+ *  already reflects in full — summing would double-count. Pure. */
+export function computeContextUsage(contextData, contextLimit) {
+  const assistantMsgs = (contextData || []).filter((m) => m?.type === "assistant" && m.tokens);
+  const last = assistantMsgs[assistantMsgs.length - 1];
+  const used = last ? (last.tokens.input || 0) + (last.tokens.cache?.read || 0) + (last.tokens.cache?.write || 0) : 0;
+  const ratio = contextLimit ? used / contextLimit : 0;
+  return { used, limit: contextLimit || null, ratio };
+}
+
+/**
+ * Read the session's context and, if usage has crossed `threshold` of the model's context window,
+ * compact it — recording the ATTEMPT as a planner defect signal either way (a 204 success, or a
+ * non-204 such as the reproducibly-503 behaviour observed live for this endpoint, see module doc
+ * comment above). Returns null when no contextLimit is known (nothing to compare usage against —
+ * callers skip the check rather than compare against an invented number), otherwise a record:
+ * { usage, triggered, compacted, status, defect: {reason} | null }. Never throws — a failed context
+ * read is reported as a zero-usage, non-triggering check rather than aborting the run.
+ */
+export async function checkContextAndCompact(baseURL, sessionID, { contextLimit,
+  threshold = DEFAULT_CONTEXT_COMPACT_THRESHOLD, locale = "en", requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = {}) {
+  if (!contextLimit) return null;
+  const data = await getSessionContext(baseURL, sessionID, { requestTimeoutMs });
+  const usage = computeContextUsage(data, contextLimit);
+  if (usage.ratio < threshold) return { usage, triggered: false, compacted: false, status: null, defect: null };
+
+  // HARD REQUIREMENT — compaction is never silent: the ATTEMPT itself is the planner-defect signal,
+  // independent of whether the server accepted it this build.
+  const res = await apiCall(baseURL, "POST", `/api/session/${sessionID}/compact`, undefined, requestTimeoutMs);
+  const pct = String(Math.round(usage.ratio * 100));
+  const defect = res.status === 204
+    ? { reason: t(locale, "opencode.context.compacted").replace("{pct}", pct) }
+    : { reason: t(locale, "opencode.context.compactUnavailable").replace("{pct}", pct).replace("{status}", String(res.status)) };
+  return { usage, triggered: true, compacted: res.status === 204, status: res.status, defect };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -306,11 +459,27 @@ export function stopServer(proc, { graceMs = 4000 } = {}) {
 // ---------------------------------------------------------------------------------------------
 export async function runSessionAgainstServer({ baseURL, workspace, providerID, modelID, prompt,
   timeoutMs = DEFAULT_RUN_TIMEOUT_MS, requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
-  modelCatalogTimeoutMs = DEFAULT_MODEL_CATALOG_TIMEOUT_MS, getServerLog = () => "" }) {
+  modelCatalogTimeoutMs = DEFAULT_MODEL_CATALOG_TIMEOUT_MS, getServerLog = () => "",
+  // Skill/agent routing directives (task.skills/task.agentSlot — task-pm-04's vocabulary, resolved
+  // here against OpenCode's OWN live registry) + context-compaction tunables. `task`/`locale` default
+  // to a no-directive/English no-op so every existing caller (and every prior test) is unaffected.
+  task = {}, locale = "en", registryTimeoutMs = DEFAULT_REGISTRY_TIMEOUT_MS, registryPollMs = REGISTRY_POLL_MS,
+  contextCompactThreshold = DEFAULT_CONTEXT_COMPACT_THRESHOLD }) {
   const session = await createSession(baseURL, { directory: workspace, requestTimeoutMs });
   const sessionID = session.id;
 
-  // HARD REQUIREMENT 1 — fail-closed BEFORE selecting or prompting. See createTerminalWatcher's
+  // HARD REQUIREMENT 1a — routing directives are fail-closed BEFORE selecting or prompting, exactly
+  // like the model gate below: an unknown skill/agentSlot must never silently degrade to a default
+  // route (task-pm-04, mirrored here for OpenCode's own registry — see resolveRoutingDirectives).
+  const directives = await resolveRoutingDirectives(baseURL, task, { locale, timeoutMs: registryTimeoutMs, pollMs: registryPollMs, requestTimeoutMs });
+  if (!directives.ok) {
+    return {
+      ok: false, sessionId: sessionID, changedFiles: [], tokens: 0, tokensDetail: null, providersUsed: [],
+      log: directives.reason, noWork: true, noWorkReason: directives.reason, events: [], compactions: [],
+    };
+  }
+
+  // HARD REQUIREMENT 1b — fail-closed BEFORE selecting or prompting. See createTerminalWatcher's
   // doc comment and docs §9 for exactly what happens if this gate is skipped: silent forever-hang.
   const gate = await verifyModelPresent(baseURL, { providerID, modelID, timeoutMs: modelCatalogTimeoutMs, requestTimeoutMs });
   if (!gate.present) {
@@ -321,18 +490,48 @@ export async function runSessionAgainstServer({ baseURL, workspace, providerID, 
       noWork: true,
       noWorkReason: `model ${providerID}/${modelID} is not present in GET /api/model — refusing to select/prompt it ` +
         `(an absent-from-registry model can still be selected+admitted and then never executes, silently, forever — see docs/OPENCODE_SERVER_API.md §9)`,
-      events: [],
+      events: [], compactions: [],
     };
   }
+  // The model's own context window — the denominator context-compaction monitoring compares usage
+  // against. Absent (no `limit.context` on this catalog entry) → checkContextAndCompact is a no-op.
+  const contextLimit = gate.model?.limit?.context || null;
 
-  // HARD REQUIREMENT 2 — subscribe BEFORE prompting.
+  // HARD REQUIREMENT 2 — subscribe BEFORE prompting. The subscription's onEvent is wrapped so that
+  // EVERY step boundary (intermediate or terminal) also schedules a context-usage check — "while
+  // running" compaction monitoring, not just a single before/after snapshot. Checks are chained
+  // sequentially (never run concurrently against the same session) via checkChain.
   const watcher = createTerminalWatcher();
-  const sub = subscribeEvents(baseURL, sessionID, watcher.onEvent);
+  const contextChecks = [];
+  let checkChain = Promise.resolve();
+  const scheduleContextCheck = () => {
+    checkChain = checkChain
+      .then(() => checkContextAndCompact(baseURL, sessionID, { contextLimit, threshold: contextCompactThreshold, locale, requestTimeoutMs }))
+      .then((rec) => { if (rec) contextChecks.push(rec); })
+      .catch(() => { /* a failed context check/compaction attempt never breaks the run itself */ });
+  };
+  const onEvent = (evt) => {
+    watcher.onEvent(evt);
+    if (contextLimit && evt && evt.type === "session.next.step.ended") scheduleContextCheck();
+  };
+  const sub = subscribeEvents(baseURL, sessionID, onEvent);
   const readyTimer = timeoutAfter(1500);
   await Promise.race([sub.ready, readyTimer.promise]);
   readyTimer.cancel();
 
+  // "Before running" context check — covers a session that already carries context (e.g. a future
+  // resumed/forked session) crossing the threshold before the first prompt of THIS call even lands.
+  if (contextLimit) {
+    try {
+      const pre = await checkContextAndCompact(baseURL, sessionID, { contextLimit, threshold: contextCompactThreshold, locale, requestTimeoutMs });
+      if (pre) contextChecks.push(pre);
+    } catch { /* best-effort — never blocks the run */ }
+  }
+
   try {
+    // The agentSlot directive (already confirmed present in GET /api/agent by resolveRoutingDirectives
+    // above) binds which OpenCode agent runs the turn — switched before selecting the model/prompting.
+    if (directives.agentId) await switchAgent(baseURL, sessionID, directives.agentId, { requestTimeoutMs });
     await selectModel(baseURL, sessionID, { id: modelID, providerID, requestTimeoutMs });
     await sendPrompt(baseURL, sessionID, prompt, { requestTimeoutMs });
   } catch (e) {
@@ -340,7 +539,7 @@ export async function runSessionAgainstServer({ baseURL, workspace, providerID, 
     return {
       ok: false, sessionId: sessionID, changedFiles: [], tokens: 0, tokensDetail: null, providersUsed: [providerID],
       log: String(e.message || e), noWork: true, noWorkReason: `failed before the run could start: ${e.message || e}`,
-      events: watcher.events.map((x) => x.type),
+      events: watcher.events.map((x) => x.type), compactions: [],
     };
   }
 
@@ -351,15 +550,20 @@ export async function runSessionAgainstServer({ baseURL, workspace, providerID, 
   await Promise.race([watcher.terminal, termTimer.promise.then(() => { timedOut = true; })]);
   termTimer.cancel();
   sub.stop();
+  await checkChain; // let any context check already scheduled by the last observed step finish
+
+  const compactions = contextChecks.filter((c) => c.triggered);
+  const contextLogLines = compactions.length
+    ? `\n\n=== context defects (planner) ===\n${compactions.map((c) => c.defect?.reason).filter(Boolean).join("\n")}` : "";
 
   if (timedOut) {
     await interruptSession(baseURL, sessionID, { requestTimeoutMs });
     return {
       ok: false, sessionId: sessionID, changedFiles: [], tokens: 0, tokensDetail: null, providersUsed: [providerID],
-      log: `${getServerLog()}\n\n=== events observed before timeout ===\n${watcher.events.map((x) => x.type).join("\n")}`.slice(-4000),
+      log: `${getServerLog()}\n\n=== events observed before timeout ===\n${watcher.events.map((x) => x.type).join("\n")}${contextLogLines}`.slice(-4000),
       noWork: true,
       noWorkReason: `timed out after ${timeoutMs}ms waiting for session.next.step.ended{finish:"stop"} on the event stream — interrupted`,
-      events: watcher.events.map((x) => x.type),
+      events: watcher.events.map((x) => x.type), contextChecks, compactions,
     };
   }
 
@@ -382,7 +586,7 @@ export async function runSessionAgainstServer({ baseURL, workspace, providerID, 
   try { messages = await fetchMessages(baseURL, sessionID, { requestTimeoutMs }); } catch { /* leaves totals at 0, honestly */ }
   const totals = sumAssistantTokens(messages);
 
-  const log = `${getServerLog()}\n\n=== session events ===\n${watcher.events.map((x) => x.type).join("\n")}`.slice(-4000);
+  const log = `${getServerLog()}\n\n=== session events ===\n${watcher.events.map((x) => x.type).join("\n")}${contextLogLines}`.slice(-4000);
   // HARD REQUIREMENT 9 — the SAME no-work guard the CLI runtime uses. A run that changed no files
   // is NOT ok, regardless of how cleanly the API round-trip completed.
   const { noWork, reason } = detectNoWork({ exitCode: 0, changedFiles, log });
@@ -394,6 +598,9 @@ export async function runSessionAgainstServer({ baseURL, workspace, providerID, 
       contextTotal: totals.input + totals.cacheRead + totals.cacheWrite },
     providersUsed: [providerID], log, noWork, noWorkReason: reason,
     events: watcher.events.map((x) => x.type),
+    // Context-compaction planner-defect signal (requirement 2): empty when usage never crossed
+    // contextCompactThreshold, or when the model's context limit was unknown.
+    contextChecks, compactions,
   };
 }
 
@@ -404,7 +611,12 @@ export async function runSessionAgainstServer({ baseURL, workspace, providerID, 
 export async function runOpenCodeServer({ connection, prompt, workspace, effort, isoBase, approvedRoots,
   timeoutMs = DEFAULT_RUN_TIMEOUT_MS, bin = OPENCODE_BIN, bootTimeoutMs = DEFAULT_BOOT_TIMEOUT_MS,
   healthTimeoutMs = DEFAULT_HEALTH_TIMEOUT_MS, modelCatalogTimeoutMs = DEFAULT_MODEL_CATALOG_TIMEOUT_MS,
-  requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = {}) {
+  requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+  // task.skills/task.agentSlot routing directives (resolved against the live OpenCode registry) +
+  // the locale for any localized fail-closed/defect-signal text; contextCompactThreshold/registry
+  // timeouts are exposed for callers that need to tune them, defaults otherwise.
+  task = {}, locale = "en", registryTimeoutMs = DEFAULT_REGISTRY_TIMEOUT_MS, registryPollMs = REGISTRY_POLL_MS,
+  contextCompactThreshold = DEFAULT_CONTEXT_COMPACT_THRESHOLD } = {}) {
   // `effort` (--variant on the CLI path) has no REST equivalent surfaced by this build's ModelRef
   // beyond the optional `variant` field — not exercised here; left as a documented gap (see report).
   void effort;
@@ -413,7 +625,7 @@ export async function runOpenCodeServer({ connection, prompt, workspace, effort,
   const failResult = (reason, extra = {}) => ({
     ok: false, exitCode: null, ...meta, tokens: 0, providersUsed: [], changedFiles: [],
     founderCredentialUsed: false, log: String(reason).slice(-4000), sessionId: null,
-    tokensDetail: null, noWork: true, noWorkReason: reason, ...extra,
+    tokensDetail: null, noWork: true, noWorkReason: reason, compactions: [], ...extra,
   });
 
   // HARD REQUIREMENT 8 — identical isolation to the CLI path: isolated HOME/XDG, confined + approved
@@ -451,6 +663,7 @@ export async function runOpenCodeServer({ connection, prompt, workspace, effort,
     const core = await runSessionAgainstServer({
       baseURL: server.baseURL, workspace: ws, providerID, modelID, prompt,
       timeoutMs, requestTimeoutMs, modelCatalogTimeoutMs, getServerLog: server.getLog,
+      task, locale, registryTimeoutMs, registryPollMs, contextCompactThreshold,
     });
     return { ...core, ...meta, exitCode: 0, founderCredentialUsed: false };
   } catch (e) {

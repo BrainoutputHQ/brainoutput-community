@@ -378,6 +378,13 @@ export const CATALOG = {
     "project.archivedLaunch": "Project \"{name}\" is archived — restore it before launching new work into it.",
     "project.deleteRunning": "Project \"{name}\" has running work — wait for it to finish (or stop it) before deleting.",
     "project.deleteConfirm": "The confirmation does not match the project name exactly — nothing was deleted.",
+    // OpenCode server-backed runtime (BO_CE_OPENCODE_SERVER=1): skill/agent routing onto the live
+    // registry + context-compaction planner-defect signal. {name}/{available}/{pct}/{status} are
+    // filled in by the caller via .replace(), matching this catalog's existing {token} convention.
+    "opencode.directive.unknownSkill": "Skill '{name}' is not present in the live OpenCode skill registry (available: {available}) — refusing to route this task rather than silently falling back.",
+    "opencode.directive.unknownAgent": "Agent '{name}' is not present in the live OpenCode agent registry (available: {available}) — refusing to route this task rather than silently falling back.",
+    "opencode.context.compacted": "Context usage reached {pct}% of the model's context window mid-run — the session was compacted. A task large enough to need compaction means the plan decomposed it too coarsely; recorded as a planner defect.",
+    "opencode.context.compactUnavailable": "Context usage reached {pct}% of the model's context window and compaction was attempted, but the server reported it is not available yet (HTTP {status}). Still recorded as a planner defect — the task was too large for one step regardless.",
   },
   fr: {
     "app.tagline": "Vos modèles · vos clés",
@@ -752,6 +759,10 @@ export const CATALOG = {
     "project.archivedLaunch": "Le projet « {name} » est archivé — restaurez-le avant d'y lancer du nouveau travail.",
     "project.deleteRunning": "Le projet « {name} » a du travail en cours — attendez la fin (ou arrêtez-le) avant de le supprimer.",
     "project.deleteConfirm": "La confirmation ne correspond pas exactement au nom du projet — rien n'a été supprimé.",
+    "opencode.directive.unknownSkill": "La compétence « {name} » n'existe pas dans le registre OpenCode en direct (disponibles : {available}) — la tâche est refusée plutôt que basculée silencieusement.",
+    "opencode.directive.unknownAgent": "L'agent « {name} » n'existe pas dans le registre OpenCode en direct (disponibles : {available}) — la tâche est refusée plutôt que basculée silencieusement.",
+    "opencode.context.compacted": "L'utilisation du contexte a atteint {pct}% de la fenêtre du modèle en cours d'exécution — la session a été compactée. Une tâche assez grande pour nécessiter un compactage signale un plan mal découpé ; enregistré comme défaut de planification.",
+    "opencode.context.compactUnavailable": "L'utilisation du contexte a atteint {pct}% de la fenêtre du modèle et un compactage a été tenté, mais le serveur l'a signalé indisponible pour l'instant (HTTP {status}). Enregistré quand même comme défaut de planification — la tâche était de toute façon trop grande pour une seule étape.",
   },
   de: {
     "app.tagline": "Ihre Modelle · Ihre Schlüssel",
@@ -1126,6 +1137,10 @@ export const CATALOG = {
     "project.archivedLaunch": "Projekt \"{name}\" ist archiviert — stellen Sie es wieder her, bevor Sie neue Arbeit hinein starten.",
     "project.deleteRunning": "Projekt \"{name}\" hat laufende Arbeit — warten Sie, bis sie fertig ist (oder stoppen Sie sie), bevor Sie löschen.",
     "project.deleteConfirm": "Die Bestätigung stimmt nicht exakt mit dem Projektnamen überein — nichts wurde gelöscht.",
+    "opencode.directive.unknownSkill": "Skill '{name}' ist nicht im aktuellen OpenCode-Skill-Register vorhanden (verfügbar: {available}) — die Aufgabe wird abgelehnt, statt still auf einen Standard umzuschalten.",
+    "opencode.directive.unknownAgent": "Agent '{name}' ist nicht im aktuellen OpenCode-Agent-Register vorhanden (verfügbar: {available}) — die Aufgabe wird abgelehnt, statt still auf einen Standard umzuschalten.",
+    "opencode.context.compacted": "Die Kontextnutzung erreichte {pct}% des Modell-Kontextfensters während des Laufs — die Sitzung wurde komprimiert. Eine Aufgabe, die groß genug für eine Komprimierung ist, zeigt einen zu grob zerlegten Plan; als Planungsfehler erfasst.",
+    "opencode.context.compactUnavailable": "Die Kontextnutzung erreichte {pct}% des Modell-Kontextfensters, und eine Komprimierung wurde versucht, aber der Server meldete, sie sei noch nicht verfügbar (HTTP {status}). Trotzdem als Planungsfehler erfasst — die Aufgabe war ohnehin zu groß für einen Schritt.",
   },
 };
 

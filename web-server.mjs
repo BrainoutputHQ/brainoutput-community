@@ -1738,20 +1738,28 @@ const MAX_TASK_AUTO_ANSWERS = 3;
 
 /** One per-task worker stage: the sandboxed coding runtime when the slot calls for it, else the
  *  chat adapter (with the same honest fallback note as before). Shared by the launch loop and
- *  the owner-answer resume so an escalated task re-runs EXACTLY the stage it paused in. */
-async function runWorkerStage({ node, wprompt, codeWs, index, maxTokens = 1500, timeoutMs = 240000 }) {
+ *  the owner-answer resume so an escalated task re-runs EXACTLY the stage it paused in.
+ *  `directives` ({skills, agentSlot}, optional) is the task record's routing directives — passed
+ *  through to the OpenCode server runtime (BO_CE_OPENCODE_SERVER=1 only; a no-op otherwise) so it
+ *  can resolve them against the live skill/agent registry and fail closed exactly like KNOWN_SKILLS
+ *  does at the Community capability-slot level (ce-core.mjs). */
+async function runWorkerStage({ node, wprompt, codeWs, index, maxTokens = 1500, timeoutMs = 240000, directives = null }) {
   const isCoding = typeof node.slot === "string" && node.slot.startsWith("coding") && node.model?.connection && opencodeAvailable();
   if (isCoding) {
     try {
       const oc = await runOpenCode({ connection: node.model.connection, workspace: codeWs,
         timeoutMs: Math.min(timeoutMs, 240000), approvedRoots: [join(store.dir, "workspaces")],
-        prompt: `${wprompt}\nUse the write tool to create the file(s) with RELATIVE paths in the current directory, then stop.` });
+        prompt: `${wprompt}\nUse the write tool to create the file(s) with RELATIVE paths in the current directory, then stop.`,
+        task: directives || undefined, locale: store.def.settings?.locale || "en" });
       const files = (oc.changedFiles || []).map((f) => { try { return { name: f, content: readFileSync(join(codeWs, f), "utf8").slice(0, 4000) }; } catch { return { name: f, content: "" }; } });
       return { node: `worker-${index}`, executor: "opencode", model: oc.model, provider: oc.provider, costSource: oc.costSource, funder: oc.funder,
         tokens: oc.tokens, tokenScope: oc.tokenScope, changedFiles: oc.changedFiles, files,
         // Carried so the review path can block DETERMINISTICALLY on a run that exited 0 having
         // done nothing — never spending a reviewer call to rubber-stamp an empty workspace.
         noWork: oc.noWork, noWorkReason: oc.noWorkReason,
+        // Context-compaction planner-defect signal (BO_CE_OPENCODE_SERVER=1 only) — surfaced onto
+        // the task's worker output exactly like noWork/noWorkReason, never swallowed silently.
+        compactions: oc.compactions || [],
         artifact: oc.changedFiles?.length ? `opencode:${oc.changedFiles.join(",")}` : null,
         output: oc.changedFiles?.length ? `wrote ${oc.changedFiles.join(", ")}` : "(no files produced for this task)" };
     } catch (e) {
@@ -1799,8 +1807,12 @@ async function runSpineTaskWorker({ task, ctx, maxTokens = 1500, timeoutMs = 240
   for (;;) {
     const wprompt = workerPartPrompt({ objective: ctx.prompt, planOutput: ctx.planOutput,
       part: cur.title, index: ctx.index, total: ctx.total, task: cur });
+    // The task record's own skills/agentSlot directives (task-pm-04) bind the OpenCode server
+    // runtime's routing exactly as they already bind ce-core.mjs's routeTask (KNOWN_SKILLS) —
+    // fail-closed against the live registry, never a silent default (BO_CE_OPENCODE_SERVER=1 only).
+    const directives = (cur.skills?.length || cur.agentSlot) ? { skills: cur.skills || [], agentSlot: cur.agentSlot || null } : null;
     const out = await runWorkerStage({ node: ctx.workerNode, wprompt, codeWs: ctx.codeWs,
-      index: ctx.index, maxTokens, timeoutMs });
+      index: ctx.index, maxTokens, timeoutMs, directives });
     const question = parseWorkerQuestion(out.output);
     if (!question) return { out };
     cur = askTaskQuestion(store.runtime, cur.id, question, { at: Date.now() });
