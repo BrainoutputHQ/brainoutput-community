@@ -1828,16 +1828,19 @@ const MAX_TASK_AUTO_ANSWERS = 3;
  *  can resolve them against the live skill/agent registry and fail closed exactly like KNOWN_SKILLS
  *  does at the Community capability-slot level (ce-core.mjs).
  *  `onSessionStart` is the live-view hook: it fires once with the OpenCode session id so the
- *  execution record can publish it and a browser can watch this step while it is still running. */
+ *  execution record can publish it and a browser can watch this step while it is still running.
+ *  `onWorkerQuestion` (BO_CE_OPENCODE_SERVER=1 only; worker escalation, 2026-08-04) routes the
+ *  session's native question-tool pauses through CE's existing planner-auto-answer/owner-escalation
+ *  logic — see buildWorkerQuestionHook below. A no-op on every other path (chat fallback, CLI). */
 async function runWorkerStage({ node, wprompt, codeWs, index, maxTokens = 1500, timeoutMs = 240000,
-                               directives = null, onSessionStart = () => {} }) {
+                               directives = null, onSessionStart = () => {}, onWorkerQuestion = null }) {
   const isCoding = typeof node.slot === "string" && node.slot.startsWith("coding") && node.model?.connection && opencodeAvailable();
   if (isCoding) {
     try {
       const oc = await runOpenCode({ connection: node.model.connection, workspace: codeWs,
         timeoutMs: Math.min(timeoutMs, 240000), approvedRoots: [join(store.dir, "workspaces")],
         prompt: `${wprompt}\nUse the write tool to create the file(s) with RELATIVE paths in the current directory, then stop.`,
-        task: directives || undefined, locale: store.def.settings?.locale || "en", onSessionStart });
+        task: directives || undefined, locale: store.def.settings?.locale || "en", onSessionStart, onWorkerQuestion });
       const files = (oc.changedFiles || []).map((f) => { try { return { name: f, content: readFileSync(join(codeWs, f), "utf8").slice(0, 4000) }; } catch { return { name: f, content: "" }; } });
       return { node: `worker-${index}`, executor: "opencode", model: oc.model, provider: oc.provider, costSource: oc.costSource, funder: oc.funder,
         tokens: oc.tokens, tokenScope: oc.tokenScope, changedFiles: oc.changedFiles, files,
@@ -1847,6 +1850,10 @@ async function runWorkerStage({ node, wprompt, codeWs, index, maxTokens = 1500, 
         // Context-compaction planner-defect signal (BO_CE_OPENCODE_SERVER=1 only) — surfaced onto
         // the task's worker output exactly like noWork/noWorkReason, never swallowed silently.
         compactions: oc.compactions || [],
+        // Worker escalation (BO_CE_OPENCODE_SERVER=1 only): every permission/question request this
+        // run resolved. runSpineTaskWorker below checks these (well, the task record's own status —
+        // the hook updates it as a side effect) to decide whether this task is actually done.
+        permissionEvents: oc.permissionEvents || [], questionEvents: oc.questionEvents || [],
         artifact: oc.changedFiles?.length ? `opencode:${oc.changedFiles.join(",")}` : null,
         output: oc.changedFiles?.length ? `wrote ${oc.changedFiles.join(", ")}` : "(no files produced for this task)" };
     } catch (e) {
@@ -1883,6 +1890,38 @@ async function maybeAutoAnswer(task, model) {
 }
 
 /**
+ * Build the `onWorkerQuestion` hook for ONE spine task (BO_CE_OPENCODE_SERVER=1 only): routes a
+ * mid-session native question-tool pause through the EXACT SAME planner-auto-answer/owner-
+ * escalation logic the text-parsed ```question``` path already uses (task-pm-05) — reused, not
+ * reinvented. Reads/writes `cur` via the closure the caller passes in (a `{ get, set }` pair over
+ * the loop-local `cur` variable in runSpineTaskWorker) so the task record the rest of that function
+ * sees is ALWAYS current, even across several questions inside one worker call.
+ *   - covered by the plan's decisions → the task is answered (by:"planner") and back in-progress;
+ *     the hook returns real answers so the SAME OpenCode session continues uninterrupted.
+ *   - not covered (or the cap already hit, or no model, or no decisions — maybeAutoAnswer's own
+ *     rules, untouched here) → the task stays blocked with its pendingQuestion; the hook returns
+ *     null so opencode-server.mjs rejects the question rather than hanging forever.
+ * Only ever asked to resolve a request the OpenCode runtime has ALREADY confirmed carries exactly
+ * one question — still defensively re-checked here (never trust the caller blindly).
+ */
+function buildWorkerQuestionHook({ getTask, setTask, autoModel }) {
+  return async function onWorkerQuestion(qr) {
+    const q = Array.isArray(qr?.questions) && qr.questions.length === 1 ? qr.questions[0] : null;
+    if (!q || typeof q.question !== "string" || !q.question.trim()) return null;
+    let cur;
+    try { cur = askTaskQuestion(store.runtime, getTask().id, q.question, { at: Date.now() }); }
+    catch { return null; } // e.g. a pendingQuestion already on record — escalate rather than guess
+    store.addTask(cur); store.saveRuntime();
+    setTask(cur);
+    const answered = await maybeAutoAnswer(cur, autoModel);
+    if (!answered) return null;   // stays blocked — the owner (question card) is needed
+    setTask(answered);
+    const lastQna = answered.qna[answered.qna.length - 1];
+    return { answers: [[lastQna.answer]] };
+  };
+}
+
+/**
  * Run one spine task's worker stage, handling escalations. A question flips the task to blocked
  * (persisted); an auto-answer re-runs the worker with the Q&A in its prompt; otherwise the task
  * stays blocked for the owner. Returns { out } on completion or { blocked } when the owner must
@@ -1891,6 +1930,12 @@ async function maybeAutoAnswer(task, model) {
 async function runSpineTaskWorker({ task, ctx, maxTokens = 1500, timeoutMs = 240000 }) {
   // ctx: { prompt, planOutput, index, total, workerNode, autoModel, codeWs, onSessionStart }
   let cur = task;
+  // The mid-session native-question hook (BO_CE_OPENCODE_SERVER=1 only; a harmless no-op on any
+  // other path since runWorkerStage only forwards it into the OpenCode server runtime) shares `cur`
+  // with this loop via get/set — a question may arrive WHILE runWorkerStage below is still pending,
+  // and its resolution (answered → in-progress+qna, or not → blocked+pendingQuestion) must be the
+  // SAME task record this loop reports on once runWorkerStage returns.
+  const onWorkerQuestion = buildWorkerQuestionHook({ getTask: () => cur, setTask: (t) => { cur = t; }, autoModel: ctx.autoModel });
   for (;;) {
     const wprompt = workerPartPrompt({ objective: ctx.prompt, planOutput: ctx.planOutput,
       part: cur.title, index: ctx.index, total: ctx.total, task: cur });
@@ -1899,7 +1944,12 @@ async function runSpineTaskWorker({ task, ctx, maxTokens = 1500, timeoutMs = 240
     // fail-closed against the live registry, never a silent default (BO_CE_OPENCODE_SERVER=1 only).
     const directives = (cur.skills?.length || cur.agentSlot) ? { skills: cur.skills || [], agentSlot: cur.agentSlot || null } : null;
     const out = await runWorkerStage({ node: ctx.workerNode, wprompt, codeWs: ctx.codeWs,
-      index: ctx.index, maxTokens, timeoutMs, directives, onSessionStart: ctx.onSessionStart || (() => {}) });
+      index: ctx.index, maxTokens, timeoutMs, directives, onSessionStart: ctx.onSessionStart || (() => {}), onWorkerQuestion });
+    // A native question that escalated (the hook above left `cur` blocked with a pendingQuestion) —
+    // the task is not done regardless of what `out` otherwise reports; same rule as the text-parsed
+    // path below, just discovered a different way. Re-read from the store: the hook persisted it,
+    // but `cur` (this closure's own binding) already reflects it too — either is equally current.
+    if (cur.status === "blocked" && cur.pendingQuestion) return { blocked: cur };
     const question = parseWorkerQuestion(out.output);
     if (!question) return { out };
     cur = askTaskQuestion(store.runtime, cur.id, question, { at: Date.now() });

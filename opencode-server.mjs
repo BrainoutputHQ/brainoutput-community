@@ -14,8 +14,9 @@
 import { spawn } from "node:child_process";
 import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
-import { join } from "node:path";
-import { prepareOpenCodeWorkspace } from "./opencode-adapter.mjs";
+import { join, isAbsolute } from "node:path";
+import { prepareOpenCodeWorkspace, WORKSPACE_PERMISSION_GRANT } from "./opencode-adapter.mjs";
+import { canonical, within } from "./workspace-registry.mjs";
 import { detectNoWork } from "./work-evidence.mjs";
 import { t } from "./i18n.mjs";
 // Live activity registry (oc-live-view, 2026-08-04): lets a browser watch THIS session while the
@@ -48,6 +49,14 @@ export const REGISTRY_POLL_MS = 300;
 // mid-run compaction. 0.8 leaves real headroom for the step that pushed usage over the line to
 // actually finish before the window is exhausted.
 export const DEFAULT_CONTEXT_COMPACT_THRESHOLD = 0.8;
+// HARD REQUIREMENT — worker escalation (permission replies + worker questions), verified live
+// 2026-08-04: NEITHER a pending permission ask NOR a pending question tool call ever produces an
+// SSE event on the session's own event stream (confirmed against a real `opencode serve` 1.18.7 —
+// the stream simply goes quiet after `session.next.tool.called`/`tool.input.ended` until someone
+// replies). The ONLY way to discover either is to POLL GET /api/session/{id}/permission and
+// GET /api/session/{id}/question while the run is in flight — this is why a poll loop runs
+// alongside (not instead of) the SSE-driven terminal watcher below.
+export const DEFAULT_ESCALATION_POLL_MS = 300;
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -264,6 +273,146 @@ export async function checkContextAndCompact(baseURL, sessionID, { contextLimit,
 }
 
 // ---------------------------------------------------------------------------------------------
+// Worker escalation: permission replies + question routing (2026-08-04). Verified live against a
+// real `opencode serve` 1.18.7: today, a headless run whose action resolves to permission "ask"
+// (or whose worker calls the native `question` tool) never gets an SSE event for it — the run just
+// sits there until our own overall timeoutMs elapses and gets interrupted, having silently done
+// nothing. Both mechanisms below poll the session (there is no other way — see the tunable's doc
+// comment above) and resolve what they find:
+//   - permissions: bounded, POLICY-DRIVEN against WORKSPACE_PERMISSION_GRANT — the SAME grant
+//     prepareOpenCodeWorkspace already wrote into this exact workspace's opencode.json. NEVER wider
+//     than that grant; a resource that would escape the confined workspace is refused even when its
+//     action IS granted (defense in depth — `resources` are model-supplied strings).
+//   - questions: routed through the CALLER-supplied `onWorkerQuestion` hook (web-server.mjs wires
+//     this to the EXISTING planner-auto-answer / owner-escalation logic — task-pm-05's
+//     maybeAutoAnswer/askTaskQuestion/answerTaskQuestion, capped exactly as today). This module
+//     never talks to the task store directly — same layering as `onSessionStart`.
+// ---------------------------------------------------------------------------------------------
+
+/** GET /api/session/{id}/permission — pending permission requests owned by this session. A
+ *  transient/unreachable response is treated as "nothing pending yet", never thrown — a stray
+ *  failed poll must never take the run down (same discipline as checkContextAndCompact). */
+export async function fetchPendingPermissions(baseURL, sessionID, { requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = {}) {
+  try {
+    const res = await apiCall(baseURL, "GET", `/api/session/${sessionID}/permission`, undefined, requestTimeoutMs);
+    return res.ok ? (res.json?.data || []) : [];
+  } catch { return []; }
+}
+
+/** POST /api/session/{id}/permission/{requestID}/reply — body `{"reply":"once"|"always"|"reject"}`
+ *  (+ optional `message`, verified live via GET /doc). We only ever send "once" or "reject" — never
+ *  "always", which would durably widen the session's own standing grant beyond this one call. */
+export async function replyToPermission(baseURL, sessionID, requestID, reply, { message, requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = {}) {
+  const body = message ? { reply, message } : { reply };
+  return apiCall(baseURL, "POST", `/api/session/${sessionID}/permission/${requestID}/reply`, body, requestTimeoutMs);
+}
+
+/**
+ * Pure policy decision for ONE pending permission request — bounded to exactly what
+ * WORKSPACE_PERMISSION_GRANT already permits for THIS confined workspace. Never throws, never
+ * touches the network.
+ *   - An action the grant does not mark "allow" (webfetch/external_directory, or anything the
+ *     grant doesn't even name) is refused — fail-closed, the same posture as resolveRoutingDirectives.
+ *   - An "edit" action (verified live: this is also what the "write" tool is gated under) is
+ *     additionally checked resource-by-resource: each resource is resolved against `workspace`
+ *     (relative paths are workspace-relative, verified live) and must stay confined — a path that
+ *     escapes it is refused even though "edit" itself is granted.
+ *   - "bash"'s resources are literal shell command strings, not paths — bash:"allow" in the grant
+ *     IS the bound (the workspace itself is already fully confined: isolated HOME/XDG, no host
+ *     credentials, approved-root directory — there is no narrower "inside the workspace" check to
+ *     apply to a command string the way there is to a file path).
+ */
+export function decidePermissionRequest(request, { workspace, locale = "en" } = {}) {
+  const action = typeof request?.action === "string" ? request.action : "";
+  const resources = Array.isArray(request?.resources) ? request.resources : [];
+  if (WORKSPACE_PERMISSION_GRANT[action] !== "allow") {
+    return { allow: false, reply: "reject",
+      reason: t(locale, "opencode.permission.refusedAction").replace("{action}", action || "(unknown)") };
+  }
+  if (action === "edit" && workspace) {
+    const root = canonical(workspace);
+    for (const r of resources) {
+      if (typeof r !== "string" || !r) continue;
+      const resolved = canonical(isAbsolute(r) ? r : join(workspace, r));
+      if (!within(resolved, root)) {
+        return { allow: false, reply: "reject",
+          reason: t(locale, "opencode.permission.outsideWorkspace").replace("{resource}", r) };
+      }
+    }
+  }
+  return { allow: true, reply: "once", reason: null };
+}
+
+/** Poll once, decide, and reply to EVERY currently-pending permission request on this session.
+ *  Returns one record per request (`{id, action, resources, allow, reason}`) regardless of whether
+ *  the reply call itself succeeded — the decision was already made and is what gets recorded/logged;
+ *  a failed reply is a transient-delivery problem, not a reason to hide the policy decision. */
+async function resolvePendingPermissions(baseURL, sessionID, { workspace, locale = "en", requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = {}) {
+  const pending = await fetchPendingPermissions(baseURL, sessionID, { requestTimeoutMs });
+  const events = [];
+  for (const req of pending) {
+    const decision = decidePermissionRequest(req, { workspace, locale });
+    try { await replyToPermission(baseURL, sessionID, req.id, decision.reply, { message: decision.reason, requestTimeoutMs }); }
+    catch { /* best-effort delivery — the decision below is recorded either way */ }
+    events.push({ id: req.id, action: req.action, resources: req.resources || [], allow: decision.allow, reason: decision.reason });
+  }
+  return events;
+}
+
+/** GET /api/session/{id}/question — pending question-tool requests owned by this session. Same
+ *  transient-failure discipline as fetchPendingPermissions: never throws, an unreachable poll is
+ *  just "nothing pending yet". */
+export async function fetchPendingQuestions(baseURL, sessionID, { requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = {}) {
+  try {
+    const res = await apiCall(baseURL, "GET", `/api/session/${sessionID}/question`, undefined, requestTimeoutMs);
+    return res.ok ? (res.json?.data || []) : [];
+  } catch { return []; }
+}
+
+/** POST /api/session/{id}/question/{requestID}/reply — body `{"answers":[[label,...],...]}`, one
+ *  answer array per question in the request, in order (verified live via GET /doc). */
+export async function replyToQuestion(baseURL, sessionID, requestID, answers, { requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = {}) {
+  return apiCall(baseURL, "POST", `/api/session/${sessionID}/question/${requestID}/reply`, { answers }, requestTimeoutMs);
+}
+
+/** POST /api/session/{id}/question/{requestID}/reject — no request body (verified live via GET
+ *  /doc). Used whenever the question is not going to be answered from this call (no hook, the hook
+ *  declined, or the request shape is one we don't handle) — a real reply, never a silent hang. */
+export async function rejectQuestion(baseURL, sessionID, requestID, { requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = {}) {
+  return apiCall(baseURL, "POST", `/api/session/${sessionID}/question/${requestID}/reject`, undefined, requestTimeoutMs);
+}
+
+/**
+ * Poll once, and resolve EVERY currently-pending question request on this session through the
+ * caller-supplied `onWorkerQuestion` hook. Bounded to CE's existing escalation vocabulary: a
+ * request is only ever handed to the hook when it carries EXACTLY one question (parseWorkerQuestion,
+ * plan-tasks.mjs, already enforces "at most ONE question" for the CLI path — the same bound applies
+ * here); anything else (no hook wired, the hook throws, the hook declines, or more than one question
+ * in the request) is REJECTED rather than left to hang forever. Returns one record per request:
+ * `{id, question, resolved: "answered" | "escalated"}` — "escalated" is the caller's cue (via the
+ * hook's own side effects, e.g. the task record it flips to blocked) that the owner is now needed.
+ */
+async function resolvePendingQuestions(baseURL, sessionID, { onWorkerQuestion = null, requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = {}) {
+  const pending = await fetchPendingQuestions(baseURL, sessionID, { requestTimeoutMs });
+  const events = [];
+  for (const req of pending) {
+    const singleQuestion = Array.isArray(req.questions) && req.questions.length === 1 ? req.questions[0] : null;
+    let handled = null;
+    if (singleQuestion && typeof onWorkerQuestion === "function") {
+      try { handled = await onWorkerQuestion(req); } catch { handled = null; } // the hook must never take the run down with it
+    }
+    if (handled && Array.isArray(handled.answers) && handled.answers.length) {
+      try { await replyToQuestion(baseURL, sessionID, req.id, handled.answers, { requestTimeoutMs }); } catch { /* best-effort */ }
+      events.push({ id: req.id, question: singleQuestion?.question ?? null, resolved: "answered" });
+    } else {
+      try { await rejectQuestion(baseURL, sessionID, req.id, { requestTimeoutMs }); } catch { /* best-effort */ }
+      events.push({ id: req.id, question: singleQuestion?.question ?? null, resolved: "escalated" });
+    }
+  }
+  return events;
+}
+
+// ---------------------------------------------------------------------------------------------
 // Session lifecycle calls.
 // ---------------------------------------------------------------------------------------------
 
@@ -473,7 +622,13 @@ export async function runSessionAgainstServer({ baseURL, workspace, providerID, 
   // oc-live-view: fired ONCE, the moment the session exists — the caller's one chance to record
   // the session id somewhere a browser can look it up WHILE this function is still running (e.g.
   // onto an execution record). A throwing hook must never take the run down with it.
-  onSessionStart = () => {} }) {
+  onSessionStart = () => {},
+  // Worker escalation (2026-08-04): `onWorkerQuestion` routes a pending question-tool request to
+  // CE's existing planner-auto-answer/owner-escalation logic (web-server.mjs); absent (the CLI
+  // path, and every prior test) means every question is rejected rather than left to hang.
+  // `escalationPollMs` is the poll interval for BOTH permissions and questions — see the
+  // DEFAULT_ESCALATION_POLL_MS doc comment for why polling is the only way to discover either.
+  onWorkerQuestion = null, escalationPollMs = DEFAULT_ESCALATION_POLL_MS }) {
   const session = await createSession(baseURL, { directory: workspace, requestTimeoutMs });
   const sessionID = session.id;
 
@@ -496,6 +651,7 @@ export async function runSessionAgainstServer({ baseURL, workspace, providerID, 
     return {
       ok: false, sessionId: sessionID, changedFiles: [], tokens: 0, tokensDetail: null, providersUsed: [],
       log: directives.reason, noWork: true, noWorkReason: directives.reason, events: [], compactions: [],
+      permissionEvents: [], questionEvents: [],
     };
   }
 
@@ -513,6 +669,7 @@ export async function runSessionAgainstServer({ baseURL, workspace, providerID, 
       noWork: true,
       noWorkReason: reason,
       events: [], compactions: [],
+      permissionEvents: [], questionEvents: [],
     };
   }
   // The model's own context window — the denominator context-compaction monitoring compares usage
@@ -572,8 +729,35 @@ export async function runSessionAgainstServer({ baseURL, workspace, providerID, 
       ok: false, sessionId: sessionID, changedFiles: [], tokens: 0, tokensDetail: null, providersUsed: [providerID],
       log: String(e.message || e), noWork: true, noWorkReason: `failed before the run could start: ${e.message || e}`,
       events: watcher.events.map((x) => x.type), compactions: [],
+      permissionEvents: [], questionEvents: [],
     };
   }
+
+  // Worker escalation poller (2026-08-04): runs on its OWN timer, concurrently with the SSE-driven
+  // wait below — chained (never overlapping against the same session) via pollChain, exactly like
+  // scheduleContextCheck chains context checks. Started only now (a permission/question cannot
+  // exist before the prompt that would trigger one), stopped the instant the race below settles.
+  const permissionEvents = [];
+  const questionEvents = [];
+  let pollActive = true;
+  let pollChain = Promise.resolve();
+  let pollTimer = null;
+  const scheduleEscalationPoll = () => {
+    if (!pollActive) return;
+    pollChain = pollChain
+      .then(() => resolvePendingPermissions(baseURL, sessionID, { workspace, locale, requestTimeoutMs }))
+      .then((evs) => permissionEvents.push(...evs))
+      .then(() => resolvePendingQuestions(baseURL, sessionID, { onWorkerQuestion, requestTimeoutMs }))
+      .then((evs) => questionEvents.push(...evs))
+      .catch(() => { /* a failed poll round never breaks the run — retried next tick */ });
+    pollTimer = setTimeout(scheduleEscalationPoll, escalationPollMs);
+  };
+  scheduleEscalationPoll();
+  const stopEscalationPoll = async () => {
+    pollActive = false;
+    if (pollTimer) clearTimeout(pollTimer);
+    await pollChain; // let an in-flight poll round finish before we read permissionEvents/questionEvents
+  };
 
   // Enforce the overall timeout, AND detect the event STREAM ITSELF closing early — e.g. the
   // opencode serve process dying mid-run. `sub.done` (the SSE read loop's own promise) settles the
@@ -592,10 +776,18 @@ export async function runSessionAgainstServer({ baseURL, workspace, providerID, 
   termTimer.cancel();
   sub.stop();
   await checkChain; // let any context check already scheduled by the last observed step finish
+  await stopEscalationPoll();
 
   const compactions = contextChecks.filter((c) => c.triggered);
   const contextLogLines = compactions.length
     ? `\n\n=== context defects (planner) ===\n${compactions.map((c) => c.defect?.reason).filter(Boolean).join("\n")}` : "";
+  const permissionRefusals = permissionEvents.filter((e) => !e.allow);
+  const permissionLogLines = permissionRefusals.length
+    ? `\n\n=== permission defects (security) ===\n${permissionRefusals.map((e) => e.reason).filter(Boolean).join("\n")}` : "";
+  const escalatedQuestions = questionEvents.filter((e) => e.resolved === "escalated");
+  const questionLogLines = escalatedQuestions.length
+    ? `\n\n=== worker questions awaiting the owner ===\n${escalatedQuestions.map((e) => e.question).filter(Boolean).join("\n")}` : "";
+  const escalationLogLines = `${permissionLogLines}${questionLogLines}`;
 
   // Only a close WITHOUT the terminal step is a real failure. `terminalSeen` is required here:
   // on a healthy run the server ends the stream immediately after finish:"stop", so streamClosed
@@ -609,8 +801,9 @@ export async function runSessionAgainstServer({ baseURL, workspace, providerID, 
     liveSessions.end(sessionID, { status: "stream-closed", reason });
     return {
       ok: false, sessionId: sessionID, changedFiles: [], tokens: 0, tokensDetail: null, providersUsed: [providerID],
-      log: `${getServerLog()}\n\n=== events observed before the stream closed ===\n${watcher.events.map((x) => x.type).join("\n")}`.slice(-4000),
+      log: `${getServerLog()}\n\n=== events observed before the stream closed ===\n${watcher.events.map((x) => x.type).join("\n")}${escalationLogLines}`.slice(-4000),
       noWork: true, noWorkReason: reason, events: watcher.events.map((x) => x.type),
+      permissionEvents, questionEvents,
     };
   }
 
@@ -620,10 +813,11 @@ export async function runSessionAgainstServer({ baseURL, workspace, providerID, 
     liveSessions.end(sessionID, { status: "timeout", reason });
     return {
       ok: false, sessionId: sessionID, changedFiles: [], tokens: 0, tokensDetail: null, providersUsed: [providerID],
-      log: `${getServerLog()}\n\n=== events observed before timeout ===\n${watcher.events.map((x) => x.type).join("\n")}${contextLogLines}`.slice(-4000),
+      log: `${getServerLog()}\n\n=== events observed before timeout ===\n${watcher.events.map((x) => x.type).join("\n")}${contextLogLines}${escalationLogLines}`.slice(-4000),
       noWork: true,
       noWorkReason: reason,
       events: watcher.events.map((x) => x.type), contextChecks, compactions,
+      permissionEvents, questionEvents,
     };
   }
 
@@ -646,13 +840,20 @@ export async function runSessionAgainstServer({ baseURL, workspace, providerID, 
   try { messages = await fetchMessages(baseURL, sessionID, { requestTimeoutMs }); } catch { /* leaves totals at 0, honestly */ }
   const totals = sumAssistantTokens(messages);
 
-  const log = `${getServerLog()}\n\n=== session events ===\n${watcher.events.map((x) => x.type).join("\n")}${contextLogLines}`.slice(-4000);
+  const log = `${getServerLog()}\n\n=== session events ===\n${watcher.events.map((x) => x.type).join("\n")}${contextLogLines}${escalationLogLines}`.slice(-4000);
   // HARD REQUIREMENT 9 — the SAME no-work guard the CLI runtime uses. A run that changed no files
   // is NOT ok, regardless of how cleanly the API round-trip completed.
-  const { noWork, reason } = detectNoWork({ exitCode: 0, changedFiles, log });
+  const evidenceGuard = detectNoWork({ exitCode: 0, changedFiles, log });
+  // A worker question the plan's decisions do not cover NEEDS THE OWNER (task-pm-05's existing
+  // rule, applied here too) — this overrides the evidence guard even when the session already
+  // produced real file changes before it paused: the task is not actually done until the owner (or
+  // the planner, via the SAME hook) answers, so this run is never reported as a clean success.
+  const hasEscalatedQuestion = escalatedQuestions.length > 0;
+  const noWork = evidenceGuard.noWork || hasEscalatedQuestion;
+  const reason = hasEscalatedQuestion ? t(locale, "opencode.question.escalated") : evidenceGuard.reason;
   // The live view reports the AGENT SESSION's own lifecycle, not the higher-level work-review
   // verdict above — the session genuinely reached its terminal step, so it ends "done" regardless
-  // of whether detectNoWork later judges the resulting diff insufficient.
+  // of whether detectNoWork (or the escalation override just above) later judges the run incomplete.
   liveSessions.end(sessionID, { status: "done", reason: null });
 
   return {
@@ -665,6 +866,10 @@ export async function runSessionAgainstServer({ baseURL, workspace, providerID, 
     // Context-compaction planner-defect signal (requirement 2): empty when usage never crossed
     // contextCompactThreshold, or when the model's context limit was unknown.
     contextChecks, compactions,
+    // Worker escalation (2026-08-04): every permission request this run resolved (allow/refuse,
+    // with an honest reason for a refusal) and every question-tool request it resolved (answered
+    // from the plan's decisions, or escalated to the owner). Empty on a run that never asked either.
+    permissionEvents, questionEvents,
   };
 }
 
@@ -681,7 +886,10 @@ export async function runOpenCodeServer({ connection, prompt, workspace, effort,
   // timeouts are exposed for callers that need to tune them, defaults otherwise.
   task = {}, locale = "en", registryTimeoutMs = DEFAULT_REGISTRY_TIMEOUT_MS, registryPollMs = REGISTRY_POLL_MS,
   contextCompactThreshold = DEFAULT_CONTEXT_COMPACT_THRESHOLD,
-  onSessionStart = () => {} } = {}) {
+  onSessionStart = () => {},
+  // Worker escalation (2026-08-04): forwarded verbatim to runSessionAgainstServer — see its own
+  // doc comment. Absent means every question this run's worker asks is rejected, never left hanging.
+  onWorkerQuestion = null } = {}) {
   // `effort` (--variant on the CLI path) has no REST equivalent surfaced by this build's ModelRef
   // beyond the optional `variant` field — not exercised here; left as a documented gap (see report).
   void effort;
@@ -690,7 +898,8 @@ export async function runOpenCodeServer({ connection, prompt, workspace, effort,
   const failResult = (reason, extra = {}) => ({
     ok: false, exitCode: null, ...meta, tokens: 0, providersUsed: [], changedFiles: [],
     founderCredentialUsed: false, log: String(reason).slice(-4000), sessionId: null,
-    tokensDetail: null, noWork: true, noWorkReason: reason, compactions: [], ...extra,
+    tokensDetail: null, noWork: true, noWorkReason: reason, compactions: [],
+    permissionEvents: [], questionEvents: [], ...extra,
   });
 
   // HARD REQUIREMENT 8 — identical isolation to the CLI path: isolated HOME/XDG, confined + approved
@@ -729,6 +938,7 @@ export async function runOpenCodeServer({ connection, prompt, workspace, effort,
       baseURL: server.baseURL, workspace: ws, providerID, modelID, prompt,
       timeoutMs, requestTimeoutMs, modelCatalogTimeoutMs, getServerLog: server.getLog,
       task, locale, registryTimeoutMs, registryPollMs, contextCompactThreshold, onSessionStart,
+      onWorkerQuestion,
     });
     return { ...core, ...meta, exitCode: 0, founderCredentialUsed: false };
   } catch (e) {

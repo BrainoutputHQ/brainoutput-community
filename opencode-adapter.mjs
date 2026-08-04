@@ -123,6 +123,20 @@ export function connectionToConfig(connection) {
   };
 }
 
+// The workspace-level opencode.json permission grant — the SINGLE source of truth for what a
+// confined coding workspace is allowed to do, written by prepareOpenCodeWorkspace below AND
+// consulted by opencode-server.mjs (verified live, 2026-08-04) when it must reply to a mid-run
+// permission request instead of falling into the old headless auto-reject no-op. Exported (not
+// just inlined) so the two call sites can never drift into two different, silently-diverging
+// grants. `edit` covers BOTH the "edit" and "write" tools (verified live: opencode's permission
+// engine routes the "write" tool through the "edit" category — a bare "write" config key, kept
+// here for readability/back-compat, has NO effect on the actual gate). `bash` is granted broadly
+// because the workspace itself is already fully confined (isolated HOME/XDG, no host credentials,
+// approved-root workspace) — there is no narrower "inside the workspace" bound to apply to a shell
+// command string the way there is to a file path. `webfetch`/`external_directory` stay denied —
+// this workspace never reaches the network or outside its own confined root.
+export const WORKSPACE_PERMISSION_GRANT = { edit: "allow", write: "allow", bash: "allow", webfetch: "deny", external_directory: "deny" };
+
 // Prepare the isolated HOME/XDG + confined workspace an OpenCode process needs. Shared by the
 // one-shot runner and the persistent server so both get IDENTICAL isolation guarantees.
 // Returns the canonicalized workspace path and the isolated-home path.
@@ -150,7 +164,7 @@ export function prepareOpenCodeWorkspace({ connection, workspace, isoBase, appro
   // workspace permissions: allow work IN the workspace, deny reaching outside it or the network.
   writeFileSync(join(ws, "opencode.json"), JSON.stringify({
     $schema: "https://opencode.ai/config.json",
-    permission: { edit: "allow", write: "allow", bash: "allow", webfetch: "deny", external_directory: "deny" },
+    permission: WORKSPACE_PERMISSION_GRANT,
   }));
   if (!existsSync(join(ws, ".git"))) { try { execFileSync("git", ["-C", ws, "init", "-q"]); } catch {} }
   try { execFileSync("git", ["-C", ws, "add", "-A"]); execFileSync("git", ["-C", ws, "-c", "user.email=ce@local", "-c", "user.name=ce", "commit", "-qm", "pre", "--allow-empty"]); } catch {}
@@ -217,7 +231,7 @@ export function readSessionTokens({ sessionId, env }) {
 // running server, and `session` + `fork` to inherit an already-warm context instead of rebuilding it.
 export function runOpenCode({ connection, prompt, workspace, effort, isoBase, timeoutMs = 240000, approvedRoots,
                              attach = null, session = null, fork = false, task = null, locale = "en",
-                             onSessionStart = () => {} }) {
+                             onSessionStart = () => {}, onWorkerQuestion = null }) {
   // Opt-in server-backed runtime (BO_CE_OPENCODE_SERVER=1): drives `opencode serve`'s v2 REST API
   // (see opencode-server.mjs, docs/OPENCODE_SERVER_API.md) instead of spawning `opencode run` per
   // task. This branch is the ENTIRE difference — when the flag is unset, every line below it runs
@@ -225,16 +239,21 @@ export function runOpenCode({ connection, prompt, workspace, effort, isoBase, ti
   // on opencode-server.mjs (which itself imports FROM this module) so there is no import cycle.
   // NOTE: `attach`/`session`/`fork` (CLI-only warm-session reuse) are not yet supported by the
   // server-backed path and are silently ignored when the flag is on — no current caller passes them.
-  // Three server-path-only additions, all no-ops on the CLI path below — passing them when the
+  // Four server-path-only additions, all no-ops on the CLI path below — passing them when the
   // flag is unset changes nothing:
   //  - `task` (skills/agentSlot directives) + `locale`: skill/agent routing onto the live OpenCode
   //    registry, and the localized context-compaction planner-defect signal.
   //  - `onSessionStart`: hands the live session id back mid-run for the live task view. The CLI
   //    path never has one, so it simply never calls the hook — honest, not faked.
+  //  - `onWorkerQuestion` (worker escalation, 2026-08-04): called when the session's native
+  //    `question` tool pauses the run; routes through CE's EXISTING planner-auto-answer/owner-
+  //    escalation logic (see web-server.mjs's runSpineTaskWorker). The CLI path has no equivalent
+  //    mid-run pause (its own escalation is the text-parsed ```question``` block, after the fact),
+  //    so it simply never calls this hook.
   if (process.env.BO_CE_OPENCODE_SERVER === "1") {
     return import("./opencode-server.mjs").then(({ runOpenCodeServer }) =>
       runOpenCodeServer({ connection, prompt, workspace, effort, isoBase, timeoutMs, approvedRoots,
-        task, locale, onSessionStart }));
+        task, locale, onSessionStart, onWorkerQuestion }));
   }
   const { ws, iso, modelRef, env } = prepareOpenCodeWorkspace({ connection, workspace, isoBase, approvedRoots });
 
