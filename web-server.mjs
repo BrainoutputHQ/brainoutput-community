@@ -19,6 +19,9 @@ import { Store } from "./store.mjs";
 import { routeTask, makeCatalog, costReport, executionSummary, validateCompanyConfig, PRIVACY_POSTURES, planGraph } from "./ce-core.mjs";
 import { executePlan, runNode, execLogLine } from "./adapters.mjs";
 import { runOpenCode, opencodeAvailable } from "./opencode-adapter.mjs";
+// Live task view (oc-live-view, 2026-08-04): the browser-facing relay for a running OpenCode
+// session's activity + its stop button. See live-session.mjs for the registry itself.
+import { liveSessions } from "./live-session.mjs";
 import { DEPARTMENT_TEMPLATES } from "./departments.mjs";
 import { detectConnections, generateOrg, recommendAssignments, applyOverrides, confirmZeroFunded, renderAgentView } from "./onboarding.mjs";
 import { runtimeCards, runtimeConnection, runtimeToConnection } from "./runtimes.mjs";
@@ -358,6 +361,75 @@ async function ocGateway(req, res, url) {
   }
 }
 
+// ── Live task view (oc-live-view) ───────────────────────────────────────────────────────────────
+// The registry status a live session ends in -> the i18n key its terminal SSE frame carries. Any
+// status not listed (there shouldn't be one — live-session.mjs only ever sets these four) falls
+// back to a generic "error" key rather than crashing — a label is never fabricated, but it is also
+// never silently missing.
+const LIVE_STATUS_KEYS = {
+  done: "live.status.done",
+  timeout: "live.status.timeout",
+  "stream-closed": "live.status.streamClosed",
+  failed: "live.status.failed",
+};
+
+/** GET /api/session/{id}/live — SSE relay of ONE OpenCode session's live activity. This handler
+ *  NEVER talks to the OpenCode server itself: everything it sends comes from the in-process live
+ *  registry (live-session.mjs), which opencode-server.mjs feeds as the real SSE events arrive —
+ *  the browser never learns that server's host/port, only these projected, capped entries. Closes
+ *  cleanly (one terminal frame, then `res.end()`) on every path: unknown/expired session, a
+ *  session that already ended before the browser connected, and a session ending WHILE connected. */
+function liveSessionStream(req, res, sessionId) {
+  res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache, no-transform", "Connection": "keep-alive" });
+  const send = (obj) => { if (!res.writableEnded) res.write(`data: ${JSON.stringify(obj)}\n\n`); };
+  const rec = liveSessions.get(sessionId);
+  if (!rec) {
+    // Never a hanging connection for a task the UI should not have offered as "live" in the first
+    // place (already ended and forgotten, or never a server-backed session at all).
+    send({ kind: "terminal", statusKey: "live.status.unavailable", reason: null });
+    return res.end();
+  }
+  // Replay whatever is already buffered — a browser that connects mid-run (or right after the run
+  // just ended) still sees the real recent activity, never a blank screen.
+  for (const entry of rec.events) send(entry);
+  if (rec.status !== "running") {
+    send({ kind: "terminal", statusKey: LIVE_STATUS_KEYS[rec.status] || "live.status.error", reason: rec.endedReason });
+    return res.end();
+  }
+  // Nothing can run between this check and the subscribe() call below (no `await` in between) —
+  // so the running/ended check above cannot race the registry ending the session out from under us.
+  const unsubscribe = liveSessions.subscribe(sessionId, (entry) => {
+    if (entry === null) {   // the registry's close sentinel (end() calling every listener)
+      const cur = liveSessions.get(sessionId);
+      send({ kind: "terminal", statusKey: LIVE_STATUS_KEYS[cur?.status] || "live.status.error", reason: cur?.endedReason ?? null });
+      return res.end();
+    }
+    send(entry);
+  });
+  req.on("close", unsubscribe);
+}
+
+/** Real outcome -> HTTP status for the interrupt relay. A missing/not-running session is a client
+ *  error (404/409, the UI should not have offered the button); an actual upstream failure — the
+ *  interrupt call itself failing against a real, running session — is a 502: OUR server is fine,
+ *  the OpenCode server's own call is what did not succeed. Never a bare 200 unless result.ok. */
+function interruptStatusCode(result) {
+  if (result.ok) return 200;
+  if (result.reason === "no such live session") return 404;
+  if (/^session is not running/.test(String(result.reason || ""))) return 409;
+  return 502;
+}
+
+/** POST /api/session/{id}/interrupt — the live task view's stop button. Relays through the live
+ *  registry's stored closure (built inside opencode-server.mjs from the real baseURL/sessionID,
+ *  never handed to this process's HTTP surface) and reports the REAL outcome — the response never
+ *  claims the task stopped when the interrupt call itself failed. Whether the run actually ends is
+ *  NOT decided here — that is reported honestly, separately, by the live stream's own terminal frame.*/
+async function liveSessionInterrupt(res, sessionId) {
+  const result = await liveSessions.interrupt(sessionId);
+  return json(res, result, interruptStatusCode(result));
+}
+
 async function api(req, res, url) {
   // ── Local bridge (bo connect): machine-to-machine endpoints with their OWN credential auth
   // (pairing code / node credential — never a cookie, so no CSRF exposure). They must answer
@@ -404,6 +476,18 @@ async function api(req, res, url) {
   }
   const refusal = guardRequest(req, url);
   if (refusal) return json(res, { error: refusal.error }, refusal.code);
+  // Live task view (oc-live-view): GET .../live is an SSE stream, POST .../interrupt is the stop
+  // button — both keyed by the OpenCode session id the UI got from an execution's liveSessionId.
+  const liveMatch = url.pathname.match(/^\/api\/session\/([^/]+)\/(live|interrupt)$/);
+  if (liveMatch) {
+    const sessionId = decodeURIComponent(liveMatch[1]);
+    if (liveMatch[2] === "live") {
+      if (req.method !== "GET") return json(res, { error: "method not allowed" }, 405);
+      return liveSessionStream(req, res, sessionId);
+    }
+    if (req.method !== "POST") return json(res, { error: "method not allowed" }, 405);
+    return liveSessionInterrupt(res, sessionId);
+  }
   if (url.pathname === "/api/artifact/download") {
     // Serve a produced/uploaded file. Path stays inside the store, server-generated records only.
     const art = (store.runtime.artifacts || []).find((a) => a.id === url.searchParams.get("id"));
@@ -1742,15 +1826,18 @@ const MAX_TASK_AUTO_ANSWERS = 3;
  *  `directives` ({skills, agentSlot}, optional) is the task record's routing directives — passed
  *  through to the OpenCode server runtime (BO_CE_OPENCODE_SERVER=1 only; a no-op otherwise) so it
  *  can resolve them against the live skill/agent registry and fail closed exactly like KNOWN_SKILLS
- *  does at the Community capability-slot level (ce-core.mjs). */
-async function runWorkerStage({ node, wprompt, codeWs, index, maxTokens = 1500, timeoutMs = 240000, directives = null }) {
+ *  does at the Community capability-slot level (ce-core.mjs).
+ *  `onSessionStart` is the live-view hook: it fires once with the OpenCode session id so the
+ *  execution record can publish it and a browser can watch this step while it is still running. */
+async function runWorkerStage({ node, wprompt, codeWs, index, maxTokens = 1500, timeoutMs = 240000,
+                               directives = null, onSessionStart = () => {} }) {
   const isCoding = typeof node.slot === "string" && node.slot.startsWith("coding") && node.model?.connection && opencodeAvailable();
   if (isCoding) {
     try {
       const oc = await runOpenCode({ connection: node.model.connection, workspace: codeWs,
         timeoutMs: Math.min(timeoutMs, 240000), approvedRoots: [join(store.dir, "workspaces")],
         prompt: `${wprompt}\nUse the write tool to create the file(s) with RELATIVE paths in the current directory, then stop.`,
-        task: directives || undefined, locale: store.def.settings?.locale || "en" });
+        task: directives || undefined, locale: store.def.settings?.locale || "en", onSessionStart });
       const files = (oc.changedFiles || []).map((f) => { try { return { name: f, content: readFileSync(join(codeWs, f), "utf8").slice(0, 4000) }; } catch { return { name: f, content: "" }; } });
       return { node: `worker-${index}`, executor: "opencode", model: oc.model, provider: oc.provider, costSource: oc.costSource, funder: oc.funder,
         tokens: oc.tokens, tokenScope: oc.tokenScope, changedFiles: oc.changedFiles, files,
@@ -1802,7 +1889,7 @@ async function maybeAutoAnswer(task, model) {
  * answer — the caller moves on: other spine tasks continue.
  */
 async function runSpineTaskWorker({ task, ctx, maxTokens = 1500, timeoutMs = 240000 }) {
-  // ctx: { prompt, planOutput, index, total, workerNode, autoModel, codeWs }
+  // ctx: { prompt, planOutput, index, total, workerNode, autoModel, codeWs, onSessionStart }
   let cur = task;
   for (;;) {
     const wprompt = workerPartPrompt({ objective: ctx.prompt, planOutput: ctx.planOutput,
@@ -1812,7 +1899,7 @@ async function runSpineTaskWorker({ task, ctx, maxTokens = 1500, timeoutMs = 240
     // fail-closed against the live registry, never a silent default (BO_CE_OPENCODE_SERVER=1 only).
     const directives = (cur.skills?.length || cur.agentSlot) ? { skills: cur.skills || [], agentSlot: cur.agentSlot || null } : null;
     const out = await runWorkerStage({ node: ctx.workerNode, wprompt, codeWs: ctx.codeWs,
-      index: ctx.index, maxTokens, timeoutMs, directives });
+      index: ctx.index, maxTokens, timeoutMs, directives, onSessionStart: ctx.onSessionStart || (() => {}) });
     const question = parseWorkerQuestion(out.output);
     if (!question) return { out };
     cur = askTaskQuestion(store.runtime, cur.id, question, { at: Date.now() });
@@ -1954,7 +2041,10 @@ async function resumeTaskWorker(exec, taskId) {
         planOutput: exec.escalationCtx?.planOutput || "(plan output no longer available)",
         index: esc.index, total: esc.total, workerNode,
         autoModel: cm.connection && !cm.needsConfiguration ? cm : null,
-        codeWs: join(store.dir, "workspaces", exec.id) } });
+        codeWs: join(store.dir, "workspaces", exec.id),
+        // oc-live-view: this resume path has no in-scope `updateExec` helper — persist directly,
+        // the same pattern the rest of this function already uses (exec mutated, then re-saved).
+        onSessionStart: (sessionId) => { exec.liveSessionId = sessionId; store.addExecution(exec); store.saveRuntime(); } } });
     if (res.blocked) { queueSyncSafe(task.projectId); return; }   // asked again — the card waits on the owner once more
     const out = res.out;
     // The resumed worker's report goes through the same per-task review as the launch loop.
@@ -2543,7 +2633,10 @@ async function chatLaunch(res, b) {  const m = (store.runtime.missions || []).fi
             res = await runSpineTaskWorker({
               task: (store.runtime.tasks || []).find((t) => t.id === st.id) || st,
               ctx: { prompt, planOutput: safeSlice(pr.output, 1200), index: i + 1, total: decomposed.subtasks.length,
-                workerNode, autoModel, codeWs },
+                workerNode, autoModel, codeWs,
+                // oc-live-view: publish the live session id the moment this subtask's coding
+                // session exists — the execution record is the one thing the UI already polls.
+                onSessionStart: (sessionId) => { exec.liveSessionId = sessionId; updateExec({}); } },
               maxTokens: b.maxTokens || 1500, timeoutMs: b.timeoutMs || 240000 });
           } catch (e) {
             // FINAL worker-stage failure (task-pm-17): the task blocks with the REAL error —
@@ -2591,7 +2684,10 @@ async function chatLaunch(res, b) {  const m = (store.runtime.missions || []).fi
               const oc = await runOpenCode({ connection: node.model.connection, workspace: codeWs,
                 timeoutMs: Math.min(b.timeoutMs || 240000, 240000),
                 approvedRoots: [join(store.dir, "workspaces")],
-                prompt: `${prompt}\nUse the write tool to create the file(s) with RELATIVE paths in the current directory, then stop.` });
+                prompt: `${prompt}\nUse the write tool to create the file(s) with RELATIVE paths in the current directory, then stop.`,
+                // oc-live-view: as soon as the session exists, publish it on the execution record —
+                // this is the ONLY moment the running task's live-view id becomes visible to the UI.
+                onSessionStart: (sessionId) => { exec.liveSessionId = sessionId; updateExec({}); } });
               const files = (oc.changedFiles || []).map((f) => { try { return { name: f, content: readFileSync(join(codeWs, f), "utf8").slice(0, 4000) }; } catch { return { name: f, content: "" }; } });
               out = { node: node.node, executor: "opencode", model: oc.model, provider: oc.provider, costSource: oc.costSource, funder: oc.funder,
                 tokens: oc.tokens, tokenScope: oc.tokenScope, changedFiles: oc.changedFiles, files,

@@ -30,7 +30,7 @@ import { runOpenCode } from "./opencode-adapter.mjs";
 // catalog, session create, model select, prompt, SSE events, interrupt, message history. Every
 // call is counted so tests can assert what was (and was NOT) called — e.g. the registry gate must
 // refuse WITHOUT ever calling /model or /prompt.
-function startStub({ catalog = [], eventScript = [], messages = [] } = {}) {
+function startStub({ catalog = [], eventScript = [], messages = [], closeAfterScript = false } = {}) {
   const calls = { model: 0, prompt: 0, interrupt: 0, event: 0, session: 0 };
   let sseRes = null; // the currently-connected event-stream response, if any
 
@@ -82,7 +82,9 @@ function startStub({ catalog = [], eventScript = [], messages = [] } = {}) {
         sseRes = res;
         let i = 0;
         const pump = () => {
-          if (i >= eventScript.length) return;
+          // Optionally end the stream the instant the script is exhausted — what a REAL server does
+          // right after finish:"stop". Exercises the close-after-completion race.
+          if (i >= eventScript.length) { if (closeAfterScript && sseRes === res) res.end(); return; }
           const { delayMs = 5, evt } = eventScript[i++];
           setTimeout(() => { sendEvent(evt); pump(); }, delayMs);
         };
@@ -148,6 +150,34 @@ test("model absent from GET /api/model is refused WITHOUT ever selecting or prom
 });
 
 // ── 2. Completion detection from a simulated SSE event stream ─────────────────────────────────
+// REGRESSION (merge of oc-live-view + oc-skills-escalation): a healthy run's stream closes
+// IMMEDIATELY after finish:"stop". Guarding on `streamClosed` alone therefore misreports a normal
+// completion as "the OpenCode server may have exited" — the run is ok, the file is on disk, and the
+// result claims failure. The terminal step must win over the close, however the race lands.
+test("a stream that closes RIGHT AFTER finish:'stop' is a normal completion, not a dead server", async () => {
+  const eventScript = [
+    { evt: { type: "session.next.prompt.admitted", data: {} } },
+    { evt: { type: "session.next.step.started", data: {} } },
+    { evt: { type: "session.next.step.ended", data: { finish: "stop" } } },
+  ];
+  const stub = await startStub({ catalog: [CATALOG_ENTRY], eventScript, messages: [], closeAfterScript: true });
+  const ws = makeGitWorkspace();
+  writeFileSync(join(ws, "done.txt"), "ok\n");
+  try {
+    const result = await runSessionAgainstServer({
+      baseURL: stub.baseURL, workspace: ws, providerID: MODEL.providerID, modelID: MODEL.id,
+      prompt: "write a file", timeoutMs: 5000, modelCatalogTimeoutMs: 2000,
+    });
+    assert.equal(result.ok, true, `a post-completion close must not be reported as failure: ${JSON.stringify(result)}`);
+    assert.equal(result.noWork, false);
+    assert.ok(!/may have exited|stream closed/i.test(String(result.noWorkReason || "")), "no dead-server claim");
+    assert.ok(result.changedFiles.includes("done.txt"));
+  } finally {
+    await stub.close();
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
 test("completion is detected from session.next.step.ended{finish:'stop'} on the real SSE wire, not before", async () => {
   const eventScript = [
     { evt: { type: "session.next.model.switched", data: {} } },
