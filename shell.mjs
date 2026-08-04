@@ -189,7 +189,7 @@ const T_SLOTS=__BO_SLOTS__;
 const LOCALE='__BO_LOCALE__';
 const CSRF='__BO_CSRF__';
 const t=(k)=>T[k]||k;
-const S={state:null,convId:null,projectId:null,mode:'ask',scope:'company',dept:'',agent:'',ob:null,view:'chat',
+const S={state:null,convId:null,projectId:null,mode:'ask',scope:'company',dept:'',agent:'',model:null,ob:null,view:'chat',
  // oc-live-view: one live EventSource per RUNNING execution, keyed by execution id — a plain
  // object (not a single slot) because the task detail's own live card and the chat thread's
  // mission-run card can legitimately be on screen at the same time for a project conversation.
@@ -515,6 +515,11 @@ function thead(){
  const s=S.state||{};const h=document.getElementById('thead');h.innerHTML='';
  if(!onboarded(s)){h.appendChild(el('<span class=title>🏢 BrainOutput</span>'));return}
  const conv=(s.conversations||[]).find(c=>c.id===S.convId);
+ // The model picker's pending choice is reset to THIS conversation's own persisted value exactly
+ // once per conversation switch (never on every render — that would stomp a just-picked value
+ // before the next /api/chat/send has had a chance to persist it). This is what stops a pick made
+ // in one thread from leaking into the next thread the user opens.
+ if(S._modelSyncedFor!==S.convId){S.model=conv?(conv.modelConnectionId||null):null;S._modelSyncedFor=S.convId}
  const proj=conv&&conv.projectId?(s.projects||[]).find(p=>p.id===conv.projectId):null;
  h.appendChild(el('<span class=title>'+esc(proj?proj.name:(conv?(conv.title||(conv.messages[0]?String(conv.messages[0].text).slice(0,40):'')):'🏢 BrainOutput'))+'</span>'));
  // The single "talking to" selector. Value encoding: company | twin | dept:<name> | agent:<id>.
@@ -534,6 +539,22 @@ function thead(){
   render()};
  h.appendChild(el('<span class=mut style="font-size:12px">'+esc(t('thead.to'))+'</span>'));
  h.appendChild(sel);
+ // Per-conversation model picker (task chat-model-picker): which AI answers THIS thread. Options
+ // are CE's own configured (funded) connections — never a model the user hasn't connected. When a
+ // conversation is open its OWN persisted choice is shown (never another thread's); a brand-new
+ // conversation shows the pending session choice until the first message creates the record.
+ const funded=(s.connections||[]).filter(c=>['user','free','local'].includes(c.funder));
+ const curModel=conv?(conv.modelConnectionId||''):(S.model||'');
+ const verified=s.chatModelVerification||{};
+ const modelSel=el('<select id=modelpick title="'+esc(t('thead.modelHint'))+'"><option value="">'+esc(t('thead.modelDefault'))+'</option>'
+  +funded.map(c=>'<option value="'+esc(c.id)+'">'+esc(c.provider+'/'+c.model)+(verified[c.id]===false?' ⚠':'')+'</option>').join('')+'</select>');
+ modelSel.value=funded.some(c=>c.id===curModel)?curModel:'';
+ // Same convention as the "talking to" selector above: this sets the SESSION's pending choice,
+ // applied by /api/chat/send (which persists it onto conv.modelConnectionId) the next time a
+ // message is sent in this thread — never a separate write, never an empty message injected.
+ modelSel.onchange=()=>{S.model=modelSel.value||null;render()};
+ h.appendChild(el('<span class=mut style="font-size:12px">'+esc(t('thead.model'))+'</span>'));
+ h.appendChild(modelSel);
  if(conv){const pr=el('<select style="margin-left:auto" title="'+esc(t('shell.promoteHint'))+'"><option value="">'+esc(t('shell.promote'))+'</option>'+(s.projects||[]).map(p=>'<option value="'+p.id+'">'+esc(p.name)+'</option>').join('')+'<option value="__new">+ '+esc(t('shell.newProject'))+'</option></select>');
   pr.onchange=async()=>{if(!pr.value)return;
    const body={conversationId:conv.id};
@@ -1751,10 +1772,10 @@ function composer(){
   const txt=msg.value.trim();if(!txt&&!(S.pendingAtts||[]).length)return;
   if(!onboarded(S.state||{})){msg.value='';grow();await obAnswer(txt);return}
   thinking(true);
-  const r=await api('/api/chat/send',{conversationId:S.convId,scope:S.scope,department:S.dept||null,agentId:S.agent||null,mode:S.mode,text:txt,projectId:S.projectId,artifacts:(S.pendingAtts||[]).map(a=>a.id)});
+  const r=await api('/api/chat/send',{conversationId:S.convId,scope:S.scope,department:S.dept||null,agentId:S.agent||null,mode:S.mode,text:txt,projectId:S.projectId,artifacts:(S.pendingAtts||[]).map(a=>a.id),modelConnectionId:S.model||null});
   thinking(false);
   if(r.error){alert(r.error);return}
-  S.pendingAtts=[];S.convId=r.conversation.id;msg.value='';grow();await refresh()};
+  S.pendingAtts=[];S.convId=r.conversation.id;S._modelSyncedFor=S.convId;msg.value='';grow();await refresh()};
  grow();
 }
 function render(){
