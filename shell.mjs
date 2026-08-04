@@ -189,7 +189,14 @@ const T_SLOTS=__BO_SLOTS__;
 const LOCALE='__BO_LOCALE__';
 const CSRF='__BO_CSRF__';
 const t=(k)=>T[k]||k;
-const S={state:null,convId:null,projectId:null,mode:'ask',scope:'company',dept:'',agent:'',ob:null,view:'chat'};
+const S={state:null,convId:null,projectId:null,mode:'ask',scope:'company',dept:'',agent:'',ob:null,view:'chat',
+ // oc-live-view: one live EventSource per RUNNING execution, keyed by execution id — a plain
+ // object (not a single slot) because the task detail's own live card and the chat thread's
+ // mission-run card can legitimately be on screen at the same time for a project conversation.
+ live:{}};
+// Bounded client-side too (server-side capping alone is not enough — a client connected from the
+// very start of a long run keeps receiving LIVE pushes regardless of the server's replay cap).
+const LIVE_EVENTS_CLIENT_CAP=300;
 const esc=(s)=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const el=(h)=>{const d=document.createElement('div');d.innerHTML=h;
  if(d.childElementCount>1)console.error('el(): multi-root html — all but the first element are DROPPED:',String(h).slice(0,140));
@@ -644,6 +651,106 @@ function reviewLine(rv){
   +(rv.note?' — '+esc(rv.note):'')
   +' <span class=mut>· '+esc(by===('review.by.'+rv.by)?rv.by:by)+'</span></div>';
 }
+// ── Live task view (oc-live-view, 2026-08-04): a running execution's streamed OpenCode activity
+// + a stop button. Active only when the server-backed runtime published a liveSessionId onto the
+// execution (BO_CE_OPENCODE_SERVER=1) — with the flag unset, ex.liveSessionId is always absent and
+// this whole section always renders the honest "not streaming" line, never a fake/dead stream.
+
+/** Tear down and forget the live view for one execution id (EventSource closed, state dropped). */
+function closeLiveStream(execId){
+ if(!S.live)S.live={};
+ const l=S.live[execId];
+ if(!l)return;
+ if(l.es){try{l.es.close()}catch{}}
+ delete S.live[execId];
+}
+/** Called once per render() pass: any live view whose execution is gone or no longer running is
+ *  torn down — the ONLY place this has to happen, regardless of which card(s) requested it. */
+function sweepLiveStreams(s){
+ if(!S.live)S.live={};
+ for(const execId of Object.keys(S.live)){
+  const ex=(s.executions||[]).find(e=>e.id===execId);
+  if(!ex||ex.status!=='running')closeLiveStream(execId);
+ }
+}
+/** Open (or reuse) the EventSource for execId/sessionId. A no-op if already connected to the exact
+ *  same session — re-render() calls (the 3s poll, or another card sharing the same execution)
+ *  must never tear down and reopen a perfectly good connection. */
+function ensureLiveStream(execId,sessionId){
+ if(!S.live)S.live={};
+ const cur=S.live[execId];
+ if(cur&&cur.sessionId===sessionId&&cur.es)return;
+ if(cur)closeLiveStream(execId);
+ const l={sessionId,es:null,events:[],status:'connecting',endedReason:null,dropped:0,stopBusy:false,stopMsg:null};
+ S.live[execId]=l;
+ const es=new EventSource('/api/session/'+encodeURIComponent(sessionId)+'/live');
+ l.es=es;
+ es.onmessage=(ev)=>{
+  let frame;try{frame=JSON.parse(ev.data)}catch{return}   // one malformed frame never breaks the view
+  if(frame.kind==='terminal'){
+   // l.status now holds an i18n KEY (e.g. "live.status.done") — never the live markers below.
+   l.status=frame.statusKey||'live.status.error';l.endedReason=frame.reason||null;
+   try{es.close()}catch{}
+   if(l.es===es)l.es=null;
+   render();return;
+  }
+  l.status='running';
+  l.events.push(frame);
+  if(l.events.length>LIVE_EVENTS_CLIENT_CAP){l.events.shift();l.dropped++}
+  render();
+ };
+ es.onerror=()=>{
+  // A genuine network-level drop before we ever heard from the server at all (as opposed to the
+  // server's own terminal frame, which we already handle above by closing proactively). The
+  // browser will keep retrying on its own; we only need to stop implying "connecting" forever.
+  if(l.status==='connecting'){l.status='live.status.streamClosed';render()}
+ };
+}
+/** The live view itself: a scrollable, LOCALIZED activity list + a stop button. Returns null for
+ *  a non-running execution (the caller must not append anything) — honest by construction, never
+ *  a dead or spinning stream for a task that is not actually running. */
+function liveActivityCard(ex){
+ if(!ex||ex.status!=='running')return null;
+ if(!ex.liveSessionId){
+  // Running, but the CURRENT stage isn't a server-backed coding session (a planner/reviewer
+  // stage, a chat-delivered worker, or the non-server OpenCode runtime) — say so, plainly.
+  return el('<div class="cardx" style="margin-top:10px"><h3>'+esc(t('live.title'))+'</h3>'
+   +'<div class=mut style="font-size:13px">'+esc(t('live.notStreaming'))+'</div></div>');
+ }
+ ensureLiveStream(ex.id, ex.liveSessionId);
+ const l=S.live[ex.id]||{status:'connecting',events:[],dropped:0,stopBusy:false,stopMsg:null};
+ const isLive=l.status==='connecting'||l.status==='running';
+ const statusText=l.status==='connecting'?t('live.connecting'):isLive?t('run.running'):t(l.status);
+ const lines=l.events.map(function(e){
+  const bits=[esc(t(e.labelKey))];
+  if(e.tool)bits.push(esc(e.tool));
+  if(e.file)bits.push(esc(e.file));
+  return '<div style="padding:2px 0">'+bits.join(' · ')+'</div>';
+ }).join('');
+ const d=el('<div class="cardx" style="margin-top:10px"><h3>'+esc(t('live.title'))+' · <span class="'+(isLive?'warn':'ok')+'">'+esc(statusText)+'</span></h3>'
+  +(l.dropped?'<div class=mut style="font-size:11.5px">'+esc(t('live.dropped').replace('{n}',String(l.dropped)))+'</div>':'')
+  +'<div id=liveevents style="max-height:220px;overflow:auto;font-size:13px;background:#0b0d11;border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin-top:6px">'
+  +(lines||'<span class=mut>'+esc(t('live.connecting'))+'</span>')+'</div>'
+  +(!isLive&&l.endedReason?'<div class=mut style="font-size:11.5px;margin-top:6px">'+esc(l.endedReason)+'</div>':'')
+  +(l.stopMsg?'<div class=warn style="font-size:12px;margin-top:6px">'+esc(l.stopMsg)+'</div>':'')
+  +(isLive?'<div style="margin-top:8px"><button class=ghost id=livestop'+(l.stopBusy?' disabled':'')+'>'+esc(l.stopBusy?t('live.stopping'):t('live.stop'))+'</button></div>':'')
+  +'</div>');
+ const btn=d.querySelector('#livestop');
+ if(btn)btn.onclick=async()=>{
+  l.stopBusy=true;l.stopMsg=null;render();
+  // Real outcome only — the message is never "stopped" unless the interrupt call itself
+  // succeeded; whether the run actually ends is reported separately by the stream's own
+  // terminal frame, never fabricated here.
+  const r=await api('/api/session/'+encodeURIComponent(ex.liveSessionId)+'/interrupt',{});
+  l.stopBusy=false;
+  l.stopMsg=(r&&r.ok)?t('live.stopRequested'):(t('live.stopFailed')+(r&&r.reason?' — '+r.reason:''));
+  render();
+ };
+ const box=d.querySelector('#liveevents');
+ if(box)box.scrollTop=box.scrollHeight;   // keep the reader at the live edge, like run.logs
+ return d;
+}
+
 /** A finished run is a card in the thread too: graph, who ran each stage, tokens, artifacts,
  *  and the OUTPUT ITSELF — a produced site must be previewable, not just described in logs. */
 const extractHtml=(txt)=>{const m=String(txt||'').match(/\`\`\`html\s*([\s\S]*?)\`\`\`/);if(m)return m[1];
@@ -831,7 +938,11 @@ function taskRow(tk,subs){
    // verdict, note, by, at — no information lost).
    if(open){const trail=activityTrail(S.state||{},tk);if(trail)d.appendChild(trail)}
    // A running mission shows its live session right inside the issue (Plane's activity, real-time).
-   if(open&&execution&&execution.status==='running')d.appendChild(runCard(execution));
+   if(open&&execution&&execution.status==='running'){
+    d.appendChild(runCard(execution));
+    const lc=liveActivityCard(execution);
+    if(lc)d.appendChild(lc);
+   }
   // The task detail shows an escalated question too — same card as the project thread.
   if(open&&(tk.pendingQuestion||(tk.qna||[]).length))d.appendChild(questionCard(tk));
   return d;
@@ -1519,7 +1630,7 @@ function thread(){
  if(mission&&['draft','approved','failed'].includes(mission.status))box.appendChild(missionCard(mission));
  (s.approvals||[]).filter(a=>a.status==='pending'&&(mission&&a.missionId===mission.id)).forEach(a=>box.appendChild(approvalCard(a)));
  if(mission){const ex=(s.executions||[]).filter(e=>e.missionId===mission.id).slice(-1)[0];
-  if(ex)box.appendChild(runCard(ex))}
+  if(ex){box.appendChild(runCard(ex));const lc=liveActivityCard(ex);if(lc)box.appendChild(lc)}}
  const th=document.getElementById('thread');th.scrollTop=th.scrollHeight;
  // Live work keeps the view fresh WITHOUT blocking the user: poll while anything runs.
  if((s.executions||[]).some(e=>e.status==='running')){
@@ -1648,6 +1759,7 @@ function composer(){
 }
 function render(){
  const s=S.state||{};
+ sweepLiveStreams(s);
  sidebar();thead();composer();
  if(!onboarded(s)){onboarding();return}
  thread();
