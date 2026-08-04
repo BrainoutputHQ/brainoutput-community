@@ -445,3 +445,38 @@ test("LIVE: a real coding task runs through the REST runtime and writes a file (
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// REGRESSION (dogfood defect 2): the per-attempt loop ends its live session at eight named exit
+// points, but an UNEXPECTED throw between liveSessions.start() and the first of them left the
+// registry entry pinned "running" forever — and GET /api/session/{id}/live then holds that
+// browser's response open with no terminal frame. An infinite spinner is the one thing the live
+// view must never produce. Observed for real via the null-task crash.
+test("REGRESSION: an unexpected throw still ends the live session (no orphaned 'running' entry)", async () => {
+  const { liveSessions } = await import("./live-session.mjs");
+  const stub = await startStub({ catalog: [CATALOG_ENTRY] });
+  const ws = makeGitWorkspace();
+  let registered = null;
+  try {
+    // onSessionStart fires immediately AFTER liveSessions.start() — killing the stub there
+    // guarantees the very next HTTP call throws, i.e. an UNEXPECTED failure between registration
+    // and any named exit point. That is precisely the window the backstop exists for.
+    await runSessionAgainstServer({
+      baseURL: stub.baseURL, workspace: ws, providerID: MODEL.providerID, modelID: MODEL.id,
+      prompt: "x", timeoutMs: 3000, requestTimeoutMs: 300, modelCatalogTimeoutMs: 600,
+      onSessionStart: (id) => { registered = id; stub.close(); },
+    }).catch(() => { /* throwing is acceptable; leaving the registry dirty is not */ });
+    assert.ok(registered, "precondition: a session must have been registered");
+    const rec = liveSessions.get(registered);
+    assert.ok(rec, "the registry entry must exist");
+    assert.notEqual(rec.status, "running",
+      `session ${registered} was left pinned "running" — GET /live would hang that browser forever`);
+  } finally {
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test("REGRESSION: the runtime wraps its attempt loop so an unexpected throw cannot orphan the registry", () => {
+  const src = readFileSync(new URL("./opencode-server.mjs", import.meta.url), "utf8");
+  assert.match(src, /\}\s*finally\s*\{[\s\S]{0,400}liveSessions\.end\(liveSessionId/,
+    "runSessionAgainstServer must have a finally-block backstop that ends the live session");
+});

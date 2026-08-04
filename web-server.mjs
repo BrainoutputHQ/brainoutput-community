@@ -16,9 +16,13 @@ import { join, dirname, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { Store } from "./store.mjs";
-import { routeTask, makeCatalog, costReport, executionSummary, validateCompanyConfig, PRIVACY_POSTURES, planGraph } from "./ce-core.mjs";
+import { routeTask, makeCatalog, costReport, executionSummary, validateCompanyConfig, PRIVACY_POSTURES, planGraph, validateConnection } from "./ce-core.mjs";
 import { executePlan, runNode, execLogLine } from "./adapters.mjs";
 import { runOpenCode, opencodeAvailable } from "./opencode-adapter.mjs";
+// opencode-chat.mjs (chat answers routed through OpenCode) is loaded ONLY via dynamic import, at
+// the single call site below that is itself gated on BO_CE_OPENCODE_SERVER=1 — same discipline as
+// opencode-adapter.mjs's own runOpenCode. With the flag unset this module is never imported, its
+// process-exit handlers are never wired, and nothing about this process's behaviour changes.
 // Live task view (oc-live-view, 2026-08-04): the browser-facing relay for a running OpenCode
 // session's activity + its stop button. See live-session.mjs for the registry itself.
 import { liveSessions } from "./live-session.mjs";
@@ -1316,8 +1320,23 @@ function twinModelFor(twin, stage) {
   return chatModelFor({});
 }
 
-/** Resolve the conversation model for a scope — the agent's own model, else a light company default. */
-function chatModelFor({ department = null, agentId = null } = {}) {
+/**
+ * Resolve the conversation model for a scope — the agent's own model, else a light company default.
+ * `modelConnectionId` (task chat-model-picker) is the PER-CONVERSATION override: when a thread has
+ * one on record it wins over everything else below, department/agent default included. Fail-closed
+ * — a picked connection that no longer exists (or no longer validates: funder/costSource drifted)
+ * is REFUSED, never silently swapped for a different model the user didn't choose.
+ */
+function chatModelFor({ department = null, agentId = null, modelConnectionId = null } = {}) {
+  if (modelConnectionId) {
+    const conn = (store.def.modelConnections || []).find((c) => c.id === modelConnectionId);
+    const v = conn ? validateConnection(conn) : { ok: false, reason: "no longer configured" };
+    if (conn && v.ok)
+      return { agent: agentId || null, slot: "conversation", modelConnectionId, connection: conn,
+        provider: conn.provider, model: conn.model, costSource: conn.costSource, funder: conn.funder };
+    return { agent: agentId || null, slot: "conversation", modelConnectionId, needsConfiguration: true,
+      note: `picked model '${modelConnectionId}' is unusable: ${v.reason}` };
+  }
   const agents = store.def.agents || [];
   const agent = agentId ? agents.find((a) => a.id === agentId)
     : department ? agents.find((a) => a.department === department) : agents[0];
@@ -1392,6 +1411,35 @@ function resolveDepartment(spoken, departments = []) {
 }
 const DEPT_RE = /(technical|customer[- ]service|finance|legal|hr|human[- ]resources|marketing|sales|operations|data)/i;
 
+// Cached only AFTER the flag has actually caused a dynamic import (never eagerly) — lets
+// publicState() surface the live model-verification snapshot without itself becoming async or
+// ever importing this opt-in module on a flag-off process.
+let ocChatModule = null;
+
+/**
+ * ONE chat answer, on the SAME model the caller already resolved. BO_CE_OPENCODE_SERVER=1 routes it
+ * through OpenCode's session API (opencode-chat.mjs — no tools, no repo exploration, the lightest
+ * path that runtime offers); the flag unset (or any OpenCode-side failure) uses the existing direct
+ * chat adapter unchanged. This is an EXECUTOR choice for the SAME connection/model the user picked —
+ * never a different model substituted for the one that answered. Deterministic intents, plan
+ * drafting and mission work never call this function; only the generic "ask" reply does.
+ */
+async function chatAnswerCompletion(model, prompt) {
+  if (process.env.BO_CE_OPENCODE_SERVER === "1" && model.connection) {
+    try {
+      ocChatModule = ocChatModule || await import("./opencode-chat.mjs");
+      const r = await ocChatModule.runOpenCodeChatAnswer({ connection: model.connection, prompt });
+      if (r.ok) return r.output;
+      // Any OpenCode-side refusal/failure (unverified model, boot failure, timeout, …) falls back
+      // to the direct adapter below for THIS turn — chat stays usable rather than breaking outright.
+    } catch { /* same fallback on an unexpected throw */ }
+  }
+  // 800 tokens: reasoning models (deepseek-flash & co.) think first — a small budget used to be
+  // eaten entirely by reasoning and surfaced as "no model configured", which was a lie.
+  const r = await runNode({ node: "chat", slot: model.slot }, model, { prompt }, { maxTokens: 800, localCall: localNodeModelCall });
+  return r.output || null;
+}
+
 async function chatSend(res, b) {
   // Guard the four cases newConversation throws on, BEFORE it throws. These reached the user as a
   // raw 500 and a browser alert; "work-twin" is the FIRST option in the scope dropdown, so a new
@@ -1409,7 +1457,7 @@ async function chatSend(res, b) {
   let conv = b.conversationId ? getConversation(b.conversationId) : null;
   if (!conv) conv = newConversation({ scope: b.scope || "company", department: b.department || null, agentId: b.agentId || null,
     twinId: (b.scope === "work-twin" ? (b.twinId || (store.runtime.workTwins || [])[0]?.id || null) : null),
-    projectId: b.projectId || null });
+    projectId: b.projectId || null, modelConnectionId: b.modelConnectionId || null });
   const mode = b.mode || "ask";
   // A thread opened from a project in the shell carries that project with it.
   if (b.projectId !== undefined && b.projectId !== conv.projectId) conv = { ...conv, projectId: b.projectId || null };
@@ -1420,6 +1468,13 @@ async function chatSend(res, b) {
     conv = { ...conv, scope: b.scope, department: b.department ?? conv.department, agentId: b.agentId ?? conv.agentId };
   else if (b.conversationId && b.department && b.department !== conv.department)
     conv = { ...conv, department: b.department };
+  // Per-conversation model picker (task chat-model-picker): applies from the NEXT message on,
+  // same convention as scope/department above — never retroactive, never leaks to any other
+  // conversation (it lives on THIS conv record alone). `undefined` (field omitted) means "the
+  // client didn't touch the picker this time" — only an explicit value (including "" / null,
+  // meaning "back to default") changes it.
+  if (b.conversationId && b.modelConnectionId !== undefined && b.modelConnectionId !== conv.modelConnectionId)
+    conv = { ...conv, modelConnectionId: b.modelConnectionId || null };
 
   const mentioned = resolveMention(b.text || "", store.def.agents || []);
   if (mentioned) { conv = { ...conv, scope: "agent", agentId: mentioned.id, department: mentioned.department } };
@@ -1618,15 +1673,16 @@ Pinned constraints: ${ctx.pinned.map((p) => p.text).join("; ") || "none"}
 
 User: ${b.text}`;
       try {
-        // 800 tokens: reasoning models (deepseek-flash & co.) think first — a small budget used
-        // to be eaten entirely by reasoning and surfaced as "no model configured", which was a lie.
-        const r = await runNode({ node: "chat", slot: model.slot }, model, { prompt }, { maxTokens: 800, localCall: localNodeModelCall });
-        reply = r.output || null;
+        reply = await chatAnswerCompletion(model, prompt);
       } catch (e) { modelError = String(e.message || e); }
     }
     if (!reply) {
       const knowledge = rag.length ? `From your company knowledge:\n${rag.map((r) => `• ${r.text}  [${r.citation}]`).join("\n")}` : null;
       if (modelError) reply = `${knowledge ? knowledge + "\n\n" : ""}The conversation model failed: ${modelError}\nTry again, or connect another model (local / free / your own key).`;
+      // The picker's own fail-closed refusal (task chat-model-picker): the conversation had a model
+      // CHOSEN, and it is no longer usable — a distinct, honest note from "never configured one".
+      else if (model.needsConfiguration && model.modelConnectionId)
+        reply = `${knowledge ? knowledge + "\n\n" : ""}${tChat("chat.modelUnavailable")}`;
       else reply = knowledge || "No matching company knowledge, and no conversation model is configured — connect a free/local/BYOK model or ask about your departments and agents.";
     }
   } else if (mode === "plan") {
@@ -2026,9 +2082,17 @@ async function reportOrReviewSpineTask({ task, out, missionId, agentId, codeWs =
   // (live evidence: well-formed verdicts cut off mid-JSON). The strict-reminder retry gets DOUBLE
   // the base — a truncated attempt gets room to finish (the existing double-budget lesson).
   const REVIEW_MAX_TOKENS = 1600;
+  // The TIME budget must scale with the TOKEN budget, and it did not. 60s was sized for the era
+  // when the reviewer judged a one-line prose summary; it now reads a real diff plus real test
+  // output and emits up to 1600 tokens of structured JSON (3200 on the strict retry). MEASURED on
+  // the GB10 `coder` model: 137.2s to produce a valid verdict — so 60s guaranteed a timeout, and
+  // every end-to-end run ended `blocked` on "reviewer unavailable" despite a healthy result.
+  // The strict retry gets double the time as well as double the tokens.
+  const REVIEW_TIMEOUT_MS = Number(process.env.BO_CE_REVIEW_TIMEOUT_MS || 180000);
   const callReviewer = (strict) => runStageNode({ node: "reviewer", slot: rm.slot || "reviewer" }, rm,
     { prompt: strict ? `${reviewPrompt}\n\n${REVIEW_STRICT_REMINDER}` : reviewPrompt },
-    { maxTokens: strict ? REVIEW_MAX_TOKENS * 2 : REVIEW_MAX_TOKENS, timeoutMs: 60000, localCall: localNodeModelCall });
+    { maxTokens: strict ? REVIEW_MAX_TOKENS * 2 : REVIEW_MAX_TOKENS,
+      timeoutMs: strict ? REVIEW_TIMEOUT_MS * 2 : REVIEW_TIMEOUT_MS, localCall: localNodeModelCall });
   try {
     const rr = await callReviewer(false);
     rawOut = String(rr?.output ?? "");
@@ -3012,6 +3076,11 @@ function publicState() {
     lodgify: lodgifyStatus(),
     // Coding runtime status for the settings/models card — cached at boot, never probed per request.
     codingRuntime: CODING_RUNTIME,
+    // Model picker enrichment (task chat-model-picker): { [connectionId]: true|false }, present ONLY
+    // once BO_CE_OPENCODE_SERVER=1 has actually driven a chat turn through OpenCode at least once in
+    // this process — never probed just to answer this. Absent/missing entry = not checked yet, not
+    // "unavailable"; the UI treats the two differently (see shell.mjs's model picker).
+    chatModelVerification: ocChatModule ? ocChatModule.chatModelVerificationSnapshot() : null,
     brainoutputFundedTokens: funded };
 }
 

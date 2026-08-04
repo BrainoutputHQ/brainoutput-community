@@ -187,7 +187,7 @@ const tokenize = (s) => (String(s).toLowerCase().match(/[a-z0-9]+/g) || []).filt
 
 // ── Conversation ────────────────────────────────────────────────────────────────────────────────
 
-export function newConversation({ id, scope = "company", department = null, agentId = null, twinId = null, title = null, projectId = null } = {}) {
+export function newConversation({ id, scope = "company", department = null, agentId = null, twinId = null, title = null, projectId = null, modelConnectionId = null } = {}) {
   if (!CHAT_SCOPES.includes(scope)) throw new Error(`unknown chat scope '${scope}'`);
   if (scope === "department" && !department) throw new Error("department chat needs a department");
   if (scope === "agent" && !agentId) throw new Error("agent chat needs an agentId");
@@ -195,6 +195,10 @@ export function newConversation({ id, scope = "company", department = null, agen
   return {
     id: id || `conv-${Date.now().toString(36)}`,
     scope, department, agentId, twinId, title, projectId,
+    // Per-conversation model picker (task chat-model-picker): which model connection THIS thread
+    // talks to, overriding the department/agent default. null = today's behaviour, unchanged —
+    // an existing conversation with no choice on record is untouched by this feature.
+    modelConnectionId,
     messages: [],        // full transcript — LOCAL ONLY, never forwarded wholesale
     pinned: [],          // decisions + constraints that must never fall out of context
     summary: null,       // rolling task-scoped summary
