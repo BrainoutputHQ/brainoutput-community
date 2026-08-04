@@ -494,3 +494,240 @@ test("the new opencode.permission.*/opencode.question.* i18n keys are present an
   }
   for (const loc of LOCALES) assert.deepEqual(missingKeys(loc), [], `${loc} is missing keys`);
 });
+
+// ── Cross-rotation escalation (2026-08-04, merge with feature/oc-context-relief) ──────────────────
+// The escalation poller is scoped PER ATTEMPT/session inside runSessionAgainstServer's rotation
+// loop — these tests prove that scoping actually WORKS across a real rotation: a permission or
+// question raised on the SECOND (rotated-to) session, never the first, is still discovered and
+// resolved. This is exactly the interaction the merge could have silently broken (a poller left
+// bound to the abandoned session's id, or never restarted for the new one).
+//
+// A dedicated stub: multi-session id minting (opencode-context-relief.test.mjs's pattern — each
+// POST /api/session mints ses_stub1, ses_stub2, ...) PLUS the permission/question routes from the
+// stub above, both keyed by session id so a request can be scripted onto ONE specific session only.
+function startMultiSessionEscalationStub({ catalog = [], eventScriptsBySession = {},
+  contextBySession = {}, compactStatusBySession = {}, defaultCompactStatus = 503,
+  permissionsBySession = {}, questionsBySession = {} } = {}) {
+  const calls = { model: 0, prompt: 0, interrupt: 0, event: 0, session: 0, compact: 0, context: 0,
+    permissionList: 0, permissionReply: 0, questionList: 0, questionReply: 0, questionReject: 0 };
+  const permStateBySession = {};
+  for (const [sid, list] of Object.entries(permissionsBySession))
+    permStateBySession[sid] = new Map(list.map((p) => [p.id, { ...p, replied: false }]));
+  const qStateBySession = {};
+  for (const [sid, list] of Object.entries(questionsBySession))
+    qStateBySession[sid] = new Map(list.map((q) => [q.id, { ...q, replied: false }]));
+  const permReplies = [];     // { sessionID, id, reply, message? }
+  const questionReplies = []; // { sessionID, id, answers }
+  const questionRejects = []; // [{sessionID, id}, ...]
+  const sseResBySession = {};
+  let sessionCounter = 0;
+
+  function sendEvent(sessionID, evt) {
+    const res = sseResBySession[sessionID];
+    if (!res) return;
+    res.write(`data: ${JSON.stringify(evt)}\n\n`);
+  }
+
+  const server = createServer((req, res) => {
+    const url = new URL(req.url, "http://x");
+    const path = url.pathname;
+    let body = "";
+    req.on("data", (d) => { body += d; });
+    req.on("end", () => {
+      const json = (code, obj) => { res.writeHead(code, { "content-type": "application/json" }); res.end(JSON.stringify(obj)); };
+
+      if (req.method === "GET" && path === "/api/health") return json(200, { healthy: true });
+      if (req.method === "GET" && path === "/api/model") return json(200, { data: catalog });
+
+      if (req.method === "POST" && path === "/api/session") {
+        calls.session++;
+        sessionCounter++;
+        const id = `ses_stub${sessionCounter}`;
+        return json(200, { data: { id, projectID: "global", location: { directory: JSON.parse(body || "{}")?.location?.directory || null } } });
+      }
+
+      let m;
+      if (req.method === "POST" && (m = path.match(/^\/api\/session\/([^/]+)\/model$/))) { calls.model++; res.writeHead(204); return res.end(); }
+      if (req.method === "POST" && (m = path.match(/^\/api\/session\/([^/]+)\/prompt$/))) {
+        calls.prompt++;
+        return json(200, { data: { admittedSeq: 1, id: "msg_stub1", sessionID: m[1] } });
+      }
+      if (req.method === "POST" && (m = path.match(/^\/api\/session\/([^/]+)\/interrupt$/))) { calls.interrupt++; res.writeHead(204); return res.end(); }
+      if (req.method === "GET" && (m = path.match(/^\/api\/session\/([^/]+)\/message$/))) return json(200, { data: [] });
+      if (req.method === "GET" && (m = path.match(/^\/api\/session\/([^/]+)\/context$/))) {
+        calls.context++;
+        const seq = contextBySession[m[1]] || [[]];
+        const i = Math.min(calls.context - 1, seq.length - 1);
+        return json(200, { data: seq[i] || [] });
+      }
+      if (req.method === "POST" && (m = path.match(/^\/api\/session\/([^/]+)\/compact$/))) {
+        calls.compact++;
+        const status = compactStatusBySession[m[1]] ?? defaultCompactStatus;
+        if (status === 204) { res.writeHead(204); return res.end(); }
+        return json(status, { _tag: "ServiceUnavailableError", message: "Session compact is not available yet", service: "session.compact" });
+      }
+
+      if (req.method === "GET" && (m = path.match(/^\/api\/session\/([^/]+)\/permission$/))) {
+        calls.permissionList++;
+        const st = permStateBySession[m[1]];
+        return json(200, { data: st ? [...st.values()].filter((p) => !p.replied).map(({ replied, ...rest }) => rest) : [] });
+      }
+      if (req.method === "POST" && (m = path.match(/^\/api\/session\/([^/]+)\/permission\/([^/]+)\/reply$/))) {
+        calls.permissionReply++;
+        const b = JSON.parse(body || "{}");
+        const st = permStateBySession[m[1]];
+        const p = st?.get(m[2]);
+        if (p) p.replied = true;
+        permReplies.push({ sessionID: m[1], id: m[2], ...b });
+        res.writeHead(204); return res.end();
+      }
+      if (req.method === "GET" && (m = path.match(/^\/api\/session\/([^/]+)\/question$/))) {
+        calls.questionList++;
+        const st = qStateBySession[m[1]];
+        return json(200, { data: st ? [...st.values()].filter((q) => !q.replied).map(({ replied, ...rest }) => rest) : [] });
+      }
+      if (req.method === "POST" && (m = path.match(/^\/api\/session\/([^/]+)\/question\/([^/]+)\/reply$/))) {
+        calls.questionReply++;
+        const b = JSON.parse(body || "{}");
+        const st = qStateBySession[m[1]];
+        const q = st?.get(m[2]);
+        if (q) q.replied = true;
+        questionReplies.push({ sessionID: m[1], id: m[2], answers: b.answers });
+        res.writeHead(204); return res.end();
+      }
+      if (req.method === "POST" && (m = path.match(/^\/api\/session\/([^/]+)\/question\/([^/]+)\/reject$/))) {
+        calls.questionReject++;
+        const st = qStateBySession[m[1]];
+        const q = st?.get(m[2]);
+        if (q) q.replied = true;
+        questionRejects.push({ sessionID: m[1], id: m[2] });
+        res.writeHead(204); return res.end();
+      }
+
+      if (req.method === "GET" && (m = path.match(/^\/api\/session\/([^/]+)\/event$/))) {
+        calls.event++;
+        const sessionID = m[1];
+        res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+        sseResBySession[sessionID] = res;
+        const script = eventScriptsBySession[sessionID] || [];
+        let i = 0;
+        const pump = () => {
+          if (i >= script.length) return;
+          const { delayMs = 5, evt } = script[i++];
+          setTimeout(() => { sendEvent(sessionID, evt); pump(); }, delayMs);
+        };
+        pump();
+        res.on("close", () => { if (sseResBySession[sessionID] === res) delete sseResBySession[sessionID]; });
+        return;
+      }
+
+      json(404, { error: "no such stub route", path });
+    });
+  });
+
+  return new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const { port } = server.address();
+      resolve({
+        baseURL: `http://127.0.0.1:${port}`,
+        calls, permReplies, questionReplies, questionRejects,
+        close: () => new Promise((r) => { server.close(r); server.closeAllConnections(); }),
+      });
+    });
+  });
+}
+
+function assistantMsg({ input = 0, cacheRead = 0, cacheWrite = 0 } = {}) {
+  return { type: "assistant", tokens: { input, output: 1, reasoning: 0, cache: { read: cacheRead, write: cacheWrite } } };
+}
+
+// A SMALL context window (matches opencode-context-relief.test.mjs's own convention) so a modest
+// assistantMsg({input:950}) genuinely crosses the 0.8 threshold and forces a rotation — the escalation
+// suite's own CATALOG_ENTRY (context:8192) is deliberately large for its OTHER tests and would never
+// cross threshold at these input sizes.
+const ROTATION_CATALOG_ENTRY = { id: MODEL.id, providerID: MODEL.providerID, family: "stub", name: "Stub Model",
+  capabilities: [], limit: { context: 1000, output: 4096 }, status: "ok" };
+
+test("a permission raised on the ROTATED session (not the first) is still discovered and resolved", async () => {
+  // Session 1 crosses the context threshold with compaction unavailable → rotates. Session 1 has
+  // NO pending permission at all — only session 2 (the rotation target) does. If the poller were
+  // ever left bound to session 1, or never restarted for session 2, this permission would sit
+  // unresolved forever and the run would time out instead of completing.
+  const eventScriptsBySession = {
+    ses_stub1: [{ evt: { type: "session.next.step.ended", data: { finish: "tool-calls" } } }],
+    ses_stub2: [
+      { evt: { type: "session.next.step.ended", data: { finish: "tool-calls" } } },
+      { delayMs: 400, evt: { type: "session.next.step.ended", data: { finish: "stop" } } },
+    ],
+  };
+  const contextBySession = { ses_stub1: [[assistantMsg({ input: 950 })]], ses_stub2: [[assistantMsg({ input: 50 })]] };
+  const permissionsBySession = {
+    ses_stub2: [{ id: "per_rot1", sessionID: "ses_stub2", action: "edit", resources: ["rotated-out.txt"] }],
+  };
+  const stub = await startMultiSessionEscalationStub({
+    catalog: [ROTATION_CATALOG_ENTRY], eventScriptsBySession, contextBySession,
+    compactStatusBySession: { ses_stub1: 503 }, permissionsBySession,
+  });
+  const ws = makeGitWorkspace();
+  writeFileSync(join(ws, "rotated-out.txt"), "written on the rotated session\n");
+  try {
+    const result = await runSessionAgainstServer({
+      baseURL: stub.baseURL, workspace: ws, providerID: MODEL.providerID, modelID: MODEL.id,
+      prompt: "a big task", timeoutMs: 5000, modelCatalogTimeoutMs: 2000, contextCompactThreshold: 0.8,
+      escalationPollMs: 15,
+    });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal(result.rotations, 1, "precondition: the run actually rotated");
+    // The permission was resolved on ses_stub2 specifically — never ses_stub1 (it had none pending).
+    assert.equal(stub.permReplies.length, 1);
+    assert.deepEqual(stub.permReplies[0], { sessionID: "ses_stub2", id: "per_rot1", reply: "once" });
+    // And it is visible in the FINAL result despite happening on an attempt that isn't the first.
+    assert.equal(result.permissionEvents.length, 1);
+    assert.equal(result.permissionEvents[0].allow, true);
+  } finally {
+    await stub.close();
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test("a question raised on the ROTATED session (not the first) is still discovered, routed through the hook, and — when uncovered — still overrides ok/noWork", async () => {
+  const eventScriptsBySession = {
+    ses_stub1: [{ evt: { type: "session.next.step.ended", data: { finish: "tool-calls" } } }],
+    ses_stub2: [
+      { evt: { type: "session.next.step.ended", data: { finish: "tool-calls" } } },
+      { delayMs: 400, evt: { type: "session.next.step.ended", data: { finish: "stop" } } },
+    ],
+  };
+  const contextBySession = { ses_stub1: [[assistantMsg({ input: 950 })]], ses_stub2: [[assistantMsg({ input: 50 })]] };
+  const questionsBySession = {
+    ses_stub2: [{ id: "que_rot1", sessionID: "ses_stub2", questions: [{ question: "Which library?", header: "h", options: [] }] }],
+  };
+  const stub = await startMultiSessionEscalationStub({
+    catalog: [ROTATION_CATALOG_ENTRY], eventScriptsBySession, contextBySession,
+    compactStatusBySession: { ses_stub1: 503 }, questionsBySession,
+  });
+  const ws = makeGitWorkspace();
+  writeFileSync(join(ws, "rotated-work.txt"), "real work on the rotated session\n");
+  const seenSessions = [];
+  const onWorkerQuestion = async (qr) => { seenSessions.push(qr.sessionID); return null; }; // NOT_COVERED
+  try {
+    const result = await runSessionAgainstServer({
+      baseURL: stub.baseURL, workspace: ws, providerID: MODEL.providerID, modelID: MODEL.id,
+      prompt: "a big task", timeoutMs: 5000, modelCatalogTimeoutMs: 2000, contextCompactThreshold: 0.8,
+      escalationPollMs: 15, onWorkerQuestion,
+    });
+    assert.equal(result.rotations, 1, "precondition: the run actually rotated");
+    assert.deepEqual(seenSessions, ["ses_stub2"], "the hook was invoked for the ROTATED session's question, never the first");
+    assert.deepEqual(stub.questionRejects, [{ sessionID: "ses_stub2", id: "que_rot1" }]);
+    assert.equal(result.questionEvents.length, 1);
+    assert.equal(result.questionEvents[0].resolved, "escalated");
+    // The override still fires even though the escalation happened on attempt 2, not attempt 1 —
+    // proves allQuestionEvents (accumulated across every attempt) drives the final ok/noWork verdict.
+    assert.equal(result.ok, false, "escalation on the ROTATED session must still override evidence-based success");
+    assert.equal(result.noWork, true);
+    assert.equal(result.noWorkReason, t("en", "opencode.question.escalated"));
+  } finally {
+    await stub.close();
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
