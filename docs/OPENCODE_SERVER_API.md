@@ -494,6 +494,30 @@ skills; fail-closed regression on `opencode:`-namespaced unknowns).
 
 ---
 
+## 13. Worktree branch integrity (isolated-workspace tasks)
+
+When a task runs in `isolated_workspace` mode, Paperclip creates a git worktree pinned to the
+task's own branch and verifies that pin on every subsequent run. If anything switches the worktree
+to another branch — the classic case being a well-meaning merge or a `git checkout main` inside the
+worktree — the **next** run fails closed with:
+
+```
+Execution workspace git worktree expected branch <task-branch> but found main ... Safe repair was not completed
+```
+
+This is a fail-closed integrity check, not a bug: the runtime refuses to work on (or silently
+"repair") a worktree whose checked-out branch no longer matches the branch the task was created
+on, because any commit made there would land on the wrong branch.
+
+**The fix is prevention, and it is absolute:** leave the worktree on its own task branch. Never
+merge, never `git checkout`/`git switch` to another branch, and never push from inside an
+isolated task worktree. Commit freely on the task branch — that branch is the deliverable and the
+handoff; a human opens the PR and decides what merges. If the integrity error has already fired,
+the repair is to check the task branch back out in that worktree (or provision a fresh one) — not
+to force the runtime past the check.
+
+---
+
 ## Verification
 
 `tools/oc-api-probe.mjs` was run twice consecutively from a clean state (no leftover `opencode
