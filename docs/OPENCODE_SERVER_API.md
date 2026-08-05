@@ -465,6 +465,33 @@ depend on this endpoint succeeding, and never treat a non-204 as reason to suppr
 signal — the compaction *attempt* (crossing the usage threshold at all) is what gets recorded,
 independent of whether the server accepted it.
 
+### The `opencode:` skill namespace — two distinct vocabularies
+
+A task's `skills` directive can contain names from **two different skill vocabularies**, and they
+are gated by two different routers. Conflating them once refused every legal task — this is the
+convention that keeps the two apart.
+
+1. **CE skills** (plain, unprefixed names) — Community Edition's own capability-slot vocabulary,
+   owned by `ce-core.mjs`'s `KNOWN_SKILLS` router (`node-esm`, `browser-js`, `connectors`, `docs`,
+   `ops`, `research`, `i18n`, `review`). These are validated fail-closed by `KNOWN_SKILLS` at
+   task-launch time — an unknown CE skill is refused with a 400 before any runtime is touched.
+   **They are NOT resolved against the OpenCode registry.** `resolveRoutingDirectives` passes them
+   through untouched; e.g. `node-esm` and `docs` are never looked up in `GET /api/skill`, and would
+   never be found there — the OpenCode registry holds tool-augmentations with entirely different
+   names.
+2. **OpenCode skills** (explicitly namespaced `opencode:<name>`) — entries in the live OpenCode
+   skill registry (`GET /api/skill`, §12 above), e.g. `opencode:customize-opencode` resolves
+   against the registry entry `customize-opencode`. Only names carrying the `opencode:` prefix are
+   resolved against that registry by `resolveRoutingDirectives` (the prefix is stripped before
+   lookup), and the gate is fail-closed exactly like `KNOWN_SKILLS`: an unknown name such as
+   `opencode:not-a-real-skill` blocks the task with a named, localized reason instead of a silent
+   drop.
+
+Rule of thumb: if a skill name has no `opencode:` prefix, it belongs to CE's `KNOWN_SKILLS` router
+and the OpenCode registry is never consulted for it; the prefix is the explicit opt-in to the
+OpenCode registry gate. Covered by `opencode-server-routing.test.mjs` (pass-through of plain CE
+skills; fail-closed regression on `opencode:`-namespaced unknowns).
+
 ---
 
 ## Verification
