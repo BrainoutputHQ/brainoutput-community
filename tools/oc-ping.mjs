@@ -165,7 +165,6 @@ async function main() {
   sse.abort();
   await streamDone;
   console.log('run complete (finish=stop)');
-
   // session.tokens is pinned at zero in this build; sum per-message tokens instead.
   const messages = await api('GET', `/api/session/${sessionID}/message`);
   const totals = { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 };
@@ -180,15 +179,11 @@ async function main() {
   console.log('token usage:', JSON.stringify(totals));
   console.log('PING OK');
 }
-
 process.on('SIGINT', () => shutdown().then(() => process.exit(1)));
-try {
-  await main();
-} catch (err) {
+await main().catch((err) => {
   if (process.exitCode === 0) {
     process.exitCode = 1;
     console.error(err && err.stack ? err.stack : err);
   }
-} finally {
-  await shutdown();
-}
+});
+await shutdown();
