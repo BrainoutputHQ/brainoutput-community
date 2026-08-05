@@ -8,3 +8,4 @@ node_modules/
 
 # Paperclip agent worktrees (isolated_workspace) — never commit these
 .paperclip/
+tools/.tier0-gate-state.json
