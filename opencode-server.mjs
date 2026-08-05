@@ -200,7 +200,20 @@ export async function resolveRoutingDirectives(baseURL, task = {}, { locale = "e
   // Optional chaining, deliberately: a caller passing an explicit `null` (not `undefined`) skips
   // the parameter default above, and "no directives" must degrade to "nothing to resolve" rather
   // than throw. Defence in depth for the entry-point bug fixed in opencode-adapter.mjs.
-  const skillNames = Array.isArray(task?.skills) ? task.skills.filter((s) => typeof s === "string") : [];
+  // CE skills and OpenCode skills are DIFFERENT VOCABULARIES, and conflating them broke every
+  // skills-carrying task. CE's `task.skills` are capability-slot names from its own router
+  // (node-esm, browser-js, connectors, docs, ops, research, i18n, review) and are already gated
+  // fail-closed by KNOWN_SKILLS at task-launch time — proven live: an unknown one is refused with
+  // a 400 before any runtime is touched. OpenCode's registry holds tool-augmentations with
+  // entirely different names (customize-opencode, …). Resolving CE names against that registry
+  // therefore refused EVERY legal CE skill: "Skill 'node-esm' is not present in the live OpenCode
+  // skill registry (available: customize-opencode)". Found by the dogfood extension.
+  //
+  // So: only an EXPLICITLY OpenCode-namespaced skill (`opencode:<name>`) is resolved here. A plain
+  // CE skill is passed through untouched — it was already validated by the layer that owns it.
+  const OC_PREFIX = "opencode:";
+  const declared = Array.isArray(task?.skills) ? task.skills.filter((s) => typeof s === "string") : [];
+  const skillNames = declared.filter((s) => s.startsWith(OC_PREFIX)).map((s) => s.slice(OC_PREFIX.length)).filter(Boolean);
   const agentId = typeof task?.agentSlot === "string" && task.agentSlot ? task.agentSlot : null;
 
   if (skillNames.length) {
