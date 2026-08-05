@@ -5,3 +5,6 @@ workspaces/
 *.log
 node_modules/
 .DS_Store
+
+# Paperclip agent worktrees (isolated_workspace) — never commit these
+.paperclip/
