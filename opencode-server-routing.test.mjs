@@ -177,6 +177,11 @@ test("task.skills/task.agentSlot resolve against the live registry and the sessi
 });
 
 // ── 2/3. Fail-closed refusal — the run must never start ───────────────────────────────────────
+// NOTE: the trigger is now an explicitly `opencode:`-namespaced skill. A PLAIN CE skill
+// (node-esm, docs, …) belongs to CE's own KNOWN_SKILLS router, which gates it fail-closed at
+// task-launch time — resolving those names here refused every legal CE skill (see the two
+// vocabulary regressions at the end of this file). What this test protects is unchanged and is
+// the important part: when a directive IS refused, model/agent/prompt are never called.
 test("an unknown skill directive is refused BEFORE the run starts — model/agent/prompt are never called", async () => {
   const stub = await startStub({ catalog: [CATALOG_ENTRY], skills: [SKILL_A], agents: [AGENT_BUILD] });
   const ws = makeGitWorkspace();
@@ -184,7 +189,7 @@ test("an unknown skill directive is refused BEFORE the run starts — model/agen
     const result = await runSessionAgainstServer({
       baseURL: stub.baseURL, workspace: ws, providerID: MODEL.providerID, modelID: MODEL.id,
       prompt: "go", timeoutMs: 5000, modelCatalogTimeoutMs: 2000, registryTimeoutMs: 500,
-      task: { skills: ["totally-bogus-skill"] },
+      task: { skills: ["opencode:totally-bogus-skill"] },
     });
     assert.equal(result.ok, false);
     assert.equal(result.noWork, true);
@@ -393,4 +398,34 @@ test("switchAgent posts {agent} and requires 204", async () => {
   } finally {
     await stub.close();
   }
+});
+
+// REGRESSION (dogfood extension): CE skills and OpenCode skills are different vocabularies.
+// CE's router routes on node-esm / browser-js / connectors / docs / ops / research / i18n / review
+// and already gates them fail-closed at launch (an unknown one is a 400 before any runtime runs).
+// OpenCode's registry holds tool-augmentations (customize-opencode, …). Resolving CE names against
+// that registry refused EVERY legal CE skill — every skills-carrying task blocked with
+// "Skill 'node-esm' is not present in the live OpenCode skill registry". Only an explicitly
+// `opencode:`-namespaced skill belongs to that registry.
+test("REGRESSION: a plain CE skill is NOT resolved against OpenCode's registry", async () => {
+  const stub = await startStub({ skills: [{ name: "customize-opencode" }], agents: [] });
+  try {
+    const r = await resolveRoutingDirectives(stub.baseURL, { skills: ["node-esm", "docs"] },
+      { requestTimeoutMs: 2000, timeoutMs: 1500 });
+    assert.equal(r.ok, true,
+      `CE skills must pass through untouched — they are gated by KNOWN_SKILLS, not by OpenCode: ${r.reason}`);
+  } finally { await stub.close(); }
+});
+
+test("REGRESSION: an explicitly opencode:-namespaced skill IS still gated fail-closed", async () => {
+  const stub = await startStub({ skills: [{ name: "customize-opencode" }], agents: [] });
+  try {
+    const ok = await resolveRoutingDirectives(stub.baseURL, { skills: ["opencode:customize-opencode"] },
+      { requestTimeoutMs: 2000, timeoutMs: 1500 });
+    assert.equal(ok.ok, true, `a real namespaced skill must resolve: ${ok.reason}`);
+    const bad = await resolveRoutingDirectives(stub.baseURL, { skills: ["opencode:not-a-real-skill"] },
+      { requestTimeoutMs: 2000, timeoutMs: 1500 });
+    assert.equal(bad.ok, false, "an unknown namespaced skill must still be refused");
+    assert.match(bad.reason, /not-a-real-skill/);
+  } finally { await stub.close(); }
 });
